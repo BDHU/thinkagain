@@ -63,3 +63,17 @@ class Context:
 
     def __str__(self) -> str:
         return f"Context with {len(self._data)} fields: {list(self._data.keys())}"
+
+    def copy(self) -> 'Context':
+        """
+        Create a shallow copy of the context.
+
+        Useful for parallel execution where multiple workers need
+        independent copies of the context.
+
+        Returns:
+            New Context with copied data and history
+        """
+        new_ctx = Context(**self._data.copy())
+        new_ctx._history = self._history.copy()
+        return new_ctx

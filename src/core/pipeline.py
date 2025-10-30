@@ -104,6 +104,13 @@ class Pipeline:
                 lines.append(f"{prefix}{connector} Loop: {node.name} (max={node.max_iterations})")
                 body_name = node.body.name if hasattr(node.body, 'name') else 'body'
                 lines.append(f"{prefix}    └── Body: {body_name}")
+            elif hasattr(node, 'workers'):  # Parallel node
+                lines.append(f"{prefix}{connector} Parallel: {node.name}")
+                for j, worker in enumerate(node.workers):
+                    is_last_worker = j == len(node.workers) - 1
+                    worker_connector = "└──" if is_last_worker else "├──"
+                    worker_name = worker.name if hasattr(worker, 'name') else str(worker)
+                    lines.append(f"{prefix}    {worker_connector} {worker_name}")
             else:
                 node_name = node.name if hasattr(node, 'name') else str(node)
                 lines.append(f"{prefix}{connector} {node_name}")
