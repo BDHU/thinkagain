@@ -1,6 +1,6 @@
-# Minimal Agent Framework
+# ThinkAgain
 
-A simple, debuggable framework for building agent pipelines with explicit control.
+A simple, minimal framework for building agent pipelines with explicit control.
 
 ## Features
 
@@ -13,7 +13,7 @@ A simple, debuggable framework for building agent pipelines with explicit contro
 ## Quick Start
 
 ```python
-from src.core import Context, Worker
+from thinkagain import Context, Worker
 
 # Create a worker with both sync and async support
 class VectorDB(Worker):
@@ -52,7 +52,7 @@ print(ctx.history)
 ## Pipeline Examples
 
 ```python
-from src.core import Pipeline, Switch, Loop
+from thinkagain import Pipeline, Switch, Loop
 
 # Simple composition
 pipeline = vector_db >> reranker >> generator
@@ -88,7 +88,7 @@ results = await asyncio.gather(*tasks)
 For workflows that need to loop back (e.g., self-correcting agents):
 
 ```python
-from src.core import Graph, END
+from thinkagain import Graph, END
 
 graph = Graph(name="self_correcting_rag")
 
