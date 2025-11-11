@@ -5,6 +5,7 @@ Core components of the minimal agent framework.
 from .context import Context
 from .worker import Worker
 from .pipeline import Pipeline, Conditional, Switch, Loop
+from .graph import Graph, END, StepResult
 
 __all__ = [
     "Context",
@@ -13,4 +14,7 @@ __all__ = [
     "Conditional",
     "Switch",
     "Loop",
+    "Graph",
+    "END",
+    "StepResult",
 ]

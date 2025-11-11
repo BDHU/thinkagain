@@ -20,16 +20,40 @@ class Worker:
     Workers can be simple functions, complex stateful services,
     or anything in between (e.g., vector DB, LLM, reranker).
 
-    Example:
+    Supports both synchronous and asynchronous execution:
+    - Implement __call__(self, ctx) for sync workers
+    - Implement async acall(self, ctx) for async workers
+    - Can implement both for dual support
+
+    Synchronous example:
         class VectorDBWorker(Worker):
             def __call__(self, ctx: Context) -> Context:
                 ctx.documents = self.search(ctx.query)
                 ctx.log(f"[{self.name}] Retrieved {len(ctx.documents)} docs")
                 return ctx
 
+    Asynchronous example:
+        class AsyncVectorDBWorker(Worker):
+            async def acall(self, ctx: Context) -> Context:
+                ctx.documents = await self.search_async(ctx.query)
+                ctx.log(f"[{self.name}] Retrieved {len(ctx.documents)} docs")
+                return ctx
+
+    Dual support example:
+        class DualVectorDBWorker(Worker):
+            def __call__(self, ctx: Context) -> Context:
+                ctx.documents = self.search(ctx.query)
+                return ctx
+
+            async def acall(self, ctx: Context) -> Context:
+                ctx.documents = await self.search_async(ctx.query)
+                return ctx
+
+    Usage:
         # Compose workers into pipelines
         pipeline = vector_db >> reranker >> generator
-        ctx = pipeline(Context(query="What is ML?"))
+        result = pipeline.run(ctx)        # sync
+        result = await pipeline.arun(ctx) # async
     """
 
     def __init__(self, name: str = None):
@@ -58,7 +82,7 @@ class Worker:
 
     def __call__(self, ctx: Context) -> Context:
         """
-        Process the context and return modified context.
+        Process the context and return modified context (synchronous).
 
         Args:
             ctx: Input context
@@ -70,6 +94,21 @@ class Worker:
             NotImplementedError: Subclasses must implement this
         """
         raise NotImplementedError(f"Worker '{self.name}' must implement __call__")
+
+    async def acall(self, ctx: Context) -> Context:
+        """
+        Process the context and return modified context (asynchronous).
+
+        Args:
+            ctx: Input context
+
+        Returns:
+            Modified context
+
+        Raises:
+            NotImplementedError: Subclasses must implement this
+        """
+        raise NotImplementedError(f"Worker '{self.name}' must implement async acall")
 
     def __rshift__(self, other: 'Worker') -> 'Pipeline':
         """

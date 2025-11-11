@@ -8,10 +8,10 @@ useful when multiple nodes depend on the same parent node.
 import asyncio
 from typing import List, Callable, Optional
 from .context import Context
-from .async_pipeline import AsyncWorker
+from .worker import Worker
 
 
-class Parallel(AsyncWorker):
+class Parallel(Worker):
     """
     Execute multiple async workers in parallel with the same input.
 
@@ -52,7 +52,7 @@ class Parallel(AsyncWorker):
 
     def __init__(
         self,
-        workers: List[AsyncWorker],
+        workers: List[Worker],
         merge_strategy: Optional[Callable[[Context, List[Context]], Context]] = None,
         name: str = "parallel"
     ):
@@ -60,7 +60,7 @@ class Parallel(AsyncWorker):
         Initialize parallel execution.
 
         Args:
-            workers: List of async workers to run in parallel
+            workers: List of workers to run in parallel
             merge_strategy: Optional function to merge results.
                            Signature: (original_ctx, results) -> merged_ctx
                            Default: combines all documents from workers
@@ -70,12 +70,18 @@ class Parallel(AsyncWorker):
         self.workers = workers
         self.merge_strategy = merge_strategy or self._default_merge
 
-    async def __call__(self, ctx: Context) -> Context:
-        """Execute all workers in parallel with same input context."""
+    async def acall(self, ctx: Context) -> Context:
+        """Execute all workers in parallel with same input context (async only)."""
         ctx.log(f"[{self.name}] Starting {len(self.workers)} workers in parallel")
 
         # Each worker gets a copy of the input context
-        tasks = [worker(ctx.copy()) for worker in self.workers]
+        # Call acall() if available, otherwise call __call__
+        tasks = []
+        for worker in self.workers:
+            if hasattr(worker, 'acall'):
+                tasks.append(worker.acall(ctx.copy()))
+            else:
+                tasks.append(worker(ctx.copy()))
 
         # Execute all workers concurrently
         results = await asyncio.gather(*tasks, return_exceptions=True)

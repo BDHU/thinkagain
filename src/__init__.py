@@ -39,7 +39,7 @@ Example RAG Pipeline:
     print(ctx.history)
 """
 
-from .core import Context, Worker, Pipeline, Conditional, Switch, Loop
+from .core import Context, Worker, Pipeline, Conditional, Switch, Loop, Graph, END
 
 __version__ = "0.2.0"
 
@@ -50,4 +50,6 @@ __all__ = [
     "Conditional",
     "Switch",
     "Loop",
+    "Graph",
+    "END",
 ]
