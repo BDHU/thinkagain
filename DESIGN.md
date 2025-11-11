@@ -4,14 +4,6 @@
 
 A minimal, debuggable agent framework focused on explicit control and transparency. The framework captures computation graphs **before execution** while remaining simple and easy to understand.
 
-## Design Principles
-
-1. **Explicit over Implicit** - Every step is visible and controllable
-2. **Static Graph Definition** - Computation graph is defined before execution
-3. **Full Inspectability** - Can examine both graph structure and execution trace
-4. **Minimal Abstractions** - Only essential components
-5. **Composable** - Workers and pipelines compose naturally
-
 ## Core Architecture
 
 ### 1. Context (State Container)
@@ -343,72 +335,13 @@ Pipeline
 └── generator
 ```
 
-## Why This Design?
-
-### Problem: Existing Frameworks
-
-1. **Hidden Control Flow** - Tool calling is opaque
-2. **Hard to Debug** - Can't see what's happening
-3. **No Static Analysis** - Graph is only known at runtime
-4. **Complex Abstractions** - Too much magic
-
-### Our Solution
-
-1. **Explicit Graph Definition** - Use `>>` operator to build graph
-2. **Captured Before Execution** - Full graph structure available upfront
-3. **Transparent Execution** - Context logs everything
-4. **Simple Primitives** - Only Worker, Pipeline, Switch, Loop
-
-### Benefits
-
-✅ **Debuggable** - Inspect graph and execution trace separately
-✅ **Predictable** - Graph structure is explicit, not inferred
-✅ **Composable** - Workers and pipelines compose naturally
-✅ **Analyzable** - Can validate, optimize, visualize before running
-✅ **Testable** - Test workers individually or full pipeline
-✅ **Minimal** - Only 5 core classes, ~500 LOC total
-
 ## Extension Points
 
 ### Future Enhancements
-
-1. **Async/Await** - Add AsyncWorker, AsyncPipeline
-2. **Parallel Execution** - Add Parallel(workers=[...])
+1. Add declerative graph construction.
+2. Consolidate `arun` and `acall`.
 3. **Caching** - Add @cached decorator for workers
 4. **Graph Optimization** - Analyze and optimize before execution
 5. **Visualization** - Export to GraphViz, Mermaid, etc.
 6. **Distributed Execution** - Run workers on different machines
 7. **Type Checking** - Validate data flow between workers
-
-### Backward Compatibility
-
-All enhancements maintain the core design:
-- Workers still implement `__call__(ctx) -> ctx`
-- Pipelines still compose with `>>`
-- Graph still captured before execution
-- No breaking changes to user code
-
-## Comparison to Other Frameworks
-
-| Feature | Our Framework | LangChain | Airflow | Prefect |
-|---------|---------------|-----------|---------|---------|
-| Static Graph | ✅ Yes | ❌ No | ✅ Yes | ✅ Yes |
-| Simple API | ✅ Yes | ❌ Complex | ⚠️ Moderate | ⚠️ Moderate |
-| Debuggable | ✅ Yes | ❌ Hard | ⚠️ Moderate | ✅ Yes |
-| Minimal | ✅ 5 classes | ❌ 100s | ❌ Large | ❌ Large |
-| Composable | ✅ Yes | ⚠️ Limited | ⚠️ Limited | ✅ Yes |
-| For Agents | ✅ Yes | ✅ Yes | ❌ No | ❌ No |
-
-## Philosophy
-
-> "Perfection is achieved, not when there is nothing more to add, but when there is nothing left to take away."
->
-> — Antoine de Saint-Exupéry
-
-We prioritize:
-- **Simplicity** over features
-- **Explicitness** over magic
-- **Transparency** over convenience
-- **Composability** over monoliths
-
-Start simple. Add complexity only when truly needed.
