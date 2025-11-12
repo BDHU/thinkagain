@@ -297,9 +297,4 @@ Possible additions (if needed):
 3. **Persistence** - Checkpointing and resume
 4. **Stream Processing** - Yield results during execution
 
-But only add if there's a clear need. Keep it minimal!
-
 ---
-
-**Version**: 0.2.0
-**Last Updated**: 2025-11-12
