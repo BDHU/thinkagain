@@ -1,96 +1,61 @@
 """
-Graph-based pipeline supporting arbitrary cycles and conditional routing.
+Graph-based execution supporting arbitrary cycles and conditional routing.
 
-Provides Graph class for complex agent workflows with dynamic routing,
-while maintaining simplicity for inspection and debugging.
+Provides Graph class for complex workflows with dynamic routing.
+Everything is a Graph - Pipelines are just syntactic sugar.
 
 Use Graph when you need:
 - Cycles (loops back to previous nodes)
 - Dynamic routing based on runtime state
 - Multi-agent interactions with complex flow
+- Subgraph composition (graphs within graphs)
 
-For simple sequential pipelines, prefer the >> operator:
+For simple sequential flows, use the >> operator:
     pipeline = worker1 >> worker2 >> worker3
 
-Each graph supports both synchronous and asynchronous execution:
-- Use .run(ctx) or graph(ctx) for synchronous execution
-- Use await .arun(ctx) for asynchronous execution
+Example - Self-correcting RAG with cycle:
+    graph = Graph(name="self_correcting_rag")
+    graph.add_node("retrieve", retrieve_worker)
+    graph.add_node("critique", critique_worker)
+    graph.add_node("refine", refine_worker)
+    graph.add_node("generate", generate_worker)
+
+    graph.set_entry("retrieve")
+    graph.add_edge("retrieve", "critique")
+    graph.add_conditional_edge(
+        "critique",
+        route=lambda ctx: "refine" if ctx.quality < 0.8 else "generate",
+        paths={"refine": "refine", "generate": "generate"}
+    )
+    graph.add_edge("refine", "retrieve")  # Cycle!
+    graph.add_edge("generate", END)
+
+    result = await graph.arun(ctx)
 """
 
 import asyncio
-from typing import Callable, Dict, Tuple, Union, Optional, Any, Generator
+from collections import deque
+from typing import Callable, Dict, Optional, Any
 from .context import Context
+from .executable import Executable, run_sync
 import warnings
 
 
-# Special constant for graph termination (optional, can also just omit edges)
+# Special constant for graph termination
 END = "__end__"
 
 
-class StepResult:
+class Graph(Executable):
     """
-    Result of executing a single node in the graph.
+    Async-first graph supporting arbitrary cycles and conditional routing.
 
-    Returned by Graph.steps() for step-by-step debugging.
-    """
+    Graphs can contain:
+    - Workers (leaf computations)
+    - Other Graphs (subgraphs)
+    - Pipelines (sequential graphs)
+    - Any Executable
 
-    def __init__(self, node: str, ctx: Context, next_node: Optional[str] = None):
-        """
-        Initialize step result.
-
-        Args:
-            node: Name of the node that was just executed
-            ctx: Context after executing this node
-            next_node: Name of the next node to execute (or END/None)
-        """
-        self.node = node
-        self.ctx = ctx
-        self.next_node = next_node
-
-    def __repr__(self) -> str:
-        return f"StepResult(node='{self.node}', next='{self.next_node}')"
-
-
-class Graph:
-    """
-    Graph-based pipeline supporting arbitrary cycles and conditional routing.
-
-    Unlike Pipeline (which uses >> for sequential composition), Graph uses
-    explicit nodes and edges to support complex workflows with cycles.
-
-    Example - Self-correcting RAG with cycle:
-        graph = Graph(name="self_correcting_rag")
-
-        # Add nodes
-        graph.add_node("retrieve", retrieve_worker)
-        graph.add_node("critique", critique_worker)
-        graph.add_node("refine", refine_worker)
-        graph.add_node("generate", generate_worker)
-
-        # Set starting point
-        graph.set_entry("retrieve")
-
-        # Define flow (with cycles!)
-        graph.add_edge("retrieve", "critique")
-
-        graph.add_conditional_edge(
-            "critique",
-            route=lambda ctx: "refine" if ctx.quality < 0.8 else "generate",
-            paths={
-                "refine": "refine",
-                "generate": "generate"
-            }
-        )
-
-        graph.add_edge("refine", "retrieve")  # Cycle back!
-        graph.add_edge("generate", END)
-
-        # Execute directly
-        result = graph(Context(query="Explain quantum computing"))
-
-        # Inspect execution
-        print(result.execution_path)
-        # ["retrieve", "critique", "refine", "retrieve", "critique", "generate"]
+    All composition is natural - just add executables as nodes.
     """
 
     def __init__(self, name: str = "graph", max_steps: Optional[int] = None):
@@ -100,32 +65,45 @@ class Graph:
         Args:
             name: Name for this graph (used in logging)
             max_steps: Optional maximum execution steps to prevent infinite loops.
-                      If None (default), no limit is enforced - user is responsible
-                      for ensuring graph terminates via proper routing logic.
+                      If None (default), no limit is enforced.
         """
-        self.name = name
-        self.nodes: Dict[str, Any] = {}  # node_name -> worker
-        self.edges: Dict[str, Union[str, Tuple]] = {}  # node_name -> next or (route_fn, paths)
+        super().__init__(name)
+        self.nodes: Dict[str, Any] = {}  # node_name -> executable
+        self.edges: Dict[str, Any] = {}  # node_name -> next | (route_fn, paths)
         self.entry_point: Optional[str] = None
         self.max_steps = max_steps
 
-    def add_node(self, name: str, worker) -> 'Graph':
+    def add_node(self, name: str, executable: Any) -> 'Graph':
         """
         Add a node to the graph.
 
+        The node can be:
+        - A Worker instance
+        - Another Graph (subgraph)
+        - A Pipeline (sequential subgraph)
+        - Any callable that transforms Context
+
         Args:
             name: Unique identifier for this node
-            worker: Worker instance to execute at this node
+            executable: Executable to run at this node
 
         Returns:
             Self for method chaining
 
         Raises:
             ValueError: If node name already exists
+
+        Example:
+            # Add various types of nodes
+            graph.add_node("worker", MyWorker())
+            graph.add_node("subgraph", another_graph)
+            graph.add_node("pipeline", worker1 >> worker2)
+            graph.add_node("custom", lambda ctx: ctx)
         """
         if name in self.nodes:
             raise ValueError(f"Node '{name}' already exists")
-        self.nodes[name] = worker
+
+        self.nodes[name] = executable
 
         # Auto-set entry point if this is the first node
         if self.entry_point is None:
@@ -203,10 +181,7 @@ class Graph:
             graph.add_conditional_edge(
                 "critique",
                 route=lambda ctx: "high" if ctx.score > 0.8 else "low",
-                paths={
-                    "high": "generate",
-                    "low": "refine"
-                }
+                paths={"high": "generate", "low": "refine"}
             )
 
         Raises:
@@ -216,9 +191,7 @@ class Graph:
             raise ValueError(f"Node '{from_node}' does not exist")
 
         if from_node in self.edges:
-            raise ValueError(
-                f"Node '{from_node}' already has an outgoing edge"
-            )
+            raise ValueError(f"Node '{from_node}' already has an outgoing edge")
 
         # Validate all path destinations exist
         for path_key, to_node in paths.items():
@@ -230,66 +203,12 @@ class Graph:
         self.edges[from_node] = (route, paths)
         return self
 
-    def __call__(self, ctx: Context) -> Context:
-        """Execute the graph starting from entry point (synchronous). Alias for run()."""
-        return self.run(ctx)
-
-    def run(self, ctx: Context) -> Context:
-        """
-        Execute the graph starting from entry point (synchronous).
-
-        Args:
-            ctx: Input context with initial state
-
-        Returns:
-            Context with execution results and path history
-
-        Raises:
-            ValueError: If graph is invalid or execution fails
-        """
-        # Lazy validation on first execution
-        self._validate()
-
-        current = self.entry_point
-        execution_path = []
-
-        ctx.log(f"[Graph] Starting: {self.name}")
-        ctx.log(f"[Graph] Entry point: {current}")
-
-        step = 0
-        while True:
-            if current == END:
-                ctx.log(f"[Graph] Reached END after {step} steps")
-                break
-
-            ctx = self._execute_node(current, ctx)
-            execution_path.append(current)
-
-            next_node = self._resolve_next_node(current, ctx, termination_msg="terminating")
-
-            if next_node is None:
-                break
-
-            current = next_node
-
-            # Check max_steps limit if set
-            step += 1
-            if self.max_steps is not None and step >= self.max_steps:
-                ctx.log(f"[Graph] WARNING: Terminated after max_steps limit ({self.max_steps})")
-                ctx.log(f"[Graph] This may indicate an infinite loop or insufficient max_steps")
-                break
-
-        # Store execution metadata
-        ctx.execution_path = execution_path
-        ctx.total_steps = len(execution_path)
-
-        ctx.log(f"[Graph] Completed: {self.name}")
-        ctx.log(f"[Graph] Total steps: {ctx.total_steps}")
-        return ctx
-
     async def arun(self, ctx: Context) -> Context:
         """
-        Execute the graph starting from entry point (asynchronous).
+        Execute the graph starting from entry point (async).
+
+        This is the primary execution method. For sync execution,
+        use __call__() which wraps this in asyncio.run().
 
         Args:
             ctx: Input context with initial state
@@ -306,260 +225,118 @@ class Graph:
         current = self.entry_point
         execution_path = []
 
-        ctx.log(f"[Graph] Starting: {self.name}")
-        ctx.log(f"[Graph] Entry point: {current}")
+        self._log(ctx, "Starting execution")
+        self._log(ctx, f"Entry point: {current}")
 
         step = 0
         while True:
-            if current == END:
-                ctx.log(f"[Graph] Reached END after {step} steps")
+            if current == END or current is None:
+                self._log(ctx, f"Reached END after {step} steps")
                 break
 
-            ctx = await self._aexecute_node(current, ctx)
+            ctx = await self._execute_node(current, ctx)
             execution_path.append(current)
 
-            next_node = await self._resolve_next_node_async(
-                current,
-                ctx,
-                termination_msg="terminating"
-            )
+            next_node = await self._resolve_next_node(current, ctx)
 
-            if next_node is None:
+            if next_node is None or next_node == END:
                 break
 
             current = next_node
+            step += 1
 
             # Check max_steps limit if set
-            step += 1
             if self.max_steps is not None and step >= self.max_steps:
-                ctx.log(f"[Graph] WARNING: Terminated after max_steps limit ({self.max_steps})")
-                ctx.log(f"[Graph] This may indicate an infinite loop or insufficient max_steps")
+                self._log(ctx, f"WARNING: Terminated after max_steps={self.max_steps}")
+                self._log(ctx, "This may indicate an infinite loop")
                 break
 
         # Store execution metadata
         ctx.execution_path = execution_path
         ctx.total_steps = len(execution_path)
 
-        ctx.log(f"[Graph] Completed: {self.name}")
-        ctx.log(f"[Graph] Total steps: {ctx.total_steps}")
+        self._log(ctx, "Completed execution")
+        self._log(ctx, f"Total steps: {ctx.total_steps}")
+        path_display = " → ".join(execution_path) or "(none)"
+        self._log(ctx, f"Path: {path_display}")
+
         return ctx
 
-    def steps(self, ctx: Context) -> Generator[StepResult, None, None]:
+    async def _execute_node(self, node_name: str, ctx: Context) -> Context:
         """
-        Execute graph step-by-step, yielding after each node execution.
+        Execute a single node.
 
-        This allows for interactive debugging, state inspection, and
-        control flow visualization during execution.
+        Automatically handles:
+        - Workers
+        - Subgraphs (nested graphs)
+        - Pipelines (sequential graphs)
+        - Plain callables
 
         Args:
-            ctx: Input context with initial state
+            node_name: Name of node to execute
+            ctx: Current context
 
-        Yields:
-            StepResult containing the node name, context, and next node
-
-        Example:
-            for step in graph.steps(ctx):
-                print(f"Executed: {step.node}")
-                print(f"State: {step.ctx.data}")
-                if step.node == "critique":
-                    print(f"Quality: {step.ctx.quality}")
-
-            # Can also modify state between steps
-            for step in graph.steps(ctx):
-                if step.node == "critique" and step.ctx.quality < 0.5:
-                    step.ctx.quality = 0.6  # Override for testing
+        Returns:
+            Updated context after node execution
         """
-        # Lazy validation on first execution
-        self._validate()
+        node = self.nodes[node_name]
+        descriptor = f"Entering subgraph: {node_name} ({node.name})" if isinstance(node, Graph) else f"Executing: {node_name}"
+        self._log(ctx, descriptor)
 
-        current = self.entry_point
+        try:
+            return await self._invoke(node, ctx)
+        except Exception as e:
+            self._log(ctx, f"Error in node '{node_name}': {e}")
+            raise
 
-        ctx.log(f"[Graph] Starting: {self.name} (step-by-step mode)")
-        ctx.log(f"[Graph] Entry point: {current}")
-
-        step_count = 0
-        while True:
-            if current == END:
-                ctx.log(f"[Graph] Reached END after {step_count} steps")
-                break
-
-            ctx = self._execute_node(current, ctx)
-            next_node = self._resolve_next_node(current, ctx, termination_msg="will terminate")
-
-            # Yield control to caller with current state
-            yield StepResult(node=current, ctx=ctx, next_node=next_node)
-
-            # Check if we should continue
-            if next_node is None or next_node == END:
-                break
-
-            current = next_node
-            step_count += 1
-
-            # Check max_steps limit if set
-            if self.max_steps is not None and step_count >= self.max_steps:
-                ctx.log(f"[Graph] WARNING: Terminated after max_steps limit ({self.max_steps})")
-                ctx.log(f"[Graph] This may indicate an infinite loop or insufficient max_steps")
-                break
-
-        ctx.log(f"[Graph] Completed: {self.name} (step-by-step mode)")
-
-    async def asteps(self, ctx: Context):
+    async def _resolve_next_node(self, current: str, ctx: Context) -> Optional[str]:
         """
-        Execute graph step-by-step asynchronously, yielding after each node execution.
+        Resolve the next node based on edges.
 
-        This allows for interactive debugging, state inspection, and
-        control flow visualization during async execution.
+        Handles both direct edges and conditional routing.
 
         Args:
-            ctx: Input context with initial state
+            current: Current node name
+            ctx: Current context
 
-        Yields:
-            StepResult containing the node name, context, and next node
-
-        Example:
-            async for step in graph.asteps(ctx):
-                print(f"Executed: {step.node}")
-                print(f"State: {step.ctx.data}")
-                if step.node == "critique":
-                    print(f"Quality: {step.ctx.quality}")
+        Returns:
+            Name of next node, END, or None
         """
-        # Lazy validation on first execution
-        self._validate()
+        edge = self.edges.get(current)
 
-        current = self.entry_point
+        if edge is None:
+            self._log(ctx, f"Node '{current}' has no outgoing edge, terminating")
+            return None
 
-        ctx.log(f"[Graph] Starting: {self.name} (step-by-step mode)")
-        ctx.log(f"[Graph] Entry point: {current}")
+        # Conditional edge
+        if isinstance(edge, tuple):
+            route_fn, edge_map = edge
 
-        step_count = 0
-        while True:
-            if current == END:
-                ctx.log(f"[Graph] Reached END after {step_count} steps")
-                break
+            try:
+                # Support async route functions
+                route_result = await self._call_route(route_fn, ctx)
+            except Exception as e:
+                self._log(ctx, f"Error in routing function: {e}")
+                raise
 
-            ctx = await self._aexecute_node(current, ctx)
-            next_node = await self._resolve_next_node_async(
-                current,
-                ctx,
-                termination_msg="will terminate"
+            self._log(ctx, f"Conditional route from '{current}': '{route_result}'")
+
+            # Validate and return
+            if route_result in edge_map:
+                return edge_map[route_result]
+
+            if route_result == END:
+                return END
+
+            available = list(edge_map.keys()) + [END]
+            raise ValueError(
+                f"Route function returned '{route_result}' but no matching edge. "
+                f"Available paths: {available}"
             )
 
-            # Yield control to caller with current state
-            yield StepResult(node=current, ctx=ctx, next_node=next_node)
-
-            # Check if we should continue
-            if next_node is None or next_node == END:
-                break
-
-            current = next_node
-            step_count += 1
-
-            # Check max_steps limit if set
-            if self.max_steps is not None and step_count >= self.max_steps:
-                ctx.log(f"[Graph] WARNING: Terminated after max_steps limit ({self.max_steps})")
-                ctx.log(f"[Graph] This may indicate an infinite loop or insufficient max_steps")
-                break
-
-        ctx.log(f"[Graph] Completed: {self.name} (step-by-step mode)")
-
-    def _execute_node(self, node_name: str, ctx: Context) -> Context:
-        """Execute a node synchronously with consistent logging/error handling."""
-        worker = self.nodes[node_name]
-        ctx.log(f"[Graph] Executing node: {node_name}")
-
-        try:
-            return worker(ctx)
-        except Exception as e:
-            ctx.log(f"[Graph] Error in node '{node_name}': {e}")
-            raise
-
-    async def _aexecute_node(self, node_name: str, ctx: Context) -> Context:
-        """Execute a node asynchronously with consistent logging/error handling."""
-        worker = self.nodes[node_name]
-        ctx.log(f"[Graph] Executing node: {node_name}")
-
-        try:
-            if hasattr(worker, 'acall'):
-                return await worker.acall(ctx)
-            return await worker(ctx)
-        except Exception as e:
-            ctx.log(f"[Graph] Error in node '{node_name}': {e}")
-            raise
-
-    def _resolve_next_node(
-        self,
-        current: str,
-        ctx: Context,
-        termination_msg: str
-    ) -> Optional[str]:
-        """Resolve the next node for synchronous execution."""
-        edge = self.edges.get(current)
-
-        if edge is None:
-            ctx.log(f"[Graph] Node '{current}' has no outgoing edge, {termination_msg}")
-            return None
-
-        if isinstance(edge, tuple):
-            route_fn, edge_map = edge
-
-            try:
-                route_result = route_fn(ctx)
-            except Exception as e:
-                ctx.log(f"[Graph] Error in routing function: {e}")
-                raise
-
-            ctx.log(f"[Graph] Conditional routing from '{current}': '{route_result}'")
-            return self._handle_route_result(route_result, edge_map)
-
-        ctx.log(f"[Graph] Direct edge: '{current}' → '{edge}'")
+        # Direct edge
+        self._log(ctx, f"Direct edge: '{current}' → '{edge}'")
         return edge
-
-    async def _resolve_next_node_async(
-        self,
-        current: str,
-        ctx: Context,
-        termination_msg: str
-    ) -> Optional[str]:
-        """Resolve the next node for asynchronous execution."""
-        edge = self.edges.get(current)
-
-        if edge is None:
-            ctx.log(f"[Graph] Node '{current}' has no outgoing edge, {termination_msg}")
-            return None
-
-        if isinstance(edge, tuple):
-            route_fn, edge_map = edge
-
-            try:
-                if asyncio.iscoroutinefunction(route_fn):
-                    route_result = await route_fn(ctx)
-                else:
-                    route_result = route_fn(ctx)
-            except Exception as e:
-                ctx.log(f"[Graph] Error in routing function: {e}")
-                raise
-
-            ctx.log(f"[Graph] Conditional routing from '{current}': '{route_result}'")
-            return self._handle_route_result(route_result, edge_map)
-
-        ctx.log(f"[Graph] Direct edge: '{current}' → '{edge}'")
-        return edge
-
-    @staticmethod
-    def _handle_route_result(route_result: str, edge_map: Dict[str, str]) -> str:
-        """Translate routing decision into the next node, validating the path."""
-        if route_result in edge_map:
-            return edge_map[route_result]
-
-        if route_result == END:
-            return END
-
-        available = list(edge_map.keys()) + [END]
-        raise ValueError(
-            f"Route function returned '{route_result}' but no matching edge. "
-            f"Available paths: {available}"
-        )
 
     def _validate(self):
         """Validate graph structure (called lazily on first execution)."""
@@ -576,17 +353,17 @@ class Graph:
         dead_ends = [node for node in self.nodes if node not in self.edges]
         if dead_ends:
             warnings.warn(
-                f"Nodes without outgoing edges (potential dead ends): {dead_ends}. "
-                f"Consider adding edges to END or other nodes."
+                f"Nodes without outgoing edges: {dead_ends}. "
+                f"Consider adding edges to END."
             )
 
     def _find_reachable_nodes(self) -> set:
         """BFS to find all reachable nodes from entry point."""
         reachable = set()
-        queue = [self.entry_point]
+        queue = deque([self.entry_point])
 
         while queue:
-            current = queue.pop(0)
+            current = queue.popleft()
             if current in reachable or current == END:
                 continue
 
@@ -596,8 +373,8 @@ class Graph:
             if current in self.edges:
                 edge = self.edges[current]
                 if isinstance(edge, tuple):  # Conditional edge
-                    route_fn, edge_map = edge
-                    queue.extend([v for v in edge_map.values() if v != END])
+                    _, edge_map = edge
+                    queue.extend(v for v in edge_map.values() if v != END)
                 else:  # Direct edge
                     if edge != END:
                         queue.append(edge)
@@ -615,33 +392,45 @@ class Graph:
             print(graph.visualize())
             # Copy output to mermaid.live or GitHub markdown
         """
-        lines = ["graph TD"]
-        lines.append(f"    START([START]) --> {self.entry_point}")
+        lines = ["graph TD", f"    START([START]) --> {self.entry_point}"]
 
-        # Add nodes
-        for node_name in self.nodes:
-            # Use rounded rectangles for regular nodes
-            lines.append(f"    {node_name}[{node_name}]")
+        for node_name, node in self.nodes.items():
+            if isinstance(node, Graph):
+                label = f"{node_name}\\n(subgraph: {node.name})"
+                lines.append(f"    {node_name}[[\"{label}\"]]")
+            else:
+                lines.append(f"    {node_name}[{node_name}]")
 
-        # Add END node
-        lines.append(f"    END([END])")
+        lines.append("    END([END])")
 
-        # Add edges
         for from_node, edge in self.edges.items():
-            if isinstance(edge, tuple):  # Conditional
-                route_fn, edge_map = edge
+            if isinstance(edge, tuple):
+                _, edge_map = edge
                 for label, to_node in edge_map.items():
-                    if to_node == END:
-                        lines.append(f"    {from_node} -->|{label}| END")
-                    else:
-                        lines.append(f"    {from_node} -->|{label}| {to_node}")
-            else:  # Direct
-                if edge == END:
-                    lines.append(f"    {from_node} --> END")
-                else:
-                    lines.append(f"    {from_node} --> {edge}")
+                    target = "END" if to_node == END else to_node
+                    lines.append(f"    {from_node} -->|{label}| {target}")
+            else:
+                target = "END" if edge == END else edge
+                lines.append(f"    {from_node} --> {target}")
 
         return "\n".join(lines)
+
+    async def _invoke(self, node: Any, ctx: Context) -> Context:
+        """Execute any supported node type."""
+        if hasattr(node, 'arun'):
+            return await node.arun(ctx)
+        if asyncio.iscoroutinefunction(node):
+            return await node(ctx)
+        return await run_sync(node, ctx)
+
+    async def _call_route(self, route: Callable[[Context], str], ctx: Context) -> str:
+        """Run routing functions that may be sync or async."""
+        if asyncio.iscoroutinefunction(route):
+            return await route(ctx)
+        return route(ctx)
+
+    def _log(self, ctx: Context, message: str) -> None:
+        ctx.log(f"[Graph:{self.name}] {message}")
 
     def to_dict(self) -> dict:
         """Export graph structure as dictionary."""
@@ -664,9 +453,9 @@ class Graph:
             "entry_point": self.entry_point,
             "max_steps": self.max_steps,
             "nodes": {
-                name: worker.to_dict() if hasattr(worker, 'to_dict')
-                else {"type": "Unknown", "name": str(worker)}
-                for name, worker in self.nodes.items()
+                name: node.to_dict() if hasattr(node, 'to_dict')
+                else {"type": "callable", "name": str(node)}
+                for name, node in self.nodes.items()
             },
             "edges": edges_dict
         }

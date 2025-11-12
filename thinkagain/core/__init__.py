@@ -1,20 +1,26 @@
 """
 Core components of the minimal agent framework.
+
+Everything is built on a simple hierarchy:
+- Executable: Base interface for all components
+- Worker: Leaf computations (your business logic)
+- Graph: DAG with cycles and conditional routing
+- Pipeline: Sequential graphs (syntactic sugar)
+
+All components compose with >> operator.
 """
 
 from .context import Context
+from .executable import Executable
 from .worker import Worker
-from .pipeline import Pipeline, Conditional, Switch, Loop
-from .graph import Graph, END, StepResult
+from .graph import Graph, END
+from .pipeline import Pipeline
 
 __all__ = [
     "Context",
+    "Executable",
     "Worker",
-    "Pipeline",
-    "Conditional",
-    "Switch",
-    "Loop",
     "Graph",
     "END",
-    "StepResult",
+    "Pipeline",
 ]

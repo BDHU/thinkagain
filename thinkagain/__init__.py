@@ -1,14 +1,26 @@
-from .core import Context, Worker, Pipeline, Conditional, Switch, Loop, Graph, END
+"""
+thinkagain - A minimal agent framework where everything is a Graph.
 
-__version__ = "0.1.0"
+Core concepts:
+- Context: Shared state that flows through execution
+- Executable: Base interface for all components
+- Worker: Leaf computations (your business logic)
+- Graph: DAG with cycles and conditional routing
+- Pipeline: Sequential graphs (syntactic sugar)
+
+Everything composes with >> operator.
+Graphs can contain graphs (subgraphs) naturally.
+"""
+
+from .core import Context, Executable, Worker, Graph, END, Pipeline
+
+__version__ = "0.1.1"
 
 __all__ = [
     "Context",
+    "Executable",
     "Worker",
-    "Pipeline",
-    "Conditional",
-    "Switch",
-    "Loop",
     "Graph",
     "END",
+    "Pipeline",
 ]
