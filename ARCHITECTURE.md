@@ -1,4 +1,4 @@
-# thinkagain Architecture v0.2.0
+# thinkagain Architecture
 
 ## Philosophy: Everything is a Graph
 
