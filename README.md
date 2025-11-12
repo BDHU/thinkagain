@@ -1,8 +1,8 @@
 <div align="center" id="sglangtop">
 <img src="assets/logo.svg" alt="logo" width="400" margin="10px"></img>
 
-![PyPI version](https://img.shields.io/pypi/v/thinkagain.svg)
-![License](https://img.shields.io/pypi/l/thinkagain.svg)
+[![PyPI version](https://img.shields.io/pypi/v/thinkagain.svg)](https://pypi.org/project/thinkagain/)
+[![License](https://img.shields.io/pypi/l/thinkagain.svg)](https://github.com/BDHU/thinkagain/blob/main/LICENSE)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/BDHU/thinkagain)
 </div>
 
