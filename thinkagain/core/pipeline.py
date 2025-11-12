@@ -225,6 +225,15 @@ class Switch:
         self.default = branch
         return self
 
+    def default(self, branch: Any) -> 'Switch':
+        """
+        Alias for set_default to keep builder-style API ergonomic.
+
+        Mirrors the usage shown in docs/examples where `.default(...)`
+        is chained after one or more `.case(...)` calls.
+        """
+        return self.set_default(branch)
+
     def __call__(self, ctx: Context) -> Context:
         """Evaluate conditions and execute first matching branch (synchronous). Alias for run()."""
         return self.run(ctx)

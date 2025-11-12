@@ -18,7 +18,7 @@ Each graph supports both synchronous and asynchronous execution:
 """
 
 import asyncio
-from typing import Callable, Dict, Tuple, Union, Optional, Any, Iterator, Generator
+from typing import Callable, Dict, Tuple, Union, Optional, Any, Generator
 from .context import Context
 import warnings
 
@@ -262,50 +262,15 @@ class Graph:
                 ctx.log(f"[Graph] Reached END after {step} steps")
                 break
 
-            # Execute current node
-            worker = self.nodes[current]
-            ctx.log(f"[Graph] Executing node: {current}")
-
-            try:
-                ctx = worker(ctx)
-            except Exception as e:
-                ctx.log(f"[Graph] Error in node '{current}': {e}")
-                raise
-
+            ctx = self._execute_node(current, ctx)
             execution_path.append(current)
 
-            # Determine next node
-            if current not in self.edges:
-                ctx.log(f"[Graph] Node '{current}' has no outgoing edge, terminating")
+            next_node = self._resolve_next_node(current, ctx, termination_msg="terminating")
+
+            if next_node is None:
                 break
 
-            edge = self.edges[current]
-
-            if isinstance(edge, tuple):  # Conditional edge
-                route_fn, edge_map = edge
-
-                try:
-                    route_result = route_fn(ctx)
-                except Exception as e:
-                    ctx.log(f"[Graph] Error in routing function: {e}")
-                    raise
-
-                ctx.log(f"[Graph] Conditional routing from '{current}': '{route_result}'")
-
-                if route_result in edge_map:
-                    current = edge_map[route_result]
-                elif route_result == END:
-                    current = END
-                else:
-                    available = list(edge_map.keys()) + [END]
-                    raise ValueError(
-                        f"Route function returned '{route_result}' but no matching edge. "
-                        f"Available paths: {available}"
-                    )
-            else:  # Direct edge
-                next_node = edge
-                ctx.log(f"[Graph] Direct edge: '{current}' → '{next_node}'")
-                current = next_node
+            current = next_node
 
             # Check max_steps limit if set
             step += 1
@@ -350,58 +315,19 @@ class Graph:
                 ctx.log(f"[Graph] Reached END after {step} steps")
                 break
 
-            # Execute current node (await if async)
-            worker = self.nodes[current]
-            ctx.log(f"[Graph] Executing node: {current}")
-
-            try:
-                # Call acall() for async execution if available
-                if hasattr(worker, 'acall'):
-                    ctx = await worker.acall(ctx)
-                else:
-                    ctx = await worker(ctx)
-            except Exception as e:
-                ctx.log(f"[Graph] Error in node '{current}': {e}")
-                raise
-
+            ctx = await self._aexecute_node(current, ctx)
             execution_path.append(current)
 
-            # Determine next node
-            if current not in self.edges:
-                ctx.log(f"[Graph] Node '{current}' has no outgoing edge, terminating")
+            next_node = await self._resolve_next_node_async(
+                current,
+                ctx,
+                termination_msg="terminating"
+            )
+
+            if next_node is None:
                 break
 
-            edge = self.edges[current]
-
-            if isinstance(edge, tuple):  # Conditional edge
-                route_fn, edge_map = edge
-
-                try:
-                    # Allow async routing functions
-                    if asyncio.iscoroutinefunction(route_fn):
-                        route_result = await route_fn(ctx)
-                    else:
-                        route_result = route_fn(ctx)
-                except Exception as e:
-                    ctx.log(f"[Graph] Error in routing function: {e}")
-                    raise
-
-                ctx.log(f"[Graph] Conditional routing from '{current}': '{route_result}'")
-
-                if route_result in edge_map:
-                    current = edge_map[route_result]
-                elif route_result == END:
-                    current = END
-                else:
-                    available = list(edge_map.keys()) + [END]
-                    raise ValueError(
-                        f"Route function returned '{route_result}' but no matching edge. "
-                        f"Available paths: {available}"
-                    )
-            else:  # Direct edge
-                next_node = edge
-                ctx.log(f"[Graph] Direct edge: '{current}' → '{next_node}'")
-                current = next_node
+            current = next_node
 
             # Check max_steps limit if set
             step += 1
@@ -457,48 +383,8 @@ class Graph:
                 ctx.log(f"[Graph] Reached END after {step_count} steps")
                 break
 
-            # Execute current node
-            worker = self.nodes[current]
-            ctx.log(f"[Graph] Executing node: {current}")
-
-            try:
-                ctx = worker(ctx)
-            except Exception as e:
-                ctx.log(f"[Graph] Error in node '{current}': {e}")
-                raise
-
-            # Determine next node
-            next_node = None
-            if current not in self.edges:
-                ctx.log(f"[Graph] Node '{current}' has no outgoing edge, will terminate")
-                next_node = None
-            else:
-                edge = self.edges[current]
-
-                if isinstance(edge, tuple):  # Conditional edge
-                    route_fn, edge_map = edge
-
-                    try:
-                        route_result = route_fn(ctx)
-                    except Exception as e:
-                        ctx.log(f"[Graph] Error in routing function: {e}")
-                        raise
-
-                    ctx.log(f"[Graph] Conditional routing from '{current}': '{route_result}'")
-
-                    if route_result in edge_map:
-                        next_node = edge_map[route_result]
-                    elif route_result == END:
-                        next_node = END
-                    else:
-                        available = list(edge_map.keys()) + [END]
-                        raise ValueError(
-                            f"Route function returned '{route_result}' but no matching edge. "
-                            f"Available paths: {available}"
-                        )
-                else:  # Direct edge
-                    next_node = edge
-                    ctx.log(f"[Graph] Direct edge: '{current}' → '{next_node}'")
+            ctx = self._execute_node(current, ctx)
+            next_node = self._resolve_next_node(current, ctx, termination_msg="will terminate")
 
             # Yield control to caller with current state
             yield StepResult(node=current, ctx=ctx, next_node=next_node)
@@ -552,56 +438,12 @@ class Graph:
                 ctx.log(f"[Graph] Reached END after {step_count} steps")
                 break
 
-            # Execute current node (await if async)
-            worker = self.nodes[current]
-            ctx.log(f"[Graph] Executing node: {current}")
-
-            try:
-                # Call acall() for async execution if available
-                if hasattr(worker, 'acall'):
-                    ctx = await worker.acall(ctx)
-                else:
-                    ctx = await worker(ctx)
-            except Exception as e:
-                ctx.log(f"[Graph] Error in node '{current}': {e}")
-                raise
-
-            # Determine next node
-            next_node = None
-            if current not in self.edges:
-                ctx.log(f"[Graph] Node '{current}' has no outgoing edge, will terminate")
-                next_node = None
-            else:
-                edge = self.edges[current]
-
-                if isinstance(edge, tuple):  # Conditional edge
-                    route_fn, edge_map = edge
-
-                    try:
-                        # Allow async routing functions
-                        if asyncio.iscoroutinefunction(route_fn):
-                            route_result = await route_fn(ctx)
-                        else:
-                            route_result = route_fn(ctx)
-                    except Exception as e:
-                        ctx.log(f"[Graph] Error in routing function: {e}")
-                        raise
-
-                    ctx.log(f"[Graph] Conditional routing from '{current}': '{route_result}'")
-
-                    if route_result in edge_map:
-                        next_node = edge_map[route_result]
-                    elif route_result == END:
-                        next_node = END
-                    else:
-                        available = list(edge_map.keys()) + [END]
-                        raise ValueError(
-                            f"Route function returned '{route_result}' but no matching edge. "
-                            f"Available paths: {available}"
-                        )
-                else:  # Direct edge
-                    next_node = edge
-                    ctx.log(f"[Graph] Direct edge: '{current}' → '{next_node}'")
+            ctx = await self._aexecute_node(current, ctx)
+            next_node = await self._resolve_next_node_async(
+                current,
+                ctx,
+                termination_msg="will terminate"
+            )
 
             # Yield control to caller with current state
             yield StepResult(node=current, ctx=ctx, next_node=next_node)
@@ -620,6 +462,104 @@ class Graph:
                 break
 
         ctx.log(f"[Graph] Completed: {self.name} (step-by-step mode)")
+
+    def _execute_node(self, node_name: str, ctx: Context) -> Context:
+        """Execute a node synchronously with consistent logging/error handling."""
+        worker = self.nodes[node_name]
+        ctx.log(f"[Graph] Executing node: {node_name}")
+
+        try:
+            return worker(ctx)
+        except Exception as e:
+            ctx.log(f"[Graph] Error in node '{node_name}': {e}")
+            raise
+
+    async def _aexecute_node(self, node_name: str, ctx: Context) -> Context:
+        """Execute a node asynchronously with consistent logging/error handling."""
+        worker = self.nodes[node_name]
+        ctx.log(f"[Graph] Executing node: {node_name}")
+
+        try:
+            if hasattr(worker, 'acall'):
+                return await worker.acall(ctx)
+            return await worker(ctx)
+        except Exception as e:
+            ctx.log(f"[Graph] Error in node '{node_name}': {e}")
+            raise
+
+    def _resolve_next_node(
+        self,
+        current: str,
+        ctx: Context,
+        termination_msg: str
+    ) -> Optional[str]:
+        """Resolve the next node for synchronous execution."""
+        edge = self.edges.get(current)
+
+        if edge is None:
+            ctx.log(f"[Graph] Node '{current}' has no outgoing edge, {termination_msg}")
+            return None
+
+        if isinstance(edge, tuple):
+            route_fn, edge_map = edge
+
+            try:
+                route_result = route_fn(ctx)
+            except Exception as e:
+                ctx.log(f"[Graph] Error in routing function: {e}")
+                raise
+
+            ctx.log(f"[Graph] Conditional routing from '{current}': '{route_result}'")
+            return self._handle_route_result(route_result, edge_map)
+
+        ctx.log(f"[Graph] Direct edge: '{current}' → '{edge}'")
+        return edge
+
+    async def _resolve_next_node_async(
+        self,
+        current: str,
+        ctx: Context,
+        termination_msg: str
+    ) -> Optional[str]:
+        """Resolve the next node for asynchronous execution."""
+        edge = self.edges.get(current)
+
+        if edge is None:
+            ctx.log(f"[Graph] Node '{current}' has no outgoing edge, {termination_msg}")
+            return None
+
+        if isinstance(edge, tuple):
+            route_fn, edge_map = edge
+
+            try:
+                if asyncio.iscoroutinefunction(route_fn):
+                    route_result = await route_fn(ctx)
+                else:
+                    route_result = route_fn(ctx)
+            except Exception as e:
+                ctx.log(f"[Graph] Error in routing function: {e}")
+                raise
+
+            ctx.log(f"[Graph] Conditional routing from '{current}': '{route_result}'")
+            return self._handle_route_result(route_result, edge_map)
+
+        ctx.log(f"[Graph] Direct edge: '{current}' → '{edge}'")
+        return edge
+
+    @staticmethod
+    def _handle_route_result(route_result: str, edge_map: Dict[str, str]) -> str:
+        """Translate routing decision into the next node, validating the path."""
+        if route_result in edge_map:
+            return edge_map[route_result]
+
+        if route_result == END:
+            return END
+
+        available = list(edge_map.keys()) + [END]
+        raise ValueError(
+            f"Route function returned '{route_result}' but no matching edge. "
+            f"Available paths: {available}"
+        )
 
     def _validate(self):
         """Validate graph structure (called lazily on first execution)."""
