@@ -9,6 +9,7 @@ import asyncio
 from typing import List, Callable, Optional
 from .context import Context
 from .worker import Worker
+from .executable import run_sync
 
 
 class Parallel(Worker):
@@ -70,40 +71,32 @@ class Parallel(Worker):
         self.workers = workers
         self.merge_strategy = merge_strategy or self._default_merge
 
-    async def acall(self, ctx: Context) -> Context:
-        """Execute all workers in parallel with same input context (async only)."""
-        ctx.log(f"[{self.name}] Starting {len(self.workers)} workers in parallel")
+    async def arun(self, ctx: Context) -> Context:
+        """Execute all workers concurrently and merge their results."""
+        self._log(ctx, f"Starting {len(self.workers)} workers in parallel")
 
-        # Each worker gets a copy of the input context
-        # Call acall() if available, otherwise call __call__
-        tasks = []
-        for worker in self.workers:
-            if hasattr(worker, 'acall'):
-                tasks.append(worker.acall(ctx.copy()))
-            else:
-                tasks.append(worker(ctx.copy()))
-
-        # Execute all workers concurrently
+        tasks = [self._execute_worker(worker, ctx.copy()) for worker in self.workers]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Log any exceptions
-        for i, result in enumerate(results):
+        successful_results = []
+        for idx, result in enumerate(results):
             if isinstance(result, Exception):
-                worker_name = self.workers[i].name if hasattr(self.workers[i], 'name') else f"worker_{i}"
-                ctx.log(f"[{self.name}] {worker_name} failed: {result}")
-
-        # Filter out exceptions, keep only successful results
-        successful_results = [r for r in results if not isinstance(r, Exception)]
+                worker_name = getattr(self.workers[idx], 'name', f"worker_{idx}")
+                self._log(ctx, f"{worker_name} failed: {result}")
+            else:
+                successful_results.append(result)
 
         if not successful_results:
-            ctx.log(f"[{self.name}] All workers failed, returning original context")
+            self._log(ctx, "All workers failed, returning original context")
             return ctx
 
-        # Merge results using strategy
         merged_ctx = self.merge_strategy(ctx, successful_results)
-
-        ctx.log(f"[{self.name}] Completed parallel execution")
+        self._log(ctx, "Completed parallel execution")
         return merged_ctx
+
+    async def acall(self, ctx: Context) -> Context:
+        """Backward-compatible alias for ``arun``."""
+        return await self.arun(ctx)
 
     def _default_merge(self, original_ctx: Context, results: List[Context]) -> Context:
         """
@@ -130,6 +123,17 @@ class Parallel(Worker):
         merged.documents = all_documents
         merged.log(f"[{self.name}] Merged {len(all_documents)} documents from {len(results)} workers")
         return merged
+
+    async def _execute_worker(self, worker: Worker, ctx: Context) -> Context:
+        """Run a worker that may only provide sync or async APIs."""
+        if hasattr(worker, 'arun'):
+            return await worker.arun(ctx)
+        if asyncio.iscoroutinefunction(worker):
+            return await worker(ctx)
+        return await run_sync(worker, ctx)
+
+    def _log(self, ctx: Context, message: str) -> None:
+        ctx.log(f"[{self.name}] {message}")
 
     def to_dict(self) -> dict:
         """Export parallel structure as dictionary."""

@@ -1,12 +1,18 @@
+"""
+Worker - base class for leaf computations.
+
+Workers are the fundamental units of computation in thinkagain.
+They transform Context and can be composed with other executables.
+
+A worker is just an Executable that you implement with business logic.
+"""
+
 import re
-from typing import Optional, Callable, List, Union, TYPE_CHECKING
 from .context import Context
-
-if TYPE_CHECKING:
-    from .pipeline import Pipeline
+from .executable import Executable
 
 
-class Worker:
+class Worker(Executable):
     """
     Base class for workers in the agent framework.
 
@@ -22,8 +28,9 @@ class Worker:
 
     Supports both synchronous and asynchronous execution:
     - Implement __call__(self, ctx) for sync workers
-    - Implement async acall(self, ctx) for async workers
-    - Can implement both for dual support
+    - Implement async arun(self, ctx) for async workers
+    - Executable handles the appropriate bridging when only one of them
+      is provided
 
     Synchronous example:
         class VectorDBWorker(Worker):
@@ -34,7 +41,7 @@ class Worker:
 
     Asynchronous example:
         class AsyncVectorDBWorker(Worker):
-            async def acall(self, ctx: Context) -> Context:
+            async def arun(self, ctx: Context) -> Context:
                 ctx.documents = await self.search_async(ctx.query)
                 ctx.log(f"[{self.name}] Retrieved {len(ctx.documents)} docs")
                 return ctx
@@ -45,15 +52,15 @@ class Worker:
                 ctx.documents = self.search(ctx.query)
                 return ctx
 
-            async def acall(self, ctx: Context) -> Context:
+            async def arun(self, ctx: Context) -> Context:
                 ctx.documents = await self.search_async(ctx.query)
                 return ctx
 
     Usage:
         # Compose workers into pipelines
         pipeline = vector_db >> reranker >> generator
-        result = pipeline.run(ctx)        # sync
-        result = await pipeline.arun(ctx) # async
+        result = await pipeline.arun(ctx)  # async
+        result = pipeline(ctx)             # sync
     """
 
     def __init__(self, name: str = None):
@@ -64,7 +71,11 @@ class Worker:
             name: Identifier for this worker (used in logging).
                   If not provided, auto-generates from class name.
         """
-        self.name = name or self._generate_name()
+        # Generate name from class if not provided
+        if name is None:
+            name = self._generate_name()
+
+        super().__init__(name)
 
     def _generate_name(self) -> str:
         """
@@ -94,41 +105,6 @@ class Worker:
             NotImplementedError: Subclasses must implement this
         """
         raise NotImplementedError(f"Worker '{self.name}' must implement __call__")
-
-    async def acall(self, ctx: Context) -> Context:
-        """
-        Process the context and return modified context (asynchronous).
-
-        Args:
-            ctx: Input context
-
-        Returns:
-            Modified context
-
-        Raises:
-            NotImplementedError: Subclasses must implement this
-        """
-        raise NotImplementedError(f"Worker '{self.name}' must implement async acall")
-
-    def __rshift__(self, other: 'Worker') -> 'Pipeline':
-        """
-        Compose workers using >> operator.
-
-        Args:
-            other: Next worker/pipeline in the chain
-
-        Returns:
-            Pipeline containing both workers
-
-        Example:
-            pipeline = worker1 >> worker2 >> worker3
-        """
-        # Import at runtime to avoid circular dependency (Pipeline imports Worker)
-        from .pipeline import Pipeline
-
-        if isinstance(other, Pipeline):
-            return Pipeline(nodes=[self] + other.nodes)
-        return Pipeline(nodes=[self, other])
 
     def to_dict(self) -> dict:
         """Export worker structure as dictionary."""

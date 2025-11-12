@@ -4,13 +4,20 @@ Graph Examples - Self-Correcting RAG Agent
 Demonstrates Graph with cycles for complex workflows that require:
 - Self-reflection and iterative refinement
 - Conditional routing based on quality checks
-- Loops back to previous nodes (unlike Pipeline)
+- Loops back to previous nodes
+
+This example shows:
+- Building graphs with cycles
+- Conditional routing
+- Async execution
+- Visualization
 
 Run with: python examples/graph_examples.py
 """
 
 import sys
 import json
+import asyncio
 from pathlib import Path
 
 # Add parent directory to path
@@ -149,7 +156,7 @@ def build_self_correcting_rag() -> Graph:
 # Example Usage
 # ============================================================================
 
-def main():
+async def main():
     print("=" * 70)
     print("Self-Correcting RAG Agent with Cycles")
     print("=" * 70)
@@ -169,12 +176,12 @@ def main():
     print(json.dumps(agent.to_dict(), indent=2))
     print("-" * 70)
 
-    # Execute the graph
+    # Execute the graph (async-first!)
     print("\n🚀 Executing Agent:")
     print("-" * 70)
 
     ctx = Context(query="What is machine learning?")
-    result = agent.run(ctx)
+    result = await agent.arun(ctx)
 
     print("\n" + "=" * 70)
     print("✅ Execution Results")
@@ -188,18 +195,18 @@ def main():
     print(f"🛤️  Execution Path: {' → '.join(result.execution_path)}")
     print(f"📊 Total Steps: {result.total_steps}")
 
-    print(f"\n📜 Execution History:")
+    print(f"\n📜 Execution Log (last 10 entries):")
     print("-" * 70)
-    for entry in result.history:
+    for entry in result.history[-10:]:
         print(f"  {entry}")
 
     print("\n" + "=" * 70)
     print("🎯 Key Takeaway")
     print("=" * 70)
     print("The agent automatically cycled back to retrieval when quality was low,")
-    print("demonstrating true cycle support that Pipeline cannot achieve!")
+    print("demonstrating graphs with cycles and conditional routing!")
     print("=" * 70)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
