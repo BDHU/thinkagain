@@ -1,4 +1,12 @@
-# ThinkAgain
+<div align="center" id="sglangtop">
+<img src="assets/logo.svg" alt="logo" width="400" margin="10px"></img>
+
+![PyPI version](https://img.shields.io/pypi/v/thinkagain.svg)
+![License](https://img.shields.io/pypi/l/thinkagain.svg)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/BDHU/thinkagain)
+</div>
+
+# About
 
 ThinkAgain is a minimal, debuggable agent framework for building explicit pipelines and computation graphs. It captures execution plans before they run so you can reason about complex control flow without all the hidden state most orchestration libraries introduce.
 
