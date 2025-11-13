@@ -32,6 +32,12 @@ To contribute or experiment against the local sources, use an editable install:
 pip install -e .
 ```
 
+If you are using [uv](https://github.com/astral-sh/uv), simply do:
+
+```bash
+uv add thinkagain
+```
+
 ## Quick Start
 
 ```python
