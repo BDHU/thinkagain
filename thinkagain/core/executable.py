@@ -62,19 +62,19 @@ class Executable:
         return self.__class__.__name__.lower()
 
     @staticmethod
-    def _overrides(instance: 'Executable', method_name: str) -> bool:
+    def _overrides(instance: "Executable", method_name: str) -> bool:
         """Return True when ``method_name`` is implemented by a subclass."""
         base_impl = getattr(Executable, method_name, None)
         current_impl = getattr(type(instance), method_name, None)
         return current_impl is not None and current_impl is not base_impl
 
-    def __call__(self, ctx: 'Context') -> 'Context':
+    def __call__(self, ctx: "Context") -> "Context":
         """Execute synchronously, falling back to async implementation if needed."""
-        if self._overrides(self, 'arun'):
+        if self._overrides(self, "arun"):
             return asyncio.run(self.arun(ctx))
         raise NotImplementedError(f"{self.__class__.__name__} must implement __call__")
 
-    async def arun(self, ctx: 'Context') -> 'Context':
+    async def arun(self, ctx: "Context") -> "Context":
         """
         Execute asynchronously.
 
@@ -87,12 +87,12 @@ class Executable:
         Note:
             Default implementation wraps __call__() for sync components
         """
-        if self._overrides(self, '__call__'):
+        if self._overrides(self, "__call__"):
             return await run_sync(self.__call__, ctx)
 
         raise NotImplementedError(f"{self.__class__.__name__} must implement arun")
 
-    def __rshift__(self, other) -> 'Graph':
+    def __rshift__(self, other) -> "Graph":
         """
         Compose executables using >> operator.
 
@@ -135,10 +135,7 @@ class Executable:
 
     def to_dict(self) -> dict:
         """Export structure as dictionary for inspection/serialization."""
-        return {
-            "type": self.__class__.__name__,
-            "name": self.name
-        }
+        return {"type": self.__class__.__name__, "name": self.name}
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(name='{self.name}')"

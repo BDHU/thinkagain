@@ -1,4 +1,5 @@
 """Regression tests for execution-time cycles."""
+
 import asyncio
 
 import pytest

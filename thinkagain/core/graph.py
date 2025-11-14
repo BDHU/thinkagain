@@ -73,7 +73,7 @@ class Graph(Executable):
         self.entry_point: Optional[str] = None
         self.max_steps = max_steps
 
-    def add_node(self, name: str, executable: Any) -> 'Graph':
+    def add_node(self, name: str, executable: Any) -> "Graph":
         """
         Add a node to the graph.
 
@@ -111,7 +111,7 @@ class Graph(Executable):
 
         return self
 
-    def set_entry(self, name: str) -> 'Graph':
+    def set_entry(self, name: str) -> "Graph":
         """
         Set the starting node for graph execution.
 
@@ -129,7 +129,7 @@ class Graph(Executable):
         self.entry_point = name
         return self
 
-    def add_edge(self, from_node: str, to_node: str) -> 'Graph':
+    def add_edge(self, from_node: str, to_node: str) -> "Graph":
         """
         Add a direct edge between two nodes.
 
@@ -158,11 +158,8 @@ class Graph(Executable):
         return self
 
     def add_conditional_edge(
-        self,
-        from_node: str,
-        route: Callable[[Context], str],
-        paths: Dict[str, str]
-    ) -> 'Graph':
+        self, from_node: str, route: Callable[[Context], str], paths: Dict[str, str]
+    ) -> "Graph":
         """
         Add a conditional edge that routes based on context state.
 
@@ -280,7 +277,11 @@ class Graph(Executable):
             Updated context after node execution
         """
         node = self.nodes[node_name]
-        descriptor = f"Entering subgraph: {node_name} ({node.name})" if isinstance(node, Graph) else f"Executing: {node_name}"
+        descriptor = (
+            f"Entering subgraph: {node_name} ({node.name})"
+            if isinstance(node, Graph)
+            else f"Executing: {node_name}"
+        )
         self._log(ctx, descriptor)
 
         try:
@@ -341,7 +342,9 @@ class Graph(Executable):
     def _validate(self):
         """Validate graph structure (called lazily on first execution)."""
         if self.entry_point is None:
-            raise ValueError("Entry point not set. Use set_entry() or add the first node.")
+            raise ValueError(
+                "Entry point not set. Use set_entry() or add the first node."
+            )
 
         # Detect unreachable nodes (warning only)
         reachable = self._find_reachable_nodes()
@@ -397,7 +400,7 @@ class Graph(Executable):
         for node_name, node in self.nodes.items():
             if isinstance(node, Graph):
                 label = f"{node_name}\\n(subgraph: {node.name})"
-                lines.append(f"    {node_name}[[\"{label}\"]]")
+                lines.append(f'    {node_name}[["{label}"]]')
             else:
                 lines.append(f"    {node_name}[{node_name}]")
 
@@ -417,7 +420,7 @@ class Graph(Executable):
 
     async def _invoke(self, node: Any, ctx: Context) -> Context:
         """Execute any supported node type."""
-        if hasattr(node, 'arun'):
+        if hasattr(node, "arun"):
             return await node.arun(ctx)
         if asyncio.iscoroutinefunction(node):
             return await node(ctx)
@@ -438,11 +441,13 @@ class Graph(Executable):
         for k, v in self.edges.items():
             if isinstance(v, tuple):
                 route_fn, edge_map = v
-                fn_name = route_fn.__name__ if hasattr(route_fn, '__name__') else "lambda"
+                fn_name = (
+                    route_fn.__name__ if hasattr(route_fn, "__name__") else "lambda"
+                )
                 edges_dict[k] = {
                     "type": "conditional",
                     "function": fn_name,
-                    "paths": edge_map
+                    "paths": edge_map,
                 }
             else:
                 edges_dict[k] = {"type": "direct", "to": v}
@@ -453,14 +458,15 @@ class Graph(Executable):
             "entry_point": self.entry_point,
             "max_steps": self.max_steps,
             "nodes": {
-                name: node.to_dict() if hasattr(node, 'to_dict')
+                name: node.to_dict()
+                if hasattr(node, "to_dict")
                 else {"type": "callable", "name": str(node)}
                 for name, node in self.nodes.items()
             },
-            "edges": edges_dict
+            "edges": edges_dict,
         }
 
-    def compile(self, flatten: bool = False) -> 'CompiledGraph':
+    def compile(self, flatten: bool = False) -> "CompiledGraph":
         """
         Compile graph into executable representation.
 
@@ -503,7 +509,7 @@ class Graph(Executable):
         else:
             return self._compile_nested()
 
-    def _compile_nested(self) -> 'CompiledGraph':
+    def _compile_nested(self) -> "CompiledGraph":
         """
         Compile graph keeping subgraphs as black boxes.
 
@@ -522,10 +528,10 @@ class Graph(Executable):
             edges=self.edges.copy(),  # Shallow copy
             entry_point=self.entry_point,
             max_steps=self.max_steps,
-            is_flattened=False
+            is_flattened=False,
         )
 
-    def _compile_flat(self) -> 'CompiledGraph':
+    def _compile_flat(self) -> "CompiledGraph":
         """
         Compile graph with all subgraphs recursively inlined.
 
@@ -555,7 +561,9 @@ class Graph(Executable):
         new_entry = None
 
         # Process nodes in topological order (roughly)
-        def flatten_node(node_name: str, node: Any, prefix: str = "", visited_graphs: set = None) -> List[str]:
+        def flatten_node(
+            node_name: str, node: Any, prefix: str = "", visited_graphs: set = None
+        ) -> List[str]:
             """
             Flatten a single node, returning list of actual node names added.
 
@@ -595,7 +603,9 @@ class Graph(Executable):
 
                     # Flatten all subgraph nodes
                     for sub_node_name, sub_node in node.nodes.items():
-                        sub_added = flatten_node(sub_node_name, sub_node, subgraph_prefix, visited_graphs)
+                        sub_added = flatten_node(
+                            sub_node_name, sub_node, subgraph_prefix, visited_graphs
+                        )
                         added_nodes.extend(sub_added)
 
                     # Rewrite edges from subgraph
@@ -673,7 +683,7 @@ class Graph(Executable):
             edges=flat_edges,
             entry_point=new_entry,
             max_steps=self.max_steps,
-            is_flattened=True
+            is_flattened=True,
         )
 
     def __repr__(self) -> str:

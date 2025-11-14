@@ -55,7 +55,7 @@ class Parallel(Worker):
         self,
         workers: List[Worker],
         merge_strategy: Optional[Callable[[Context, List[Context]], Context]] = None,
-        name: str = "parallel"
+        name: str = "parallel",
     ):
         """
         Initialize parallel execution.
@@ -81,7 +81,7 @@ class Parallel(Worker):
         successful_results = []
         for idx, result in enumerate(results):
             if isinstance(result, Exception):
-                worker_name = getattr(self.workers[idx], 'name', f"worker_{idx}")
+                worker_name = getattr(self.workers[idx], "name", f"worker_{idx}")
                 self._log(ctx, f"{worker_name} failed: {result}")
             else:
                 successful_results.append(result)
@@ -117,16 +117,18 @@ class Parallel(Worker):
         all_documents = []
 
         for result in results:
-            if hasattr(result, 'documents') and result.documents:
+            if hasattr(result, "documents") and result.documents:
                 all_documents.extend(result.documents)
 
         merged.documents = all_documents
-        merged.log(f"[{self.name}] Merged {len(all_documents)} documents from {len(results)} workers")
+        merged.log(
+            f"[{self.name}] Merged {len(all_documents)} documents from {len(results)} workers"
+        )
         return merged
 
     async def _execute_worker(self, worker: Worker, ctx: Context) -> Context:
         """Run a worker that may only provide sync or async APIs."""
-        if hasattr(worker, 'arun'):
+        if hasattr(worker, "arun"):
             return await worker.arun(ctx)
         if asyncio.iscoroutinefunction(worker):
             return await worker(ctx)
@@ -141,10 +143,11 @@ class Parallel(Worker):
             "type": "Parallel",
             "name": self.name,
             "workers": [
-                worker.to_dict() if hasattr(worker, 'to_dict')
+                worker.to_dict()
+                if hasattr(worker, "to_dict")
                 else {"type": "Unknown", "name": str(worker)}
                 for worker in self.workers
-            ]
+            ],
         }
 
     def __repr__(self) -> str:

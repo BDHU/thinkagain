@@ -56,7 +56,7 @@ class CompiledGraph:
         edges: Dict[NodeName, EdgeTarget],
         entry_point: NodeName,
         max_steps: Optional[int] = None,
-        is_flattened: bool = False
+        is_flattened: bool = False,
     ):
         """
         Initialize compiled graph.
@@ -147,6 +147,7 @@ class CompiledGraph:
 
         # Different logging for subgraphs vs regular nodes
         from .graph import Graph
+
         if isinstance(node, Graph):
             self._log(ctx, f"Entering subgraph: {node_name} ({node.name})")
         elif isinstance(node, CompiledGraph):
@@ -209,7 +210,7 @@ class CompiledGraph:
 
     async def _invoke(self, node: Any, ctx: Context) -> Context:
         """Execute any supported node type."""
-        if hasattr(node, 'arun'):
+        if hasattr(node, "arun"):
             return await node.arun(ctx)
         if asyncio.iscoroutinefunction(node):
             return await node(ctx)
@@ -223,7 +224,11 @@ class CompiledGraph:
 
     def _log(self, ctx: Context, message: str) -> None:
         """Log with graph context."""
-        prefix = f"[CompiledGraph:{self.name}]" if self.is_flattened else f"[Graph:{self.name}]"
+        prefix = (
+            f"[CompiledGraph:{self.name}]"
+            if self.is_flattened
+            else f"[Graph:{self.name}]"
+        )
         ctx.log(f"{prefix} {message}")
 
     def visualize(self) -> str:
@@ -240,7 +245,7 @@ class CompiledGraph:
         for node_name, node in self.nodes.items():
             if isinstance(node, (Graph, CompiledGraph)):
                 label = f"{node_name}\\n(subgraph: {node.name})"
-                lines.append(f"    {node_name}[[\"{label}\"]]")
+                lines.append(f'    {node_name}[["{label}"]]')
             else:
                 lines.append(f"    {node_name}[{node_name}]")
 
@@ -260,4 +265,6 @@ class CompiledGraph:
 
     def __repr__(self) -> str:
         mode = "flat" if self.is_flattened else "nested"
-        return f"CompiledGraph(name='{self.name}', nodes={len(self.nodes)}, mode='{mode}')"
+        return (
+            f"CompiledGraph(name='{self.name}', nodes={len(self.nodes)}, mode='{mode}')"
+        )

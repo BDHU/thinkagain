@@ -1,4 +1,5 @@
 """Regression tests for self-referencing graph vulnerabilities."""
+
 import re
 
 import pytest
@@ -11,7 +12,9 @@ from thinkagain.core.context import Context
 class DummyWorker(Worker):
     """Simple worker for wiring graphs."""
 
-    async def arun(self, ctx: Context) -> Context:  # pragma: no cover - trivial passthrough
+    async def arun(
+        self, ctx: Context
+    ) -> Context:  # pragma: no cover - trivial passthrough
         return ctx
 
 

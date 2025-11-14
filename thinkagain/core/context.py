@@ -24,18 +24,18 @@ class Context:
         Args:
             **kwargs: Initial context data (e.g., query="What is ML?")
         """
-        object.__setattr__(self, '_data', kwargs)
-        object.__setattr__(self, '_history', [])
+        object.__setattr__(self, "_data", kwargs)
+        object.__setattr__(self, "_history", [])
 
     def __getattr__(self, key: str) -> Any:
         """Get attribute from context data."""
-        if key.startswith('_'):
+        if key.startswith("_"):
             return object.__getattribute__(self, key)
         return self._data.get(key)
 
     def __setattr__(self, key: str, value: Any):
         """Set attribute in context data."""
-        if key.startswith('_'):
+        if key.startswith("_"):
             object.__setattr__(self, key, value)
         else:
             self._data[key] = value
@@ -64,7 +64,7 @@ class Context:
     def __str__(self) -> str:
         return f"Context with {len(self._data)} fields: {list(self._data.keys())}"
 
-    def copy(self) -> 'Context':
+    def copy(self) -> "Context":
         """
         Create a shallow copy of the context.
 
