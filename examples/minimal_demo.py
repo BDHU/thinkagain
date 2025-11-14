@@ -26,6 +26,7 @@ from thinkagain import Context, Worker, Graph, Pipeline, END
 # Basic workers reused across the scenarios below
 # -----------------------------------------------------------------------------
 
+
 class RetrieveDocs(Worker):
     """Simulate document retrieval from a knowledge source."""
 
@@ -36,7 +37,9 @@ class RetrieveDocs(Worker):
         # Slowly increase recall on each retry to illustrate graph loops
         doc_count = min(3, 1 + attempt)
         ctx.documents = [f"{ctx.query} fact #{i}" for i in range(1, doc_count + 1)]
-        ctx.log(f"[{self.name}] Retrieved {len(ctx.documents)} docs (attempt {attempt})")
+        ctx.log(
+            f"[{self.name}] Retrieved {len(ctx.documents)} docs (attempt {attempt})"
+        )
         return ctx
 
 
@@ -85,6 +88,7 @@ class RefineQuery(Worker):
 # Demo 1: Sequential pipelines
 # -----------------------------------------------------------------------------
 
+
 def sequential_pipeline_demo() -> None:
     print("\n" + "=" * 72)
     print("1) Sequential pipelines with >> operator")
@@ -109,6 +113,7 @@ def sequential_pipeline_demo() -> None:
 # -----------------------------------------------------------------------------
 # Demo 2: Graphs with conditional routing
 # -----------------------------------------------------------------------------
+
 
 def build_self_correcting_graph() -> Graph:
     graph = Graph(name="self_correcting_rag")
@@ -148,7 +153,9 @@ async def graph_demo() -> None:
     result = await agent.arun(ctx)
 
     print(f"Answer: {result.answer}")
-    print(f"Quality: {result.quality:.2f} after {result.retrieval_attempt} retrieval attempts")
+    print(
+        f"Quality: {result.quality:.2f} after {result.retrieval_attempt} retrieval attempts"
+    )
     print(f"Execution path: {' → '.join(result.execution_path)}")
     print("\nGraph structure (Mermaid):")
     print(agent.visualize())
@@ -157,6 +164,7 @@ async def graph_demo() -> None:
 # -----------------------------------------------------------------------------
 # Demo 3: Composition + compile()
 # -----------------------------------------------------------------------------
+
 
 def build_retrieval_stage() -> Graph:
     return RetrieveDocs() >> RerankDocs()
@@ -188,6 +196,7 @@ async def composition_and_compile_demo() -> None:
 # -----------------------------------------------------------------------------
 # Entrypoint
 # -----------------------------------------------------------------------------
+
 
 async def async_main() -> None:
     await graph_demo()

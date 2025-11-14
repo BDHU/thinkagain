@@ -87,8 +87,8 @@ class Worker(Executable):
         """
         class_name = self.__class__.__name__
         # Convert CamelCase to snake_case
-        name = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', class_name)
-        name = re.sub('([a-z0-9])([A-Z])', r'\1_\2', name).lower()
+        name = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", class_name)
+        name = re.sub("([a-z0-9])([A-Z])", r"\1_\2", name).lower()
         return name
 
     def __call__(self, ctx: Context) -> Context:
@@ -108,11 +108,7 @@ class Worker(Executable):
 
     def to_dict(self) -> dict:
         """Export worker structure as dictionary."""
-        return {
-            "type": "Worker",
-            "name": self.name,
-            "class": self.__class__.__name__
-        }
+        return {"type": "Worker", "name": self.name, "class": self.__class__.__name__}
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(name='{self.name}')"
