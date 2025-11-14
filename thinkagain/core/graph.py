@@ -33,11 +33,11 @@ Example - Self-correcting RAG with cycle:
     result = await graph.arun(ctx)
 """
 
-import asyncio
 from collections import deque
 from typing import Callable, Dict, Optional, Any, List
 from .context import Context
-from .executable import Executable, run_sync
+from .executable import Executable
+from .runtime import EdgeTarget, execute_graph
 import warnings
 
 
@@ -69,7 +69,7 @@ class Graph(Executable):
         """
         super().__init__(name)
         self.nodes: Dict[str, Any] = {}  # node_name -> executable
-        self.edges: Dict[str, Any] = {}  # node_name -> next | (route_fn, paths)
+        self.edges: Dict[str, EdgeTarget] = {}  # node_name -> next | (route_fn, paths)
         self.entry_point: Optional[str] = None
         self.max_steps = max_steps
 
@@ -219,125 +219,15 @@ class Graph(Executable):
         # Lazy validation on first execution
         self._validate()
 
-        current = self.entry_point
-        execution_path = []
-
-        self._log(ctx, "Starting execution")
-        self._log(ctx, f"Entry point: {current}")
-
-        step = 0
-        while True:
-            if current == END or current is None:
-                self._log(ctx, f"Reached END after {step} steps")
-                break
-
-            ctx = await self._execute_node(current, ctx)
-            execution_path.append(current)
-
-            next_node = await self._resolve_next_node(current, ctx)
-
-            if next_node is None or next_node == END:
-                break
-
-            current = next_node
-            step += 1
-
-            # Check max_steps limit if set
-            if self.max_steps is not None and step >= self.max_steps:
-                self._log(ctx, f"WARNING: Terminated after max_steps={self.max_steps}")
-                self._log(ctx, "This may indicate an infinite loop")
-                break
-
-        # Store execution metadata
-        ctx.execution_path = execution_path
-        ctx.total_steps = len(execution_path)
-
-        self._log(ctx, "Completed execution")
-        self._log(ctx, f"Total steps: {ctx.total_steps}")
-        path_display = " → ".join(execution_path) or "(none)"
-        self._log(ctx, f"Path: {path_display}")
-
-        return ctx
-
-    async def _execute_node(self, node_name: str, ctx: Context) -> Context:
-        """
-        Execute a single node.
-
-        Automatically handles:
-        - Workers
-        - Subgraphs (nested graphs)
-        - Pipelines (sequential graphs)
-        - Plain callables
-
-        Args:
-            node_name: Name of node to execute
-            ctx: Current context
-
-        Returns:
-            Updated context after node execution
-        """
-        node = self.nodes[node_name]
-        descriptor = (
-            f"Entering subgraph: {node_name} ({node.name})"
-            if isinstance(node, Graph)
-            else f"Executing: {node_name}"
+        return await execute_graph(
+            ctx=ctx,
+            nodes=self.nodes,
+            edges=self.edges,
+            entry_point=self.entry_point,
+            max_steps=self.max_steps,
+            end_token=END,
+            log_prefix=f"[Graph:{self.name}]",
         )
-        self._log(ctx, descriptor)
-
-        try:
-            return await self._invoke(node, ctx)
-        except Exception as e:
-            self._log(ctx, f"Error in node '{node_name}': {e}")
-            raise
-
-    async def _resolve_next_node(self, current: str, ctx: Context) -> Optional[str]:
-        """
-        Resolve the next node based on edges.
-
-        Handles both direct edges and conditional routing.
-
-        Args:
-            current: Current node name
-            ctx: Current context
-
-        Returns:
-            Name of next node, END, or None
-        """
-        edge = self.edges.get(current)
-
-        if edge is None:
-            self._log(ctx, f"Node '{current}' has no outgoing edge, terminating")
-            return None
-
-        # Conditional edge
-        if isinstance(edge, tuple):
-            route_fn, edge_map = edge
-
-            try:
-                # Support async route functions
-                route_result = await self._call_route(route_fn, ctx)
-            except Exception as e:
-                self._log(ctx, f"Error in routing function: {e}")
-                raise
-
-            self._log(ctx, f"Conditional route from '{current}': '{route_result}'")
-
-            # Validate and return
-            if route_result in edge_map:
-                return edge_map[route_result]
-
-            if route_result == END:
-                return END
-
-            available = list(edge_map.keys()) + [END]
-            raise ValueError(
-                f"Route function returned '{route_result}' but no matching edge. "
-                f"Available paths: {available}"
-            )
-
-        # Direct edge
-        self._log(ctx, f"Direct edge: '{current}' → '{edge}'")
-        return edge
 
     def _validate(self):
         """Validate graph structure (called lazily on first execution)."""
@@ -417,23 +307,6 @@ class Graph(Executable):
                 lines.append(f"    {from_node} --> {target}")
 
         return "\n".join(lines)
-
-    async def _invoke(self, node: Any, ctx: Context) -> Context:
-        """Execute any supported node type."""
-        if hasattr(node, "arun"):
-            return await node.arun(ctx)
-        if asyncio.iscoroutinefunction(node):
-            return await node(ctx)
-        return await run_sync(node, ctx)
-
-    async def _call_route(self, route: Callable[[Context], str], ctx: Context) -> str:
-        """Run routing functions that may be sync or async."""
-        if asyncio.iscoroutinefunction(route):
-            return await route(ctx)
-        return route(ctx)
-
-    def _log(self, ctx: Context, message: str) -> None:
-        ctx.log(f"[Graph:{self.name}] {message}")
 
     def to_dict(self) -> dict:
         """Export graph structure as dictionary."""

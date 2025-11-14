@@ -24,7 +24,9 @@ classifiers = [
   "Topic :: Software Development :: Libraries",
   "Topic :: Software Development :: Libraries :: Application Frameworks",
 ]
-dependencies = []
+dependencies = [
+    "pytest>=8.4.2",
+]
 
 [project.urls]
 Homepage = "https://github.com/BDHU/thinkagain"
