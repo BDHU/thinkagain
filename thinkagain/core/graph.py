@@ -538,6 +538,9 @@ class Graph(Executable):
         Returns:
             CompiledGraph with flattened structure
 
+        Raises:
+            ValueError: If a cycle is detected in the graph hierarchy
+
         Example:
             # Before flattening:
             # graph: a -> subgraph(x -> y) -> b
@@ -552,7 +555,7 @@ class Graph(Executable):
         new_entry = None
 
         # Process nodes in topological order (roughly)
-        def flatten_node(node_name: str, node: Any, prefix: str = "") -> List[str]:
+        def flatten_node(node_name: str, node: Any, prefix: str = "", visited_graphs: set = None) -> List[str]:
             """
             Flatten a single node, returning list of actual node names added.
 
@@ -560,44 +563,66 @@ class Graph(Executable):
                 node_name: Original node name
                 node: The executable
                 prefix: Prefix for naming
+                visited_graphs: Set of graph IDs currently being processed (for cycle detection)
 
             Returns:
                 List of node names added to flat_nodes
+
+            Raises:
+                ValueError: If a subgraph cycle is detected
             """
+            if visited_graphs is None:
+                visited_graphs = set()
+
             full_name = f"{prefix}{node_name}" if prefix else node_name
 
             # If it's a Graph, recursively flatten it
             if isinstance(node, Graph):
-                added_nodes = []
-                subgraph_prefix = f"{full_name}__"
+                # Check for cycle: is this graph already being processed?
+                graph_id = id(node)
+                if graph_id in visited_graphs:
+                    raise ValueError(
+                        f"Subgraph cycle detected: graph '{node.name}' contains itself "
+                        f"directly or indirectly. Cannot flatten cyclic graph hierarchies."
+                    )
 
-                # Flatten all subgraph nodes
-                for sub_node_name, sub_node in node.nodes.items():
-                    sub_added = flatten_node(sub_node_name, sub_node, subgraph_prefix)
-                    added_nodes.extend(sub_added)
+                # Add this graph to visited set before recursing
+                visited_graphs.add(graph_id)
 
-                # Rewrite edges from subgraph
-                for from_node, edge in node.edges.items():
-                    prefixed_from = f"{subgraph_prefix}{from_node}"
+                try:
+                    added_nodes = []
+                    subgraph_prefix = f"{full_name}__"
 
-                    if isinstance(edge, tuple):
-                        # Conditional edge - rewrite paths
-                        route_fn, paths = edge
-                        new_paths = {}
-                        for key, to_node in paths.items():
-                            if to_node == END:
-                                new_paths[key] = END
-                            else:
-                                new_paths[key] = f"{subgraph_prefix}{to_node}"
-                        flat_edges[prefixed_from] = (route_fn, new_paths)
-                    else:
-                        # Direct edge
-                        if edge == END:
-                            flat_edges[prefixed_from] = END
+                    # Flatten all subgraph nodes
+                    for sub_node_name, sub_node in node.nodes.items():
+                        sub_added = flatten_node(sub_node_name, sub_node, subgraph_prefix, visited_graphs)
+                        added_nodes.extend(sub_added)
+
+                    # Rewrite edges from subgraph
+                    for from_node, edge in node.edges.items():
+                        prefixed_from = f"{subgraph_prefix}{from_node}"
+
+                        if isinstance(edge, tuple):
+                            # Conditional edge - rewrite paths
+                            route_fn, paths = edge
+                            new_paths = {}
+                            for key, to_node in paths.items():
+                                if to_node == END:
+                                    new_paths[key] = END
+                                else:
+                                    new_paths[key] = f"{subgraph_prefix}{to_node}"
+                            flat_edges[prefixed_from] = (route_fn, new_paths)
                         else:
-                            flat_edges[prefixed_from] = f"{subgraph_prefix}{edge}"
+                            # Direct edge
+                            if edge == END:
+                                flat_edges[prefixed_from] = END
+                            else:
+                                flat_edges[prefixed_from] = f"{subgraph_prefix}{edge}"
 
-                return added_nodes
+                    return added_nodes
+                finally:
+                    # Remove this graph from visited set after processing
+                    visited_graphs.discard(graph_id)
 
             else:
                 # Regular node - just add it
