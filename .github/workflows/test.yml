@@ -1,0 +1,14 @@
+name: Test
+on: [ push, pull_request ]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+      - name: Install deps
+        run: uv sync
+      - name: Run tests
+        run: uv run pytest
