@@ -35,7 +35,7 @@ Example - Self-correcting RAG with cycle:
 
 import asyncio
 from collections import deque
-from typing import Callable, Dict, Optional, Any
+from typing import Callable, Dict, Optional, Any, List
 from .context import Context
 from .executable import Executable, run_sync
 import warnings
@@ -459,6 +459,197 @@ class Graph(Executable):
             },
             "edges": edges_dict
         }
+
+    def compile(self, flatten: bool = False) -> 'CompiledGraph':
+        """
+        Compile graph into executable representation.
+
+        This validates the graph structure and returns an optimized,
+        immutable executor. Compilation happens once; execution can
+        happen many times.
+
+        Args:
+            flatten: If True, recursively inline all subgraphs into a
+                    flat structure. If False, keep subgraphs as black boxes.
+
+        Returns:
+            CompiledGraph ready for execution
+
+        Raises:
+            ValueError: If graph structure is invalid
+
+        Example:
+            # Build graph
+            graph = Graph()
+            graph.add_node("a", worker_a)
+            graph.add_node("b", subgraph_b)
+            graph.add_edge("a", "b")
+
+            # Compile with nested subgraphs (black box)
+            nested = graph.compile(flatten=False)
+            result = await nested.arun(ctx)
+
+            # Compile with flattened subgraphs (all nodes visible)
+            flat = graph.compile(flatten=True)
+            result = await flat.arun(ctx)
+
+            # Both execute correctly, just different structure
+        """
+        # Validate first
+        self._validate()
+
+        if flatten:
+            return self._compile_flat()
+        else:
+            return self._compile_nested()
+
+    def _compile_nested(self) -> 'CompiledGraph':
+        """
+        Compile graph keeping subgraphs as black boxes.
+
+        This is the simpler compilation path - just wrap the graph
+        in a CompiledGraph executor without structural changes.
+
+        Returns:
+            CompiledGraph with nested subgraph structure
+        """
+        from .compiled_graph import CompiledGraph
+
+        # Simple wrapper - no transformation needed
+        return CompiledGraph(
+            name=self.name,
+            nodes=self.nodes.copy(),  # Shallow copy
+            edges=self.edges.copy(),  # Shallow copy
+            entry_point=self.entry_point,
+            max_steps=self.max_steps,
+            is_flattened=False
+        )
+
+    def _compile_flat(self) -> 'CompiledGraph':
+        """
+        Compile graph with all subgraphs recursively inlined.
+
+        This flattens the graph structure by:
+        1. Recursively expanding all Graph nodes
+        2. Prefixing node names to avoid collisions
+        3. Rewriting conditional edges with new names
+        4. Creating a single flat execution graph
+
+        Returns:
+            CompiledGraph with flattened structure
+
+        Example:
+            # Before flattening:
+            # graph: a -> subgraph(x -> y) -> b
+            #
+            # After flattening:
+            # graph: a -> subgraph__x -> subgraph__y -> b
+        """
+        from .compiled_graph import CompiledGraph
+
+        flat_nodes = {}
+        flat_edges = {}
+        new_entry = None
+
+        # Process nodes in topological order (roughly)
+        def flatten_node(node_name: str, node: Any, prefix: str = "") -> List[str]:
+            """
+            Flatten a single node, returning list of actual node names added.
+
+            Args:
+                node_name: Original node name
+                node: The executable
+                prefix: Prefix for naming
+
+            Returns:
+                List of node names added to flat_nodes
+            """
+            full_name = f"{prefix}{node_name}" if prefix else node_name
+
+            # If it's a Graph, recursively flatten it
+            if isinstance(node, Graph):
+                added_nodes = []
+                subgraph_prefix = f"{full_name}__"
+
+                # Flatten all subgraph nodes
+                for sub_node_name, sub_node in node.nodes.items():
+                    sub_added = flatten_node(sub_node_name, sub_node, subgraph_prefix)
+                    added_nodes.extend(sub_added)
+
+                # Rewrite edges from subgraph
+                for from_node, edge in node.edges.items():
+                    prefixed_from = f"{subgraph_prefix}{from_node}"
+
+                    if isinstance(edge, tuple):
+                        # Conditional edge - rewrite paths
+                        route_fn, paths = edge
+                        new_paths = {}
+                        for key, to_node in paths.items():
+                            if to_node == END:
+                                new_paths[key] = END
+                            else:
+                                new_paths[key] = f"{subgraph_prefix}{to_node}"
+                        flat_edges[prefixed_from] = (route_fn, new_paths)
+                    else:
+                        # Direct edge
+                        if edge == END:
+                            flat_edges[prefixed_from] = END
+                        else:
+                            flat_edges[prefixed_from] = f"{subgraph_prefix}{edge}"
+
+                return added_nodes
+
+            else:
+                # Regular node - just add it
+                flat_nodes[full_name] = node
+                return [full_name]
+
+        # Flatten all top-level nodes
+        node_mapping = {}  # original name -> list of flattened names
+        for node_name, node in self.nodes.items():
+            flattened = flatten_node(node_name, node)
+            node_mapping[node_name] = flattened
+
+        # Rewrite top-level edges
+        for from_node, edge in self.edges.items():
+            # Get the LAST node from the flattened "from" node
+            # (the exit point of that subgraph, or the node itself)
+            from_names = node_mapping[from_node]
+            actual_from = from_names[-1] if from_names else from_node
+
+            if isinstance(edge, tuple):
+                # Conditional edge
+                route_fn, paths = edge
+                new_paths = {}
+                for key, to_node in paths.items():
+                    if to_node == END:
+                        new_paths[key] = END
+                    else:
+                        # Get FIRST node from flattened "to" node (entry point)
+                        to_names = node_mapping.get(to_node, [to_node])
+                        new_paths[key] = to_names[0] if to_names else to_node
+                flat_edges[actual_from] = (route_fn, new_paths)
+            else:
+                # Direct edge
+                if edge == END:
+                    flat_edges[actual_from] = END
+                else:
+                    to_names = node_mapping.get(edge, [edge])
+                    flat_edges[actual_from] = to_names[0] if to_names else edge
+
+        # Determine new entry point (first node of original entry)
+        if self.entry_point:
+            entry_names = node_mapping.get(self.entry_point, [self.entry_point])
+            new_entry = entry_names[0] if entry_names else self.entry_point
+
+        return CompiledGraph(
+            name=f"{self.name}_flat",
+            nodes=flat_nodes,
+            edges=flat_edges,
+            entry_point=new_entry,
+            max_steps=self.max_steps,
+            is_flattened=True
+        )
 
     def __repr__(self) -> str:
         return f"Graph(name='{self.name}', nodes={len(self.nodes)}, entry='{self.entry_point}')"

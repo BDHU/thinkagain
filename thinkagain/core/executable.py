@@ -96,6 +96,14 @@ class Executable:
         """
         Compose executables using >> operator.
 
+        This always treats both operands as black boxes, creating a simple
+        2-node sequential graph. This ensures associativity:
+            (A >> B) >> C  ≡  A >> (B >> C)
+
+        To flatten subgraphs, use compile():
+            pipeline = worker1 >> subgraph >> worker2
+            flat = pipeline.compile(flatten=True)
+
         Args:
             other: Next executable in the chain
 
@@ -103,41 +111,20 @@ class Executable:
             Graph containing both executables in sequence
 
         Example:
+            # Black-box composition (always)
             pipeline = worker1 >> worker2 >> graph1 >> worker3
+
+            # Execute with nested subgraphs
+            result = await pipeline.arun(ctx)
+
+            # Or compile flat for debugging
+            flat = pipeline.compile(flatten=True)
+            print(flat.visualize())
         """
         from .graph import Graph, END
 
-        # If other is already a graph, prepend self to it
-        if isinstance(other, Graph):
-            # Create new graph with self as first node
-            g = Graph(name=f"{self.name}_extended")
-            g.add_node("_0", self)
-            g.set_entry("_0")
-
-            # Add all nodes from other graph with new names
-            node_map = {}
-            for i, (node_name, node) in enumerate(other.nodes.items()):
-                new_name = f"_1_{node_name}"
-                g.add_node(new_name, node)
-                node_map[node_name] = new_name
-
-            # Connect self to other's entry
-            if other.entry_point:
-                g.add_edge("_0", node_map[other.entry_point])
-
-            # Copy edges with new names
-            for from_node, edge in other.edges.items():
-                if isinstance(edge, tuple):
-                    route_fn, paths = edge
-                    new_paths = {k: node_map.get(v, v) for k, v in paths.items()}
-                    g.add_conditional_edge(node_map[from_node], route_fn, new_paths)
-                else:
-                    to_node = edge if edge == END else node_map.get(edge, edge)
-                    g.add_edge(node_map[from_node], to_node)
-
-            return g
-
-        # Create simple sequential graph
+        # ALWAYS create simple sequential graph (black box)
+        # No special handling for Graph types - treat everything uniformly
         g = Graph(name=f"{self.name}_seq")
         g.add_node("_0", self)
         g.add_node("_1", other)

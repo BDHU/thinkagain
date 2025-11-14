@@ -125,19 +125,13 @@ result = graph.run(Context(query="What is ML?"))
 - `Context.history` records every log message emitted by workers and control-flow nodes.
 - `ctx.to_dict()` (or duck-typing with `ctx["key"]`) exposes the exact state passed between stages.
 - `Pipeline.visualize()` renders an ASCII tree; `Graph.to_dict()` gives a machine-readable plan.
-- `examples/graph_debugging.py` shows step-by-step execution and state inspection.
+- `examples/minimal_demo.py` prints both the execution logs and a Mermaid graph so you can see the state evolve.
 
 ## Examples
 
 ```bash
-# Pipelines: sync + async + branching + retry loop
-python examples/pipeline_examples.py
-
-# Graphs with cycles / self-correcting RAG
-python examples/graph_examples.py
-
-# Interactive graph debugging walkthrough
-python examples/graph_debugging.py
+# One-file tour of pipelines, graphs, and compile()
+python examples/minimal_demo.py
 ```
 
 ## Documentation

@@ -283,10 +283,7 @@ graph.add_node("postprocessor", postprocessor)
 
 ## Examples
 
-See:
-- [examples/subgraph_composition.py](examples/subgraph_composition.py) - Multi-agent system with subgraphs
-- [examples/graph_examples.py](examples/graph_examples.py) - Graph with cycles (needs update)
-- [examples/pipeline_examples.py](examples/pipeline_examples.py) - Sequential pipelines (needs update)
+- [examples/minimal_demo.py](examples/minimal_demo.py) - A tiny script that walks through pipelines, graphs with feedback loops, and compiled execution.
 
 ## Future Considerations
 
