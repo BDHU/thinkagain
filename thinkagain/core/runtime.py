@@ -107,8 +107,8 @@ async def _execute_node(
 
     try:
         return await _invoke(node, ctx)
-    except Exception as exc:  # pragma: no cover - passthrough
-        log(f"Error in node '{node_name}': {exc}")
+    except Exception as exc:  # pragma: no cover - logs and re-raises exceptions
+        log(f"Error in node '{node_name}' ({type(exc).__name__}): {exc}")
         raise
 
 
