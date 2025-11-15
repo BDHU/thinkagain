@@ -24,7 +24,9 @@ classifiers = [
   "Topic :: Software Development :: Libraries",
   "Topic :: Software Development :: Libraries :: Application Frameworks",
 ]
-dependencies = [
+
+[project.optional-dependencies]
+test = [
     "pytest>=8.4.2",
 ]
 
