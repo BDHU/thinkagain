@@ -33,16 +33,20 @@ Example - Self-correcting RAG with cycle:
     result = await graph.arun(ctx)
 """
 
+import warnings
 from collections import deque
-from typing import Callable, Dict, Optional, Any, List
+from typing import Any, Callable, Dict, Iterable, Optional, Set, Tuple
+
 from .context import Context
 from .executable import Executable
 from .runtime import EdgeTarget, execute_graph
-import warnings
 
 
 # Special constant for graph termination
 END = "__end__"
+
+RouteFn = Callable[[Context], str]
+EdgePaths = Dict[str, str]
 
 
 class Graph(Executable):
@@ -124,8 +128,7 @@ class Graph(Executable):
         Raises:
             ValueError: If node does not exist
         """
-        if name not in self.nodes:
-            raise ValueError(f"Node '{name}' does not exist")
+        self._ensure_node_exists(name)
         self.entry_point = name
         return self
 
@@ -143,22 +146,14 @@ class Graph(Executable):
         Raises:
             ValueError: If nodes don't exist or from_node already has an edge
         """
-        if from_node not in self.nodes:
-            raise ValueError(f"Node '{from_node}' does not exist")
-        if to_node != END and to_node not in self.nodes:
-            raise ValueError(f"Node '{to_node}' does not exist")
-
-        if from_node in self.edges:
-            raise ValueError(
-                f"Node '{from_node}' already has an outgoing edge. "
-                f"Use add_conditional_edge for multiple paths."
-            )
-
+        self._ensure_node_exists(from_node)
+        self._assert_edge_available(from_node)
+        self._assert_valid_target(to_node)
         self.edges[from_node] = to_node
         return self
 
     def add_conditional_edge(
-        self, from_node: str, route: Callable[[Context], str], paths: Dict[str, str]
+        self, from_node: str, route: RouteFn, paths: EdgePaths
     ) -> "Graph":
         """
         Add a conditional edge that routes based on context state.
@@ -184,20 +179,10 @@ class Graph(Executable):
         Raises:
             ValueError: If from_node doesn't exist or already has an edge
         """
-        if from_node not in self.nodes:
-            raise ValueError(f"Node '{from_node}' does not exist")
-
-        if from_node in self.edges:
-            raise ValueError(f"Node '{from_node}' already has an outgoing edge")
-
-        # Validate all path destinations exist
-        for path_key, to_node in paths.items():
-            if to_node != END and to_node not in self.nodes:
-                raise ValueError(
-                    f"Path '{path_key}' points to non-existent node '{to_node}'"
-                )
-
-        self.edges[from_node] = (route, paths)
+        self._ensure_node_exists(from_node)
+        self._assert_edge_available(from_node)
+        normalized_paths = self._normalize_paths(paths)
+        self.edges[from_node] = (route, normalized_paths)
         return self
 
     async def arun(self, ctx: Context) -> Context:
@@ -262,15 +247,12 @@ class Graph(Executable):
 
             reachable.add(current)
 
-            # Find outgoing edges
-            if current in self.edges:
-                edge = self.edges[current]
-                if isinstance(edge, tuple):  # Conditional edge
-                    _, edge_map = edge
-                    queue.extend(v for v in edge_map.values() if v != END)
-                else:  # Direct edge
-                    if edge != END:
-                        queue.append(edge)
+            edge = self.edges.get(current)
+            if not edge:
+                continue
+            for target in self._edge_targets(edge):
+                if target != END:
+                    queue.append(target)
 
         return reachable
 
@@ -434,129 +416,11 @@ class Graph(Executable):
         """
         from .compiled_graph import CompiledGraph
 
-        flat_nodes = {}
-        flat_edges = {}
+        flattener = _GraphFlattener(self)
+        flat_nodes, flat_edges, new_entry = flattener.flatten()
 
-        def flatten_node(
-            node_name: str, node: Any, prefix: str = "", visited_graphs: set = None
-        ) -> tuple[str, str]:
-            """
-            Flatten a single node, returning (entry_node, exit_node) names.
-
-            For regular nodes: entry == exit == the node itself
-            For subgraphs: entry == first node, exit == virtual __END__ node
-
-            Args:
-                node_name: Original node name
-                node: The executable
-                prefix: Prefix for naming (e.g., "outer__")
-                visited_graphs: Set of graph IDs for cycle detection
-
-            Returns:
-                Tuple of (entry_node_name, exit_node_name)
-
-            Raises:
-                ValueError: If a subgraph cycle is detected
-            """
-            if visited_graphs is None:
-                visited_graphs = set()
-
-            full_name = f"{prefix}{node_name}" if prefix else node_name
-
-            if isinstance(node, Graph):
-                # Check for subgraph cycle
-                graph_id = id(node)
-                if graph_id in visited_graphs:
-                    raise ValueError(
-                        f"Subgraph cycle detected: graph '{node.name}' contains itself "
-                        f"directly or indirectly. Cannot flatten cyclic graph hierarchies."
-                    )
-
-                visited_graphs.add(graph_id)
-
-                try:
-                    subgraph_prefix = f"{full_name}__"
-                    subgraph_end = f"{full_name}__END__"
-
-                    # Track entry/exit for each subgraph node
-                    sub_node_mapping = {}
-                    for sub_name, sub_node in node.nodes.items():
-                        entry, exit = flatten_node(
-                            sub_name, sub_node, subgraph_prefix, visited_graphs
-                        )
-                        sub_node_mapping[sub_name] = (entry, exit)
-
-                    # Rewrite subgraph edges, replacing END with virtual end node
-                    for from_node, edge in node.edges.items():
-                        # Get the exit node of from_node (where its outgoing edge starts)
-                        _, from_exit = sub_node_mapping[from_node]
-
-                        if isinstance(edge, tuple):
-                            # Conditional edge
-                            route_fn, paths = edge
-                            new_paths = {}
-                            for key, to_node in paths.items():
-                                if to_node == END:
-                                    new_paths[key] = subgraph_end
-                                else:
-                                    # Connect to entry of target node
-                                    to_entry, _ = sub_node_mapping[to_node]
-                                    new_paths[key] = to_entry
-                            flat_edges[from_exit] = (route_fn, new_paths)
-                        else:
-                            # Direct edge
-                            if edge == END:
-                                flat_edges[from_exit] = subgraph_end
-                            else:
-                                to_entry, _ = sub_node_mapping[edge]
-                                flat_edges[from_exit] = to_entry
-
-                    # Subgraph entry is the entry of its entry_point
-                    entry_node, _ = sub_node_mapping[node.entry_point]
-                    # Subgraph exit is the virtual END node
-                    return (entry_node, subgraph_end)
-
-                finally:
-                    visited_graphs.discard(graph_id)
-
-            else:
-                # Regular node - add it and return itself as both entry and exit
-                flat_nodes[full_name] = node
-                return (full_name, full_name)
-
-        # Flatten all top-level nodes
-        node_mapping = {}  # original name -> (entry, exit)
-        for node_name, node in self.nodes.items():
-            entry, exit = flatten_node(node_name, node)
-            node_mapping[node_name] = (entry, exit)
-
-        # Rewrite top-level edges
-        for from_node, edge in self.edges.items():
-            _, from_exit = node_mapping[from_node]
-
-            if isinstance(edge, tuple):
-                # Conditional edge
-                route_fn, paths = edge
-                new_paths = {}
-                for key, to_node in paths.items():
-                    if to_node == END:
-                        new_paths[key] = END
-                    else:
-                        to_entry, _ = node_mapping[to_node]
-                        new_paths[key] = to_entry
-                flat_edges[from_exit] = (route_fn, new_paths)
-            else:
-                # Direct edge
-                if edge == END:
-                    flat_edges[from_exit] = END
-                else:
-                    to_entry, _ = node_mapping[edge]
-                    flat_edges[from_exit] = to_entry
-
-        # Determine new entry point
-        new_entry = None
-        if self.entry_point:
-            new_entry, _ = node_mapping[self.entry_point]
+        if new_entry is None:
+            raise ValueError("Entry point missing when flattening graph")
 
         return CompiledGraph(
             name=f"{self.name}_flat",
@@ -569,3 +433,132 @@ class Graph(Executable):
 
     def __repr__(self) -> str:
         return f"Graph(name='{self.name}', nodes={len(self.nodes)}, entry='{self.entry_point}')"
+
+    def _ensure_node_exists(self, name: str) -> None:
+        if name not in self.nodes:
+            raise ValueError(f"Node '{name}' does not exist")
+
+    def _assert_edge_available(self, name: str) -> None:
+        if name in self.edges:
+            raise ValueError(
+                f"Node '{name}' already has an outgoing edge. "
+                f"Use add_conditional_edge for multiple paths."
+            )
+
+    def _assert_valid_target(self, target: str, *, path_label: Optional[str] = None) -> None:
+        if target == END:
+            return
+        if target not in self.nodes:
+            if path_label is not None:
+                raise ValueError(
+                    f"Path '{path_label}' points to non-existent node '{target}'"
+                )
+            raise ValueError(f"Node '{target}' does not exist")
+
+    def _normalize_paths(self, paths: EdgePaths) -> EdgePaths:
+        normalized: EdgePaths = {}
+        for label, target in paths.items():
+            self._assert_valid_target(target, path_label=label)
+            normalized[label] = target
+        return normalized
+
+    @staticmethod
+    def _edge_targets(edge: EdgeTarget) -> Iterable[str]:
+        if isinstance(edge, tuple):
+            _, edge_map = edge
+            return edge_map.values()
+        return (edge,)
+
+
+class _GraphFlattener:
+    """
+    Helper that rewrites a nested Graph into a flat node/edge map.
+
+    Breaking the flattening logic into a dedicated helper keeps the main
+    Graph class easier to scan while providing a single place to reason
+    about recursion, prefix naming, and cycle detection.
+    """
+
+    def __init__(self, root: "Graph"):
+        self.root = root
+        self.flat_nodes: Dict[str, Any] = {}
+        self.flat_edges: Dict[str, EdgeTarget] = {}
+        self._visited: Set[int] = set()
+
+    def flatten(self) -> Tuple[Dict[str, Any], Dict[str, EdgeTarget], Optional[str]]:
+        node_mapping: Dict[str, Tuple[str, str]] = {}
+        for node_name, node in self.root.nodes.items():
+            node_mapping[node_name] = self._flatten_node(node_name, node)
+
+        for from_node, edge in self.root.edges.items():
+            _, from_exit = node_mapping[from_node]
+            self.flat_edges[from_exit] = self._rewrite_edge(edge, node_mapping, END)
+
+        entry = None
+        if self.root.entry_point is not None:
+            entry, _ = node_mapping[self.root.entry_point]
+
+        return self.flat_nodes, self.flat_edges, entry
+
+    def _flatten_node(
+        self, node_name: str, node: Any, prefix: str = ""
+    ) -> Tuple[str, str]:
+        full_name = f"{prefix}{node_name}" if prefix else node_name
+        if isinstance(node, Graph):
+            return self._flatten_subgraph(full_name, node)
+
+        self.flat_nodes[full_name] = node
+        return full_name, full_name
+
+    def _flatten_subgraph(self, full_name: str, graph: "Graph") -> Tuple[str, str]:
+        graph_id = id(graph)
+        if graph_id in self._visited:
+            raise ValueError(
+                f"Subgraph cycle detected: graph '{graph.name}' contains itself "
+                f"directly or indirectly. Cannot flatten cyclic graph hierarchies."
+            )
+
+        self._visited.add(graph_id)
+        try:
+            if graph.entry_point is None:
+                raise ValueError(
+                    f"Subgraph '{graph.name}' is missing an entry point during flattening"
+                )
+
+            prefix = f"{full_name}__"
+            virtual_end = f"{full_name}__END__"
+
+            sub_mapping: Dict[str, Tuple[str, str]] = {}
+            for sub_name, sub_node in graph.nodes.items():
+                sub_mapping[sub_name] = self._flatten_node(sub_name, sub_node, prefix)
+
+            for from_node, edge in graph.edges.items():
+                _, from_exit = sub_mapping[from_node]
+                self.flat_edges[from_exit] = self._rewrite_edge(
+                    edge, sub_mapping, virtual_end
+                )
+
+            entry, _ = sub_mapping[graph.entry_point]
+            return entry, virtual_end
+        finally:
+            self._visited.remove(graph_id)
+
+    def _rewrite_edge(
+        self,
+        edge: EdgeTarget,
+        mapping: Dict[str, Tuple[str, str]],
+        default_target: str,
+    ) -> EdgeTarget:
+        if isinstance(edge, tuple):
+            route_fn, paths = edge
+            updated_paths: Dict[str, str] = {}
+            for label, target in paths.items():
+                if target == END:
+                    updated_paths[label] = default_target
+                else:
+                    updated_paths[label] = mapping[target][0]
+            return (route_fn, updated_paths)
+
+        if edge == END:
+            return default_target
+        return mapping[edge][0]
