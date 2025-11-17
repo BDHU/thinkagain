@@ -77,7 +77,6 @@ def test_nested_subgraph_with_cycle() -> None:
     assert ctx.count == 3
 
 
-@pytest.mark.xfail(reason="Flattening currently drops the inner cycle", strict=False)
 def test_flattened_subgraph_with_cycle() -> None:
     compiled = _build_nested_graph().compile(flatten=True)
     ctx = _run(compiled)

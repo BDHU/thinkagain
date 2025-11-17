@@ -61,6 +61,17 @@ async def execute_graph(
             _log(f"Reached END after {step} steps")
             break
 
+        # Check if this is a virtual END node (from flattened subgraphs)
+        # These nodes exist only as edge targets, not as executable nodes
+        if current not in nodes and current.endswith("__END__"):
+            _log(f"Passing through virtual end node: {current}")
+            # Don't execute anything, just follow the edge
+            next_node = await _resolve_next_node(edges, current, ctx, end_token, _log)
+            if next_node in (None, end_token):
+                break
+            current = next_node
+            continue
+
         ctx = await _execute_node(nodes, current, ctx, _log)
         execution_path.append(current)
 
