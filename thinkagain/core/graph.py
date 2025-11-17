@@ -486,9 +486,10 @@ class _GraphFlattener:
         self._visited: Set[int] = set()
 
     def flatten(self) -> Tuple[Dict[str, Any], Dict[str, EdgeTarget], Optional[str]]:
-        node_mapping: Dict[str, Tuple[str, str]] = {}
-        for node_name, node in self.root.nodes.items():
-            node_mapping[node_name] = self._flatten_node(node_name, node)
+        node_mapping = {
+            node_name: self._flatten_node(node_name, node)
+            for node_name, node in self.root.nodes.items()
+        }
 
         for from_node, edge in self.root.edges.items():
             _, from_exit = node_mapping[from_node]
