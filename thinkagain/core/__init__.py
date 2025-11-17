@@ -12,10 +12,11 @@ All components compose with >> operator.
 Use graph.compile() to separate building from execution.
 """
 
+from .constants import END
 from .context import Context
 from .executable import Executable
 from .worker import Worker
-from .graph import Graph, END
+from .graph import Graph
 from .pipeline import Pipeline
 from .compiled_graph import CompiledGraph
 
