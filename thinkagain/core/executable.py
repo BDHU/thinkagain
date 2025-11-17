@@ -8,7 +8,6 @@ Everything that transforms Context inherits from Executable:
 """
 
 import asyncio
-import threading
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -17,19 +16,7 @@ if TYPE_CHECKING:
 
 async def run_sync(func, *args, **kwargs):
     """Run blocking ``func`` in a background thread and await the result."""
-    loop = asyncio.get_running_loop()
-    future = loop.create_future()
-
-    def _target():
-        try:
-            result = func(*args, **kwargs)
-        except Exception as exc:  # pragma: no cover - thread path
-            loop.call_soon_threadsafe(future.set_exception, exc)
-        else:
-            loop.call_soon_threadsafe(future.set_result, result)
-
-    threading.Thread(target=_target, daemon=True).start()
-    return await future
+    return await asyncio.to_thread(func, *args, **kwargs)
 
 
 class Executable:
