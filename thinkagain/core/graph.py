@@ -409,10 +409,13 @@ class Graph(Executable):
         Compile graph with all subgraphs recursively inlined.
 
         This flattens the graph structure by:
-        1. Recursively expanding all Graph nodes
-        2. Prefixing node names to avoid collisions
-        3. Rewriting conditional edges with new names
-        4. Creating a single flat execution graph
+        1. Recursively expanding all Graph nodes into their constituent nodes
+        2. Prefixing node names to avoid collisions (e.g., subgraph__worker)
+        3. Adding virtual __END__ nodes for each subgraph
+        4. Rewiring edges: subgraph's END references become subgraph__END__ nodes
+        5. Parent edges connect to subgraph__END__ nodes, not internal nodes
+
+        This approach treats END as a proper node, eliminating edge-merging complexity.
 
         Returns:
             CompiledGraph with flattened structure
@@ -422,32 +425,35 @@ class Graph(Executable):
 
         Example:
             # Before flattening:
-            # graph: a -> subgraph(x -> y) -> b
+            # outer: subgraph -> END
+            # subgraph: worker -> (loop: worker, done: END)
             #
             # After flattening:
-            # graph: a -> subgraph__x -> subgraph__y -> b
+            # outer: subgraph__worker -> (loop: subgraph__worker, done: subgraph__END__)
+            #        subgraph__END__ -> END
         """
         from .compiled_graph import CompiledGraph
 
         flat_nodes = {}
         flat_edges = {}
-        new_entry = None
 
-        # Process nodes in topological order (roughly)
         def flatten_node(
             node_name: str, node: Any, prefix: str = "", visited_graphs: set = None
-        ) -> List[str]:
+        ) -> tuple[str, str]:
             """
-            Flatten a single node, returning list of actual node names added.
+            Flatten a single node, returning (entry_node, exit_node) names.
+
+            For regular nodes: entry == exit == the node itself
+            For subgraphs: entry == first node, exit == virtual __END__ node
 
             Args:
                 node_name: Original node name
                 node: The executable
-                prefix: Prefix for naming
-                visited_graphs: Set of graph IDs currently being processed (for cycle detection)
+                prefix: Prefix for naming (e.g., "outer__")
+                visited_graphs: Set of graph IDs for cycle detection
 
             Returns:
-                List of node names added to flat_nodes
+                Tuple of (entry_node_name, exit_node_name)
 
             Raises:
                 ValueError: If a subgraph cycle is detected
@@ -457,9 +463,8 @@ class Graph(Executable):
 
             full_name = f"{prefix}{node_name}" if prefix else node_name
 
-            # If it's a Graph, recursively flatten it
             if isinstance(node, Graph):
-                # Check for cycle: is this graph already being processed?
+                # Check for subgraph cycle
                 graph_id = id(node)
                 if graph_id in visited_graphs:
                     raise ValueError(
@@ -467,63 +472,67 @@ class Graph(Executable):
                         f"directly or indirectly. Cannot flatten cyclic graph hierarchies."
                     )
 
-                # Add this graph to visited set before recursing
                 visited_graphs.add(graph_id)
 
                 try:
-                    added_nodes = []
                     subgraph_prefix = f"{full_name}__"
+                    subgraph_end = f"{full_name}__END__"
 
-                    # Flatten all subgraph nodes
-                    for sub_node_name, sub_node in node.nodes.items():
-                        sub_added = flatten_node(
-                            sub_node_name, sub_node, subgraph_prefix, visited_graphs
+                    # Track entry/exit for each subgraph node
+                    sub_node_mapping = {}
+                    for sub_name, sub_node in node.nodes.items():
+                        entry, exit = flatten_node(
+                            sub_name, sub_node, subgraph_prefix, visited_graphs
                         )
-                        added_nodes.extend(sub_added)
+                        sub_node_mapping[sub_name] = (entry, exit)
 
-                    # Rewrite edges from subgraph
+                    # Rewrite subgraph edges, replacing END with virtual end node
                     for from_node, edge in node.edges.items():
-                        prefixed_from = f"{subgraph_prefix}{from_node}"
+                        # Get the exit node of from_node (where its outgoing edge starts)
+                        _, from_exit = sub_node_mapping[from_node]
 
                         if isinstance(edge, tuple):
-                            # Conditional edge - rewrite paths
+                            # Conditional edge
                             route_fn, paths = edge
                             new_paths = {}
                             for key, to_node in paths.items():
                                 if to_node == END:
-                                    new_paths[key] = END
+                                    new_paths[key] = subgraph_end
                                 else:
-                                    new_paths[key] = f"{subgraph_prefix}{to_node}"
-                            flat_edges[prefixed_from] = (route_fn, new_paths)
+                                    # Connect to entry of target node
+                                    to_entry, _ = sub_node_mapping[to_node]
+                                    new_paths[key] = to_entry
+                            flat_edges[from_exit] = (route_fn, new_paths)
                         else:
                             # Direct edge
                             if edge == END:
-                                flat_edges[prefixed_from] = END
+                                flat_edges[from_exit] = subgraph_end
                             else:
-                                flat_edges[prefixed_from] = f"{subgraph_prefix}{edge}"
+                                to_entry, _ = sub_node_mapping[edge]
+                                flat_edges[from_exit] = to_entry
 
-                    return added_nodes
+                    # Subgraph entry is the entry of its entry_point
+                    entry_node, _ = sub_node_mapping[node.entry_point]
+                    # Subgraph exit is the virtual END node
+                    return (entry_node, subgraph_end)
+
                 finally:
-                    # Remove this graph from visited set after processing
                     visited_graphs.discard(graph_id)
 
             else:
-                # Regular node - just add it
+                # Regular node - add it and return itself as both entry and exit
                 flat_nodes[full_name] = node
-                return [full_name]
+                return (full_name, full_name)
 
         # Flatten all top-level nodes
-        node_mapping = {}  # original name -> list of flattened names
+        node_mapping = {}  # original name -> (entry, exit)
         for node_name, node in self.nodes.items():
-            flattened = flatten_node(node_name, node)
-            node_mapping[node_name] = flattened
+            entry, exit = flatten_node(node_name, node)
+            node_mapping[node_name] = (entry, exit)
 
         # Rewrite top-level edges
         for from_node, edge in self.edges.items():
-            # Get the LAST node from the flattened "from" node
-            # (the exit point of that subgraph, or the node itself)
-            from_names = node_mapping[from_node]
-            actual_from = from_names[-1] if from_names else from_node
+            _, from_exit = node_mapping[from_node]
 
             if isinstance(edge, tuple):
                 # Conditional edge
@@ -533,22 +542,21 @@ class Graph(Executable):
                     if to_node == END:
                         new_paths[key] = END
                     else:
-                        # Get FIRST node from flattened "to" node (entry point)
-                        to_names = node_mapping.get(to_node, [to_node])
-                        new_paths[key] = to_names[0] if to_names else to_node
-                flat_edges[actual_from] = (route_fn, new_paths)
+                        to_entry, _ = node_mapping[to_node]
+                        new_paths[key] = to_entry
+                flat_edges[from_exit] = (route_fn, new_paths)
             else:
                 # Direct edge
                 if edge == END:
-                    flat_edges[actual_from] = END
+                    flat_edges[from_exit] = END
                 else:
-                    to_names = node_mapping.get(edge, [edge])
-                    flat_edges[actual_from] = to_names[0] if to_names else edge
+                    to_entry, _ = node_mapping[edge]
+                    flat_edges[from_exit] = to_entry
 
-        # Determine new entry point (first node of original entry)
+        # Determine new entry point
+        new_entry = None
         if self.entry_point:
-            entry_names = node_mapping.get(self.entry_point, [self.entry_point])
-            new_entry = entry_names[0] if entry_names else self.entry_point
+            new_entry, _ = node_mapping[self.entry_point]
 
         return CompiledGraph(
             name=f"{self.name}_flat",
