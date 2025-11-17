@@ -101,7 +101,7 @@ class Executable:
 
         To flatten subgraphs, use compile():
             pipeline = worker1 >> subgraph >> worker2
-            flat = pipeline.compile(flatten=True)
+            flat = pipeline.compile()
 
         Args:
             other: Next executable in the chain
@@ -117,7 +117,7 @@ class Executable:
             result = await pipeline.arun(ctx)
 
             # Or compile flat for debugging
-            flat = pipeline.compile(flatten=True)
+            flat = pipeline.compile()
             print(flat.visualize())
         """
         from .graph import Graph, END

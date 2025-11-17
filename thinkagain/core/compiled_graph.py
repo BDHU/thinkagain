@@ -10,7 +10,6 @@ The compilation pattern separates graph construction from execution:
 
 Benefits:
 - Validate once at compile time, not on every execution
-- Support multiple execution strategies (nested vs flat)
 - Enable compile-time optimizations
 - Clear separation of concerns
 """
@@ -48,7 +47,6 @@ class CompiledGraph:
         edges: Dict[str, EdgeTarget],
         entry_point: str,
         max_steps: Optional[int] = None,
-        is_flattened: bool = False,
     ):
         """
         Initialize compiled graph.
@@ -59,14 +57,12 @@ class CompiledGraph:
             edges: Mapping of node names to edge targets
             entry_point: Starting node
             max_steps: Optional step limit
-            is_flattened: Whether subgraphs have been inlined
         """
         self.name = name
         self.nodes = nodes
         self.edges = edges
         self.entry_point = entry_point
         self.max_steps = max_steps
-        self.is_flattened = is_flattened
 
         # Make immutable (shallow - prevents adding/removing nodes)
         self._sealed = True
@@ -84,11 +80,7 @@ class CompiledGraph:
         Raises:
             ValueError: If execution fails
         """
-        prefix = (
-            f"[CompiledGraph:{self.name}]"
-            if self.is_flattened
-            else f"[Graph:{self.name}]"
-        )
+        prefix = f"[CompiledGraph:{self.name}]"
         return await execute_graph(
             ctx=ctx,
             nodes=self.nodes,
@@ -111,7 +103,4 @@ class CompiledGraph:
         return generate_mermaid_diagram(self.nodes, self.edges, self.entry_point)
 
     def __repr__(self) -> str:
-        mode = "flat" if self.is_flattened else "nested"
-        return (
-            f"CompiledGraph(name='{self.name}', nodes={len(self.nodes)}, mode='{mode}')"
-        )
+        return f"CompiledGraph(name='{self.name}', nodes={len(self.nodes)})"

@@ -15,7 +15,7 @@ ThinkAgain is a minimal, debuggable agent framework for building explicit pipeli
 - **Graph-first architecture** – everything inherits from `Executable`, so workers, graphs, and pipelines compose naturally with `>>`.
 - **Async core, sync friendly** – all executables expose `arun(ctx)`; synchronous calls simply wrap that single code path.
 - **Deterministic Context** – one `Context` object carries state, metadata, and execution history through the system.
-- **First-class introspection** – `Graph.visualize()`, `Graph.to_dict()`, `graph.compile(flatten=True)`, and `ctx.history` reveal plans before and after they run.
+- **First-class introspection** – `Graph.visualize()`, `Graph.to_dict()`, `graph.compile()`, and `ctx.history` reveal plans before and after they run.
 - **Minimal surface area** – just Python classes; no DSLs, no sidecar runtime, and no hidden orchestration layers.
 
 ## Architecture at a Glance
@@ -139,7 +139,7 @@ coordinator.add_edge("research", "write")
 
 - `Context.history` records every log message emitted by workers and graph nodes.
 - `ctx.to_dict()` (or duck-typing with `ctx["key"]`) shows the exact state shuttled between stages.
-- `Graph.visualize()` renders a Mermaid diagram; `Graph.to_dict()` and `graph.compile(flatten=True)` produce machine-readable plans.
+- `Graph.visualize()` renders a Mermaid diagram; `Graph.to_dict()` and `graph.compile()` produce machine-readable plans.
 - `examples/minimal_demo.py` prints both the execution logs and a Mermaid graph so you can watch the state evolve.
 
 ## Examples

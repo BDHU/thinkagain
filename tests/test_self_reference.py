@@ -29,7 +29,7 @@ def test_direct_self_reference_raises_value_error() -> None:
     graph.set_entry("worker")
 
     with pytest.raises(ValueError, match=re.compile("cycle detected", re.IGNORECASE)):
-        graph.compile(flatten=True)
+        graph.compile()
 
 
 def test_indirect_self_reference_is_detected() -> None:
@@ -48,7 +48,7 @@ def test_indirect_self_reference_is_detected() -> None:
     g2.set_entry("g1")
 
     with pytest.raises(ValueError, match=re.compile("cycle detected", re.IGNORECASE)):
-        g1.compile(flatten=True)
+        g1.compile()
 
 
 def test_normal_nested_graph_compiles() -> None:
@@ -67,5 +67,5 @@ def test_normal_nested_graph_compiles() -> None:
     outer.add_edge("subgraph", END)
     outer.set_entry("w1")
 
-    compiled = outer.compile(flatten=True)
+    compiled = outer.compile()
     assert "subgraph__w2" in compiled.nodes

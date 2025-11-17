@@ -300,17 +300,13 @@ class Graph(Executable):
             "edges": edges_dict,
         }
 
-    def compile(self, flatten: bool = False) -> "CompiledGraph":
+    def compile(self) -> "CompiledGraph":
         """
-        Compile graph into executable representation.
+        Compile graph into an optimized, flattened representation.
 
-        This validates the graph structure and returns an optimized,
-        immutable executor. Compilation happens once; execution can
-        happen many times.
-
-        Args:
-            flatten: If True, recursively inline all subgraphs into a
-                    flat structure. If False, keep subgraphs as black boxes.
+        This validates the graph structure and returns an immutable
+        executor with all subgraphs inlined. Build graphs once, compile,
+        and then execute the compiled artifact many times.
 
         Returns:
             CompiledGraph ready for execution
@@ -325,49 +321,18 @@ class Graph(Executable):
             graph.add_node("b", subgraph_b)
             graph.add_edge("a", "b")
 
-            # Compile with nested subgraphs (black box)
-            nested = graph.compile(flatten=False)
-            result = await nested.arun(ctx)
-
-            # Compile with flattened subgraphs (all nodes visible)
-            flat = graph.compile(flatten=True)
+            # Compile for execution (flattened view)
+            flat = graph.compile()
             result = await flat.arun(ctx)
-
-            # Both execute correctly, just different structure
         """
         # Validate first
         self._validate()
 
-        if flatten:
-            return self._compile_flat()
-        else:
-            return self._compile_nested()
-
-    def _compile_nested(self) -> "CompiledGraph":
-        """
-        Compile graph keeping subgraphs as black boxes.
-
-        This is the simpler compilation path - just wrap the graph
-        in a CompiledGraph executor without structural changes.
-
-        Returns:
-            CompiledGraph with nested subgraph structure
-        """
-        from .compiled_graph import CompiledGraph
-
-        # Simple wrapper - no transformation needed
-        return CompiledGraph(
-            name=self.name,
-            nodes=self.nodes.copy(),  # Shallow copy
-            edges=self.edges.copy(),  # Shallow copy
-            entry_point=self.entry_point,
-            max_steps=self.max_steps,
-            is_flattened=False,
-        )
+        return self._compile_flat()
 
     def _compile_flat(self) -> "CompiledGraph":
         """
-        Compile graph with all subgraphs recursively inlined.
+        Helper that compiles the graph with all subgraphs recursively inlined.
 
         This flattens the graph structure by:
         1. Recursively expanding all Graph nodes into their constituent nodes
@@ -407,7 +372,6 @@ class Graph(Executable):
             edges=flat_edges,
             entry_point=new_entry,
             max_steps=self.max_steps,
-            is_flattened=True,
         )
 
     def __repr__(self) -> str:
