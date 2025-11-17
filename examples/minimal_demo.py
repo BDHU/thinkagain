@@ -5,7 +5,7 @@ Minimal ThinkAgain Demo
 This single script keeps the examples approachable while still covering all
 of the core primitives provided by thinkagain:
 
-1. Sequential pipelines composed with the ``>>`` operator (and the ``Pipeline`` class)
+1. Sequential pipelines composed with the ``>>`` operator
 2. Explicit graphs with conditional routing and cycles
 3. Composing subgraphs together and compiling them into an executable plan
 
@@ -19,7 +19,7 @@ from pathlib import Path
 # Add project root to the import path when the file is executed directly
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from thinkagain import Context, Worker, Graph, Pipeline, END
+from thinkagain import Context, Worker, Graph, END
 
 
 # -----------------------------------------------------------------------------
@@ -102,9 +102,9 @@ def sequential_pipeline_demo() -> None:
     print(f"Async answer: {async_result.answer}")
     print(f"Execution path: {' → '.join(async_result.execution_path)}")
 
-    # The same sequence can be expressed explicitly with Pipeline([...])
-    explicit_pipeline = Pipeline([RetrieveDocs(), RerankDocs(), GenerateAnswer()])
-    sync_result = explicit_pipeline(Context(query="sync usage", top_n=1))
+    # Sync execution also works
+    sync_pipeline = RetrieveDocs() >> RerankDocs() >> GenerateAnswer()
+    sync_result = sync_pipeline(Context(query="sync usage", top_n=1))
 
     print(f"Sync answer:  {sync_result.answer}")
     print(f"History tail: {sync_result.history[-2:]}")

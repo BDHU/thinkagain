@@ -4,7 +4,6 @@ Base interface for all executable components.
 Everything that transforms Context inherits from Executable:
 - Workers (leaf nodes)
 - Graphs (DAGs with cycles)
-- Pipelines (sequential graphs)
 - Functions (raw callables)
 """
 
