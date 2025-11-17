@@ -15,7 +15,7 @@ ThinkAgain is a minimal, debuggable agent framework for building explicit pipeli
 - **Graph-first architecture** – everything inherits from `Executable`, so workers, graphs, and pipelines compose naturally with `>>`.
 - **Async core, sync friendly** – all executables expose `arun(ctx)`; synchronous calls simply wrap that single code path.
 - **Deterministic Context** – one `Context` object carries state, metadata, and execution history through the system.
-- **First-class introspection** – `Pipeline.visualize()`, `Graph.to_dict()`, `graph.compile(flatten=True)`, and `ctx.history` reveal plans before and after they run.
+- **First-class introspection** – `Graph.visualize()`, `Graph.to_dict()`, `graph.compile(flatten=True)`, and `ctx.history` reveal plans before and after they run.
 - **Minimal surface area** – just Python classes; no DSLs, no sidecar runtime, and no hidden orchestration layers.
 
 ## Architecture at a Glance
@@ -24,8 +24,7 @@ ThinkAgain reduces the mental model to a handful of building blocks:
 
 - **Executable** – base interface defining `__call__`, `arun`, and composition via `__rshift__`.
 - **Worker** – your business logic; implement either sync or async and the framework handles the rest.
-- **Graph** – the scheduler that stores nodes, direct edges, and conditional edges (cycles are just edges that point backwards).
-- **Pipeline** – a thin `Graph` subclass that auto-wires sequential nodes; `worker_a >> worker_b` returns one of these.
+- **Graph** – the scheduler that stores nodes, direct edges, and conditional edges (cycles are just edges that point backwards). The `>>` operator creates sequential graphs automatically.
 - **Context** – a deterministic, dict-like container with a chronological `history` of every log emission.
 
 All nodes are Executables, so subgraphs plug directly into larger graphs, and sequential flows stay ergonomic with the `>>` operator.
@@ -91,13 +90,12 @@ print(ctx.history)  # chronological log of every node
 ### Sequential pipelines
 
 ```python
-from thinkagain import Context, Pipeline
+from thinkagain import Context
 
 pipeline = retrieve >> rerank >> generate
 ctx = pipeline(Context(query="agent evaluation"))
 
-# or the explicit equivalent
-pipeline = Pipeline([retrieve, rerank, generate])
+# async execution
 ctx = await pipeline.arun(Context(query="agent evaluation"))
 ```
 
@@ -141,7 +139,7 @@ coordinator.add_edge("research", "write")
 
 - `Context.history` records every log message emitted by workers and graph nodes.
 - `ctx.to_dict()` (or duck-typing with `ctx["key"]`) shows the exact state shuttled between stages.
-- `Pipeline.visualize()` renders an ASCII tree; `Graph.to_dict()` and `graph.compile(flatten=True)` produce machine-readable plans.
+- `Graph.visualize()` renders a Mermaid diagram; `Graph.to_dict()` and `graph.compile(flatten=True)` produce machine-readable plans.
 - `examples/minimal_demo.py` prints both the execution logs and a Mermaid graph so you can watch the state evolve.
 
 ## Examples

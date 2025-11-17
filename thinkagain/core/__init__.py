@@ -5,7 +5,6 @@ Everything is built on a simple hierarchy:
 - Executable: Base interface for all components
 - Worker: Leaf computations (your business logic)
 - Graph: DAG with cycles and conditional routing
-- Pipeline: Sequential graphs (syntactic sugar)
 - CompiledGraph: Immutable executable representation
 
 All components compose with >> operator.
@@ -17,7 +16,6 @@ from .context import Context
 from .executable import Executable
 from .worker import Worker
 from .graph import Graph
-from .pipeline import Pipeline
 from .compiled_graph import CompiledGraph
 
 __all__ = [
@@ -26,6 +24,5 @@ __all__ = [
     "Worker",
     "Graph",
     "END",
-    "Pipeline",
     "CompiledGraph",
 ]

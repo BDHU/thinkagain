@@ -2,7 +2,7 @@
 Graph-based execution supporting arbitrary cycles and conditional routing.
 
 Provides Graph class for complex workflows with dynamic routing.
-Everything is a Graph - Pipelines are just syntactic sugar.
+Everything is a Graph - the >> operator creates sequential graphs automatically.
 
 Use Graph when you need:
 - Cycles (loops back to previous nodes)

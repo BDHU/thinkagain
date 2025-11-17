@@ -6,13 +6,12 @@ Core concepts:
 - Executable: Base interface for all components
 - Worker: Leaf computations (your business logic)
 - Graph: DAG with cycles and conditional routing
-- Pipeline: Sequential graphs (syntactic sugar)
 
 Everything composes with >> operator.
 Graphs can contain graphs (subgraphs) naturally.
 """
 
-from .core import Context, Executable, Worker, Graph, END, Pipeline
+from .core import Context, Executable, Worker, Graph, END
 
 __version__ = "0.1.1"
 
@@ -22,5 +21,4 @@ __all__ = [
     "Worker",
     "Graph",
     "END",
-    "Pipeline",
 ]

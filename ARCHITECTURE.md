@@ -11,11 +11,10 @@ Instead of having separate abstractions for pipelines, workflows, agents, and su
 ```
 Executable (base interface)
 ├── Worker (leaf computations - your business logic)
-├── Graph (DAG with cycles and conditional routing)
-└── Pipeline (syntactic sugar for sequential graphs)
+└── Graph (DAG with cycles and conditional routing)
 ```
 
-All three implement the same interface:
+Both implement the same interface:
 - `__call__(ctx) -> ctx` - synchronous execution
 - `arun(ctx) -> ctx` - asynchronous execution
 - `__rshift__(other)` - composition via `>>` operator
@@ -30,15 +29,13 @@ Everything that transforms Context is an `Executable`. This means:
 # These all work the same way
 worker = MyWorker()
 graph = Graph(...)
-pipeline = Pipeline(...)
 
 # All can be called
 result = worker(ctx)
 result = graph(ctx)
-result = pipeline(ctx)
 
 # All can be composed
-flow = worker >> graph >> pipeline
+flow = worker >> graph >> another_worker
 ```
 
 ### 2. Async-First Execution
@@ -50,22 +47,25 @@ The framework is async-first but supports sync:
 
 This simplifies the codebase significantly - only one execution path to maintain.
 
-### 3. Pipeline = Graph
+### 3. Sequential Composition via >>
 
-`Pipeline` is not a separate abstraction - it's literally a `Graph` that auto-wires nodes sequentially:
+The `>>` operator auto-wires nodes sequentially into a Graph:
 
 ```python
-class Pipeline(Graph):
-    def __init__(self, nodes):
-        super().__init__()
-        # Auto-wire nodes in sequence
-        for i, node in enumerate(nodes):
-            self.add_node(f"_{i}", node)
-            if i > 0:
-                self.add_edge(f"_{i-1}", f"_{i}")
+# This creates a Graph with auto-wired sequential nodes
+pipeline = worker1 >> worker2 >> worker3
+
+# Equivalent to:
+graph = Graph()
+graph.add_node("_0", worker1)
+graph.add_node("_1", worker2)
+graph.add_node("_2", worker3)
+graph.add_edge("_0", "_1")
+graph.add_edge("_1", "_2")
+graph.add_edge("_2", END)
 ```
 
-This means pipelines get all graph features for free: visualization, introspection, etc.
+This means sequential pipelines get all graph features for free: visualization, introspection, etc.
 
 ### 4. Natural Subgraph Composition
 
@@ -120,12 +120,8 @@ To stay minimal, we removed:
 ### Pattern 1: Simple Sequential Pipeline
 
 ```python
-# Option A: Using >> operator (most concise)
+# Using >> operator to create a sequential Graph
 pipeline = worker1 >> worker2 >> worker3
-result = await pipeline.arun(ctx)
-
-# Option B: Explicit Pipeline
-pipeline = Pipeline([worker1, worker2, worker3])
 result = await pipeline.arun(ctx)
 ```
 
@@ -278,7 +274,6 @@ graph.add_node("postprocessor", postprocessor)
 #### Non-Breaking Changes
 
 - `Worker` now extends `Executable` (implementation detail)
-- `Pipeline` now extends `Graph` (still works the same)
 - `>>` operator still works exactly the same way
 
 ## Examples
