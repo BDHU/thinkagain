@@ -9,7 +9,7 @@ import asyncio
 from typing import List, Callable, Optional
 from .context import Context
 from .worker import Worker
-from .executable import run_sync
+from .runtime import _invoke
 
 
 class Parallel(Worker):
@@ -128,11 +128,7 @@ class Parallel(Worker):
 
     async def _execute_worker(self, worker: Worker, ctx: Context) -> Context:
         """Run a worker that may only provide sync or async APIs."""
-        if hasattr(worker, "arun"):
-            return await worker.arun(ctx)
-        if asyncio.iscoroutinefunction(worker):
-            return await worker(ctx)
-        return await run_sync(worker, ctx)
+        return await _invoke(worker, ctx)
 
     def _log(self, ctx: Context, message: str) -> None:
         ctx.log(f"[{self.name}] {message}")

@@ -175,4 +175,4 @@ async def _call_route(route: Callable[[Context], str], ctx: Context) -> str:
     return route(ctx)
 
 
-__all__ = ["execute_graph", "EdgeTarget"]
+__all__ = ["execute_graph", "EdgeTarget", "_invoke"]

@@ -16,11 +16,9 @@ Benefits:
 """
 
 from typing import Dict, Optional, Any
+from .constants import END
 from .context import Context
 from .runtime import EdgeTarget, execute_graph
-
-# Special constant for graph termination
-END = "__end__"
 
 class CompiledGraph:
     """
@@ -108,30 +106,9 @@ class CompiledGraph:
         Returns:
             Mermaid diagram code
         """
-        from .graph import Graph
+        from .visualization import generate_mermaid_diagram
 
-        lines = ["graph TD", f"    START([START]) --> {self.entry_point}"]
-
-        for node_name, node in self.nodes.items():
-            if isinstance(node, (Graph, CompiledGraph)):
-                label = f"{node_name}\\n(subgraph: {node.name})"
-                lines.append(f'    {node_name}[["{label}"]]')
-            else:
-                lines.append(f"    {node_name}[{node_name}]")
-
-        lines.append("    END([END])")
-
-        for from_node, edge in self.edges.items():
-            if isinstance(edge, tuple):
-                _, edge_map = edge
-                for label, to_node in edge_map.items():
-                    target = "END" if to_node == END else to_node
-                    lines.append(f"    {from_node} -->|{label}| {target}")
-            else:
-                target = "END" if edge == END else edge
-                lines.append(f"    {from_node} --> {target}")
-
-        return "\n".join(lines)
+        return generate_mermaid_diagram(self.nodes, self.edges, self.entry_point)
 
     def __repr__(self) -> str:
         mode = "flat" if self.is_flattened else "nested"
