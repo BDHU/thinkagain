@@ -183,7 +183,7 @@ async def composition_and_compile_demo() -> None:
     generation = build_generation_stage()
 
     composed = retrieval >> generation
-    compiled = composed.compile(flatten=True)
+    compiled = composed.compile()
 
     ctx = Context(query="compilation benefits", top_n=2)
     result = await compiled.arun(ctx)

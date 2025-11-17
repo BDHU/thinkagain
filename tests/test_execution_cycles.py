@@ -2,8 +2,6 @@
 
 import asyncio
 
-import pytest
-
 from thinkagain.core.context import Context
 from thinkagain.core.graph import END, Graph
 from thinkagain.core.worker import Worker
@@ -59,25 +57,13 @@ def test_non_compiled_cycle() -> None:
     _assert_three_iterations(ctx)
 
 
-def test_compiled_nested_cycle() -> None:
-    compiled = _build_cycle_graph().compile(flatten=False)
-    ctx = _run(compiled)
-    _assert_three_iterations(ctx)
-
-
-def test_compiled_flat_cycle() -> None:
-    compiled = _build_cycle_graph().compile(flatten=True)
+def test_compiled_cycle() -> None:
+    compiled = _build_cycle_graph().compile()
     ctx = _run(compiled)
     _assert_three_iterations(ctx)
 
 
 def test_nested_subgraph_with_cycle() -> None:
-    compiled = _build_nested_graph().compile(flatten=False)
-    ctx = _run(compiled)
-    assert ctx.count == 3
-
-
-def test_flattened_subgraph_with_cycle() -> None:
-    compiled = _build_nested_graph().compile(flatten=True)
+    compiled = _build_nested_graph().compile()
     ctx = _run(compiled)
     assert ctx.count == 3
