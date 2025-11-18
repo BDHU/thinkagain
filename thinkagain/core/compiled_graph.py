@@ -14,10 +14,10 @@ Benefits:
 - Clear separation of concerns
 """
 
-from typing import Dict, Optional, Any
+from typing import Any, AsyncIterator, Dict, Optional
 from .constants import END
 from .context import Context
-from .runtime import EdgeTarget, execute_graph
+from .runtime import EdgeTarget, StreamEvent, execute_graph, stream_graph_events
 
 class CompiledGraph:
     """
@@ -90,6 +90,21 @@ class CompiledGraph:
             end_token=END,
             log_prefix=prefix,
         )
+
+    async def stream(self, ctx: Context) -> AsyncIterator[StreamEvent]:
+        """Yield ``StreamEvent`` objects while the compiled graph executes."""
+
+        prefix = f"[CompiledGraph:{self.name}]"
+        async for event in stream_graph_events(
+            ctx=ctx,
+            nodes=self.nodes,
+            edges=self.edges,
+            entry_point=self.entry_point,
+            max_steps=self.max_steps,
+            end_token=END,
+            log_prefix=prefix,
+        ):
+            yield event
 
     def visualize(self) -> str:
         """

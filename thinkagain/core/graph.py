@@ -35,12 +35,12 @@ Example - Self-correcting RAG with cycle:
 
 import warnings
 from collections import deque
-from typing import Any, Callable, Dict, Iterable, Optional, Tuple
+from typing import Any, AsyncIterator, Callable, Dict, Iterable, Optional, Tuple
 
 from .constants import END
 from .context import Context
 from .executable import Executable
-from .runtime import EdgeTarget, execute_graph
+from .runtime import EdgeTarget, StreamEvent, execute_graph, stream_graph_events
 from .graph_flattener import GraphFlattener
 
 RouteFn = Callable[[Context], str]
@@ -211,6 +211,22 @@ class Graph(Executable):
             end_token=END,
             log_prefix=f"[Graph:{self.name}]",
         )
+
+    async def stream(self, ctx: Context) -> AsyncIterator[StreamEvent]:
+        """Yield ``StreamEvent`` objects as each node finishes executing."""
+
+        self._validate()
+
+        async for event in stream_graph_events(
+            ctx=ctx,
+            nodes=self.nodes,
+            edges=self.edges,
+            entry_point=self.entry_point,
+            max_steps=self.max_steps,
+            end_token=END,
+            log_prefix=f"[Graph:{self.name}]",
+        ):
+            yield event
 
     def _validate(self):
         """Validate graph structure (called lazily on first execution)."""
