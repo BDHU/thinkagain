@@ -139,6 +139,7 @@ coordinator.add_edge("research", "write")
 
 - `Context.history` records every log message emitted by workers and graph nodes.
 - `ctx.to_dict()` (or duck-typing with `ctx["key"]`) shows the exact state shuttled between stages.
+- `graph.stream(ctx)` (or `compiled.stream(ctx)`) yields events as each node completes so you can surface partial results.
 - `Graph.visualize()` renders a Mermaid diagram; `Graph.to_dict()` and `graph.compile()` produce machine-readable plans.
 - `examples/minimal_demo.py` prints both the execution logs and a Mermaid graph so you can watch the state evolve.
 

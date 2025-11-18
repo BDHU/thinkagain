@@ -11,7 +11,8 @@ lowers the surface area for bugs.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Callable, Dict, Optional, Tuple, Union
+from dataclasses import dataclass
+from typing import Any, AsyncIterator, Callable, Dict, Literal, Optional, Tuple, Union
 
 from .context import Context
 from .executable import run_sync
@@ -19,6 +20,17 @@ from .executable import run_sync
 EdgeMap = Dict[str, str]
 ConditionalEdge = Tuple[Callable[[Context], str], EdgeMap]
 EdgeTarget = Union[str, ConditionalEdge]
+
+
+@dataclass
+class StreamEvent:
+    """Structured event emitted while a graph executes."""
+
+    type: Literal["start", "node", "end"]
+    node: Optional[str]
+    ctx: Context
+    step: int
+    info: Dict[str, Any]
 
 
 async def execute_graph(
@@ -43,6 +55,33 @@ async def execute_graph(
         end_token: Sentinel string representing graph termination.
         log_prefix: Text inserted before log messages (e.g. "[Graph:rag]").
     """
+    final_ctx: Optional[Context] = None
+
+    async for event in stream_graph_events(
+        ctx=ctx,
+        nodes=nodes,
+        edges=edges,
+        entry_point=entry_point,
+        max_steps=max_steps,
+        end_token=end_token,
+        log_prefix=log_prefix,
+    ):
+        final_ctx = event.ctx
+
+    return final_ctx or ctx
+
+
+async def stream_graph_events(
+    *,
+    ctx: Context,
+    nodes: Dict[str, Any],
+    edges: Dict[str, EdgeTarget],
+    entry_point: Optional[str],
+    max_steps: Optional[int],
+    end_token: str,
+    log_prefix: str,
+) -> AsyncIterator[StreamEvent]:
+    """Yield structured events as the graph executes."""
     if entry_point is None:
         raise ValueError("Entry point not set. Use set_entry() before execution.")
 
@@ -54,6 +93,13 @@ async def execute_graph(
 
     _log("Starting execution")
     _log(f"Entry point: {current}")
+    yield StreamEvent(
+        type="start",
+        node=current,
+        ctx=ctx,
+        step=0,
+        info={"entry_point": entry_point},
+    )
 
     step = 0
     while True:
@@ -74,6 +120,13 @@ async def execute_graph(
 
         ctx = await _execute_node(nodes, current, ctx, _log)
         execution_path.append(current)
+        yield StreamEvent(
+            type="node",
+            node=current,
+            ctx=ctx,
+            step=len(execution_path),
+            info={"log_prefix": log_prefix},
+        )
 
         next_node = await _resolve_next_node(edges, current, ctx, end_token, _log)
         if next_node in (None, end_token):
@@ -94,7 +147,14 @@ async def execute_graph(
     _log(f"Total steps: {ctx.total_steps}")
     path_display = " → ".join(execution_path) or "(none)"
     _log(f"Path: {path_display}")
-    return ctx
+
+    yield StreamEvent(
+        type="end",
+        node=None,
+        ctx=ctx,
+        step=ctx.total_steps,
+        info={"path": tuple(execution_path)},
+    )
 
 
 async def _execute_node(
@@ -175,4 +235,4 @@ async def _call_route(route: Callable[[Context], str], ctx: Context) -> str:
     return route(ctx)
 
 
-__all__ = ["execute_graph", "EdgeTarget", "_invoke"]
+__all__ = ["execute_graph", "EdgeTarget", "StreamEvent", "stream_graph_events", "_invoke"]
