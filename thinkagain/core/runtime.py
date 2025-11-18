@@ -55,7 +55,7 @@ async def execute_graph(
         end_token: Sentinel string representing graph termination.
         log_prefix: Text inserted before log messages (e.g. "[Graph:rag]").
     """
-    final_ctx: Optional[Context] = None
+    final_ctx = ctx
 
     async for event in stream_graph_events(
         ctx=ctx,
@@ -68,7 +68,7 @@ async def execute_graph(
     ):
         final_ctx = event.ctx
 
-    return final_ctx or ctx
+    return final_ctx
 
 
 async def stream_graph_events(
