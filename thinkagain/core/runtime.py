@@ -235,4 +235,10 @@ async def _call_route(route: Callable[[Context], str], ctx: Context) -> str:
     return route(ctx)
 
 
-__all__ = ["execute_graph", "EdgeTarget", "StreamEvent", "stream_graph_events", "_invoke"]
+__all__ = [
+    "execute_graph",
+    "EdgeTarget",
+    "StreamEvent",
+    "stream_graph_events",
+    "_invoke",
+]

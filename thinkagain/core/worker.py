@@ -8,6 +8,7 @@ A worker is just an Executable that you implement with business logic.
 """
 
 import re
+import inspect
 from .context import Context
 from .executable import Executable
 
@@ -112,3 +113,41 @@ class Worker(Executable):
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(name='{self.name}')"
+
+
+def async_worker(func=None, *, name: str = None):
+    """
+    Decorator that wraps an async function into a Worker instance.
+
+    Usage:
+        @async_worker
+        async def fetch(ctx: Context) -> Context:
+            ...
+            return ctx
+
+        pipeline = fetch >> another_worker
+
+    Args:
+        func: The async function with signature ``(ctx: Context) -> Context``.
+        name: Optional worker name; defaults to ``func.__name__``.
+    """
+
+    def _decorate(f):
+        if not inspect.iscoroutinefunction(f):
+            raise TypeError("async_worker expects an async function")
+
+        worker_name = name or f.__name__
+
+        class _AsyncFuncWorker(Worker):
+            async def arun(self, ctx: Context) -> Context:
+                return await f(ctx)
+
+            def __repr__(self) -> str:
+                return f"AsyncFuncWorker(name='{self.name}', func='{f.__name__}')"
+
+        return _AsyncFuncWorker(worker_name)
+
+    if func is None:
+        return _decorate
+
+    return _decorate(func)

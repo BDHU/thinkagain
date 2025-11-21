@@ -85,6 +85,22 @@ print(ctx.answer)
 print(ctx.history)  # chronological log of every node
 ```
 
+### Wrapping plain async functions
+
+Use `@async_worker` to turn a simple coroutine into a first-class worker without creating a subclass:
+
+```python
+from thinkagain import async_worker, Context
+
+@async_worker
+async def fetch(ctx: Context) -> Context:
+    ctx.result = await ctx.client.get(ctx.query)
+    return ctx
+
+pipeline = fetch >> postprocess  # postprocess can be another Worker
+ctx = await pipeline.arun(Context(query="hello"))
+```
+
 ## Build Workflows Your Way
 
 ### Sequential pipelines

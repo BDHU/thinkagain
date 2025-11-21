@@ -179,6 +179,20 @@ graph = Graph()
 graph.add_node("preprocessor", preprocessor)
 graph.add_node("specialist", transform_context)  # Wrapper function
 graph.add_node("postprocessor", postprocessor)
+
+### Pattern 5: Wrap plain async functions as workers
+
+```python
+from thinkagain import async_worker, Context
+
+@async_worker
+async def fetch(ctx: Context) -> Context:
+    ctx.data = await ctx.client.get(ctx.query)
+    return ctx
+
+pipeline = fetch >> cleanup  # cleanup can be any Worker
+result = await pipeline.arun(Context(query="ping"))
+```
 ```
 
 ## Benefits

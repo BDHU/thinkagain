@@ -12,6 +12,7 @@ Graphs can contain graphs (subgraphs) naturally.
 """
 
 from .core import Context, Executable, Worker, Graph, END, StreamEvent
+from .core.worker import async_worker
 
 __version__ = "0.1.1"
 
@@ -22,4 +23,5 @@ __all__ = [
     "Graph",
     "END",
     "StreamEvent",
+    "async_worker",
 ]

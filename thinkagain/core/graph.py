@@ -404,7 +404,9 @@ class Graph(Executable):
                 f"Use add_conditional_edge for multiple paths."
             )
 
-    def _assert_valid_target(self, target: str, *, path_label: Optional[str] = None) -> None:
+    def _assert_valid_target(
+        self, target: str, *, path_label: Optional[str] = None
+    ) -> None:
         if target == END:
             return
         if target not in self.nodes:
