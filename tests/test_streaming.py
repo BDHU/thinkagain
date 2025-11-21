@@ -26,7 +26,7 @@ def _build_linear_graph() -> Graph:
 
 
 async def _gather_events(
-    executable,
+    executable: "Executable",
 ) -> tuple[Context, list[tuple[str, str | None, list[str]]]]:
     ctx = Context()
     events = []
