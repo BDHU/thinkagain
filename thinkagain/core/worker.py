@@ -7,8 +7,10 @@ They transform Context and can be composed with other executables.
 A worker is just an Executable that you implement with business logic.
 """
 
-import re
 import inspect
+import re
+from typing import Awaitable, Callable, Optional, TypeVar, Union, overload
+
 from .context import Context
 from .executable import Executable
 
@@ -115,7 +117,22 @@ class Worker(Executable):
         return f"{self.__class__.__name__}(name='{self.name}')"
 
 
-def async_worker(func=None, *, name: str = None):
+_AsyncWorkerFunc = TypeVar("_AsyncWorkerFunc", bound=Callable[[Context], Awaitable[Context]])
+
+
+@overload
+def async_worker(func: _AsyncWorkerFunc, *, name: Optional[str] = ...) -> Worker:
+    ...
+
+
+@overload
+def async_worker(func: None = ..., *, name: Optional[str] = ...) -> Callable[[_AsyncWorkerFunc], Worker]:
+    ...
+
+
+def async_worker(
+    func: Optional[_AsyncWorkerFunc] = None, *, name: Optional[str] = None
+) -> Union[Callable[[_AsyncWorkerFunc], Worker], Worker]:
     """
     Decorator that wraps an async function into a Worker instance.
 
@@ -132,7 +149,7 @@ def async_worker(func=None, *, name: str = None):
         name: Optional worker name; defaults to ``func.__name__``.
     """
 
-    def _decorate(f):
+    def _decorate(f: _AsyncWorkerFunc) -> Worker:
         if not inspect.iscoroutinefunction(f):
             raise TypeError("async_worker expects an async function")
 
