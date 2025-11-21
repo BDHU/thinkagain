@@ -19,6 +19,7 @@ from .constants import END
 from .context import Context
 from .runtime import EdgeTarget, StreamEvent, execute_graph, stream_graph_events
 
+
 class CompiledGraph:
     """
     Immutable, executable graph representation.
