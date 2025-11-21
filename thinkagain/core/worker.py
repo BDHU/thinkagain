@@ -117,17 +117,19 @@ class Worker(Executable):
         return f"{self.__class__.__name__}(name='{self.name}')"
 
 
-_AsyncWorkerFunc = TypeVar("_AsyncWorkerFunc", bound=Callable[[Context], Awaitable[Context]])
+_AsyncWorkerFunc = TypeVar(
+    "_AsyncWorkerFunc", bound=Callable[[Context], Awaitable[Context]]
+)
 
 
 @overload
-def async_worker(func: _AsyncWorkerFunc, *, name: Optional[str] = ...) -> Worker:
-    ...
+def async_worker(func: _AsyncWorkerFunc, *, name: Optional[str] = ...) -> Worker: ...
 
 
 @overload
-def async_worker(func: None = ..., *, name: Optional[str] = ...) -> Callable[[_AsyncWorkerFunc], Worker]:
-    ...
+def async_worker(
+    func: None = ..., *, name: Optional[str] = ...
+) -> Callable[[_AsyncWorkerFunc], Worker]: ...
 
 
 def async_worker(
