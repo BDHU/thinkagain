@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 
 from thinkagain import Context, Worker, async_worker
@@ -9,8 +10,7 @@ class _SuffixWorker(Worker):
         return ctx
 
 
-@pytest.mark.asyncio
-async def test_async_worker_decorator_runs_and_composes() -> None:
+def test_async_worker_decorator_runs_and_composes() -> None:
     calls: list[str] = []
 
     @async_worker
@@ -23,7 +23,7 @@ async def test_async_worker_decorator_runs_and_composes() -> None:
     assert starter.name == "starter"
 
     pipeline = starter >> _SuffixWorker()
-    ctx = await pipeline.arun(Context(value=[]))
+    ctx = asyncio.run(pipeline.arun(Context(value=[])))
 
     assert ctx.value == ["starter", "suffix"]
     assert calls == ["starter"]
