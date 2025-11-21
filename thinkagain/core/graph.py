@@ -35,13 +35,16 @@ Example - Self-correcting RAG with cycle:
 
 import warnings
 from collections import deque
-from typing import Any, AsyncIterator, Callable, Dict, Iterable, Optional, Tuple
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Dict, Iterable, Optional
 
 from .constants import END
 from .context import Context
 from .executable import Executable
 from .runtime import EdgeTarget, StreamEvent, execute_graph, stream_graph_events
 from .graph_flattener import GraphFlattener
+
+if TYPE_CHECKING:
+    from .compiled_graph import CompiledGraph
 
 RouteFn = Callable[[Context], str]
 EdgePaths = Dict[str, str]

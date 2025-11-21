@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from thinkagain import Context, Graph, Worker, END
+from thinkagain import Context, Executable, Graph, Worker, END
 
 
 class Appender(Worker):
