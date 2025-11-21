@@ -1,5 +1,4 @@
 import asyncio
-import pytest
 
 from thinkagain import Context, Worker, async_worker
 
