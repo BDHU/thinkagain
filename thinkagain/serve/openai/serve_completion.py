@@ -196,7 +196,7 @@ class ProcessQuery(Worker):
 class GenerateResponse(Worker):
     """Generate a response based on the processed query."""
 
-    def __call__(self, ctx: Context) -> Context:
+    async def arun(self, ctx: Context) -> Context:
         query = ctx.get("processed_query", ctx.user_query)
 
         # This is a mock response - replace with actual LLM call
