@@ -20,7 +20,7 @@ from thinkagain.serve.openai.serve_completion import create_app, GraphRegistry
 
 
 class MyWorker(Worker):
-    def __call__(self, ctx: Context) -> Context:
+    async def arun(self, ctx: Context) -> Context:
         ctx.response = f"Response to: {ctx.user_query}"
         return ctx
 
