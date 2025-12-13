@@ -1,5 +1,5 @@
 <div align="center" id="sglangtop">
-<img src="assets/logo.svg" alt="logo" width="400" margin="10px"></img>
+<img src="https://raw.githubusercontent.com/BDHU/thinkagain/main/assets/logo.svg" alt="logo" width="400" margin="10px"></img>
 
 [![PyPI version](https://img.shields.io/pypi/v/thinkagain.svg)](https://pypi.org/project/thinkagain/)
 [![License](https://img.shields.io/pypi/l/thinkagain.svg)](https://github.com/BDHU/thinkagain/blob/main/LICENSE)
