@@ -81,12 +81,13 @@ def _openai_error(
     *,
     type_: str = "server_error",
     param: Optional[str] = None,
+    code: Optional[str] = None,
     status_code: int = 500,
 ) -> HTTPException:
     return HTTPException(
         status_code=status_code,
         detail={
-            "error": {"message": message, "type": type_, "param": param, "code": None}
+            "error": {"message": message, "type": type_, "param": param, "code": code}
         },
     )
 
