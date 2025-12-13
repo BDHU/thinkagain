@@ -18,7 +18,7 @@ from thinkagain.serve.openai.serve_completion import create_app, GraphRegistry
 class MyWorker(Worker):
     """Your custom worker - replace with your LLM integration."""
 
-    def __call__(self, ctx: Context) -> Context:
+    async def arun(self, ctx: Context) -> Context:
         ctx.response = f"You asked: '{ctx.user_query}'\n\nThis is a custom response!"
         return ctx
 
