@@ -216,7 +216,7 @@ class GenerateResponse(Worker):
 class EnhanceResponse(Worker):
     """Optionally enhance or refine the response."""
 
-    def __call__(self, ctx: Context) -> Context:
+    async def arun(self, ctx: Context) -> Context:
         # Add some enhancement logic
         original = ctx.response
         ctx.response = f"{original}\n\n---\nProcessed by ThinkAgain Graph"
