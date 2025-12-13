@@ -185,7 +185,7 @@ class GraphRegistry:
 class ProcessQuery(Worker):
     """Process the user's query and extract key information."""
 
-    def __call__(self, ctx: Context) -> Context:
+    async def arun(self, ctx: Context) -> Context:
         # Extract the user query from messages
         user_message = ctx.user_query
         ctx.processed_query = user_message.strip()
