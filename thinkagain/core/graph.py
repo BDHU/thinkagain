@@ -35,12 +35,12 @@ Example - Self-correcting RAG with cycle:
 
 import warnings
 from collections import deque
-from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Dict, Iterable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Optional
 
 from .constants import END
 from .context import Context
-from .executable import Executable
-from .runtime import EdgeTarget, StreamEvent, execute_graph, stream_graph_events
+from .graph_executor import GraphExecutor
+from .runtime import EdgeTarget, DirectEdge, ConditionalEdge
 from .graph_flattener import GraphFlattener
 
 if TYPE_CHECKING:
@@ -50,7 +50,7 @@ RouteFn = Callable[[Context], str]
 EdgePaths = Dict[str, str]
 
 
-class Graph(Executable):
+class Graph(GraphExecutor):
     """
     Async-first graph supporting arbitrary cycles and conditional routing.
 
@@ -72,11 +72,13 @@ class Graph(Executable):
             max_steps: Optional maximum execution steps to prevent infinite loops.
                       If None (default), no limit is enforced.
         """
-        super().__init__(name)
-        self.nodes: Dict[str, Any] = {}  # node_name -> executable
-        self.edges: Dict[str, EdgeTarget] = {}  # node_name -> next | (route_fn, paths)
-        self.entry_point: Optional[str] = None
-        self.max_steps = max_steps
+        super().__init__(
+            name=name,
+            nodes={},
+            edges={},
+            entry_point=None,
+            max_steps=max_steps,
+        )
 
     def add_node(self, name: str, executable: Any) -> "Graph":
         """
@@ -150,7 +152,7 @@ class Graph(Executable):
         self._ensure_node_exists(from_node)
         self._assert_edge_available(from_node)
         self._assert_valid_target(to_node)
-        self.edges[from_node] = to_node
+        self.edges[from_node] = DirectEdge(target=to_node)
         return self
 
     def add_conditional_edge(
@@ -183,53 +185,15 @@ class Graph(Executable):
         self._ensure_node_exists(from_node)
         self._assert_edge_available(from_node)
         normalized_paths = self._normalize_paths(paths)
-        self.edges[from_node] = (route, normalized_paths)
+        self.edges[from_node] = ConditionalEdge(route_fn=route, paths=normalized_paths)
         return self
 
-    async def arun(self, ctx: Context) -> Context:
-        """
-        Execute the graph starting from entry point (async).
-
-        This is the primary execution method. For sync execution,
-        use __call__() which wraps this in asyncio.run().
-
-        Args:
-            ctx: Input context with initial state
-
-        Returns:
-            Context with execution results and path history
-
-        Raises:
-            ValueError: If graph is invalid or execution fails
-        """
-        # Lazy validation on first execution
+    def _validate_before_run(self) -> None:
+        super()._validate_before_run()
         self._validate()
 
-        return await execute_graph(
-            ctx=ctx,
-            nodes=self.nodes,
-            edges=self.edges,
-            entry_point=self.entry_point,
-            max_steps=self.max_steps,
-            end_token=END,
-            log_prefix=f"[Graph:{self.name}]",
-        )
-
-    async def stream(self, ctx: Context) -> AsyncIterator[StreamEvent]:
-        """Yield ``StreamEvent`` objects as each node finishes executing."""
-
-        self._validate()
-
-        async for event in stream_graph_events(
-            ctx=ctx,
-            nodes=self.nodes,
-            edges=self.edges,
-            entry_point=self.entry_point,
-            max_steps=self.max_steps,
-            end_token=END,
-            log_prefix=f"[Graph:{self.name}]",
-        ):
-            yield event
+    def _log_prefix(self) -> str:
+        return f"[Graph:{self.name}]"
 
     def _validate(self):
         """Validate graph structure (called lazily on first execution)."""
@@ -287,37 +251,6 @@ class Graph(Executable):
         from .visualization import generate_mermaid_diagram
 
         return generate_mermaid_diagram(self.nodes, self.edges, self.entry_point)
-
-    def to_dict(self) -> dict:
-        """Export graph structure as dictionary."""
-        edges_dict = {}
-        for k, v in self.edges.items():
-            if isinstance(v, tuple):
-                route_fn, edge_map = v
-                fn_name = (
-                    route_fn.__name__ if hasattr(route_fn, "__name__") else "lambda"
-                )
-                edges_dict[k] = {
-                    "type": "conditional",
-                    "function": fn_name,
-                    "paths": edge_map,
-                }
-            else:
-                edges_dict[k] = {"type": "direct", "to": v}
-
-        return {
-            "type": "Graph",
-            "name": self.name,
-            "entry_point": self.entry_point,
-            "max_steps": self.max_steps,
-            "nodes": {
-                name: node.to_dict()
-                if hasattr(node, "to_dict")
-                else {"type": "callable", "name": str(node)}
-                for name, node in self.nodes.items()
-            },
-            "edges": edges_dict,
-        }
 
     def compile(self) -> "CompiledGraph":
         """
@@ -428,7 +361,9 @@ class Graph(Executable):
 
     @staticmethod
     def _edge_targets(edge: EdgeTarget) -> Iterable[str]:
-        if isinstance(edge, tuple):
-            _, edge_map = edge
-            return edge_map.values()
+        if isinstance(edge, ConditionalEdge):
+            return edge.paths.values()
+        if isinstance(edge, DirectEdge):
+            return (edge.target,)
+        # Backward compat: plain string
         return (edge,)

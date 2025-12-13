@@ -14,13 +14,13 @@ Benefits:
 - Clear separation of concerns
 """
 
-from typing import Any, AsyncIterator, Dict, Optional
-from .constants import END
-from .context import Context
-from .runtime import EdgeTarget, StreamEvent, execute_graph, stream_graph_events
+from typing import Any, Dict, Optional
+
+from .graph_executor import GraphExecutor
+from .runtime import EdgeTarget
 
 
-class CompiledGraph:
+class CompiledGraph(GraphExecutor):
     """
     Immutable, executable graph representation.
 
@@ -59,64 +59,18 @@ class CompiledGraph:
             entry_point: Starting node
             max_steps: Optional step limit
         """
-        self.name = name
-        self.nodes = nodes
-        self.edges = edges
-        self.entry_point = entry_point
-        self.max_steps = max_steps
-
+        super().__init__(
+            name=name,
+            nodes=nodes,
+            edges=edges,
+            entry_point=entry_point,
+            max_steps=max_steps,
+        )
         # Make immutable (shallow - prevents adding/removing nodes)
         self._sealed = True
 
-    async def arun(self, ctx: Context) -> Context:
-        """
-        Execute the compiled graph.
-
-        Args:
-            ctx: Input context with initial state
-
-        Returns:
-            Context with execution results and path history
-
-        Raises:
-            ValueError: If execution fails
-        """
-        prefix = f"[CompiledGraph:{self.name}]"
-        return await execute_graph(
-            ctx=ctx,
-            nodes=self.nodes,
-            edges=self.edges,
-            entry_point=self.entry_point,
-            max_steps=self.max_steps,
-            end_token=END,
-            log_prefix=prefix,
-        )
-
-    async def stream(self, ctx: Context) -> AsyncIterator[StreamEvent]:
-        """Yield ``StreamEvent`` objects while the compiled graph executes."""
-
-        prefix = f"[CompiledGraph:{self.name}]"
-        async for event in stream_graph_events(
-            ctx=ctx,
-            nodes=self.nodes,
-            edges=self.edges,
-            entry_point=self.entry_point,
-            max_steps=self.max_steps,
-            end_token=END,
-            log_prefix=prefix,
-        ):
-            yield event
-
-    def visualize(self) -> str:
-        """
-        Generate Mermaid diagram syntax for the compiled graph.
-
-        Returns:
-            Mermaid diagram code
-        """
-        from .visualization import generate_mermaid_diagram
-
-        return generate_mermaid_diagram(self.nodes, self.edges, self.entry_point)
+    def _log_prefix(self) -> str:
+        return f"[CompiledGraph:{self.name}]"
 
     def __repr__(self) -> str:
         return f"CompiledGraph(name='{self.name}', nodes={len(self.nodes)})"

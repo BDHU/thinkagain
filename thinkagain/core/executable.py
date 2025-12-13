@@ -15,18 +15,13 @@ if TYPE_CHECKING:
     from .graph import Graph
 
 
-async def run_sync(func, *args, **kwargs):
-    """Run blocking ``func`` in a background thread and await the result."""
-    return await asyncio.to_thread(func, *args, **kwargs)
-
-
 class Executable:
     """
     Base class for anything that transforms Context.
 
     All components in thinkagain implement this interface:
-    - __call__(ctx) -> ctx: synchronous execution
-    - arun(ctx) -> ctx: asynchronous execution
+    - arun(ctx) -> ctx: asynchronous execution (required)
+    - __call__(ctx) -> ctx: synchronous wrapper (provided automatically)
     - __rshift__(other) -> Graph: composition via >> operator
 
     This unified interface enables seamless composition:
@@ -48,18 +43,19 @@ class Executable:
         """Generate default name from class name."""
         return self.__class__.__name__.lower()
 
-    @staticmethod
-    def _overrides(instance: "Executable", method_name: str) -> bool:
-        """Return True when ``method_name`` is implemented by a subclass."""
-        base_impl = getattr(Executable, method_name, None)
-        current_impl = getattr(type(instance), method_name, None)
-        return current_impl is not None and current_impl is not base_impl
-
     def __call__(self, ctx: "Context") -> "Context":
-        """Execute synchronously, falling back to async implementation if needed."""
-        if self._overrides(self, "arun"):
-            return asyncio.run(self.arun(ctx))
-        raise NotImplementedError(f"{self.__class__.__name__} must implement __call__")
+        """
+        Execute synchronously (convenience wrapper).
+
+        This runs the async arun() method using asyncio.run().
+
+        Args:
+            ctx: Input context
+
+        Returns:
+            Modified context
+        """
+        return asyncio.run(self.arun(ctx))
 
     async def arun(self, ctx: "Context") -> "Context":
         """
@@ -72,12 +68,9 @@ class Executable:
             Modified context
 
         Note:
-            Default implementation wraps __call__() for sync components
+            Subclasses must implement this method.
         """
-        if self._overrides(self, "__call__"):
-            return await run_sync(self.__call__, ctx)
-
-        raise NotImplementedError(f"{self.__class__.__name__} must implement arun")
+        raise NotImplementedError(f"{self.__class__.__name__} must implement arun()")
 
     def __rshift__(self, other) -> "Graph":
         """
@@ -119,10 +112,6 @@ class Executable:
         g.add_edge("_0", "_1")
         g.add_edge("_1", END)
         return g
-
-    def to_dict(self) -> dict:
-        """Export structure as dictionary for inspection/serialization."""
-        return {"type": self.__class__.__name__, "name": self.name}
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(name='{self.name}')"

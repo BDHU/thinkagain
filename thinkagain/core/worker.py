@@ -9,7 +9,15 @@ A worker is just an Executable that you implement with business logic.
 
 import inspect
 import re
-from typing import Awaitable, Callable, Optional, TypeVar, Union, overload
+from typing import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Optional,
+    TypeVar,
+    Union,
+    overload,
+)
 
 from .context import Context
 from .executable import Executable
@@ -29,41 +37,35 @@ class Worker(Executable):
     Workers can be simple functions, complex stateful services,
     or anything in between (e.g., vector DB, LLM, reranker).
 
-    Supports both synchronous and asynchronous execution:
-    - Implement __call__(self, ctx) for sync workers
-    - Implement async arun(self, ctx) for async workers
-    - Executable handles the appropriate bridging when only one of them
-      is provided
+    All workers must implement async arun(). Synchronous execution
+    is available via the __call__() wrapper (runs async under the hood).
 
-    Synchronous example:
+    Basic example:
         class VectorDBWorker(Worker):
-            def __call__(self, ctx: Context) -> Context:
-                ctx.documents = self.search(ctx.query)
-                ctx.log(f"[{self.name}] Retrieved {len(ctx.documents)} docs")
-                return ctx
-
-    Asynchronous example:
-        class AsyncVectorDBWorker(Worker):
             async def arun(self, ctx: Context) -> Context:
                 ctx.documents = await self.search_async(ctx.query)
                 ctx.log(f"[{self.name}] Retrieved {len(ctx.documents)} docs")
                 return ctx
 
-    Dual support example:
-        class DualVectorDBWorker(Worker):
-            def __call__(self, ctx: Context) -> Context:
-                ctx.documents = self.search(ctx.query)
-                return ctx
-
-            async def arun(self, ctx: Context) -> Context:
-                ctx.documents = await self.search_async(ctx.query)
-                return ctx
+    Streaming example (for LLM workers that produce incremental output):
+        class StreamingLLMWorker(Worker):
+            async def astream(self, ctx: Context) -> AsyncIterator[Context]:
+                chunks = []
+                async for token in self.llm.stream(ctx.query):
+                    chunks.append(token)
+                    ctx.response = "".join(chunks)
+                    yield ctx  # Yield progressive updates
+                # Last yield contains the complete result
 
     Usage:
         # Compose workers into pipelines
         pipeline = vector_db >> reranker >> generator
-        result = await pipeline.arun(ctx)  # async
-        result = pipeline(ctx)             # sync
+        result = await pipeline.arun(ctx)  # async (recommended)
+        result = pipeline(ctx)             # sync (runs async under the hood)
+
+        # Stream results from workers that support it
+        async for ctx_snapshot in graph.stream(ctx):
+            print(ctx_snapshot.response)  # See incremental updates
     """
 
     def __init__(self, name: str = None):
@@ -94,24 +96,36 @@ class Worker(Executable):
         name = re.sub("([a-z0-9])([A-Z])", r"\1_\2", name).lower()
         return name
 
-    def __call__(self, ctx: Context) -> Context:
+    async def astream(self, ctx: Context) -> AsyncIterator[Context]:
         """
-        Process the context and return modified context (synchronous).
+        Stream context updates during execution.
+
+        This is the primary method for workers that produce incremental output
+        (e.g., LLM workers streaming tokens). Override this to enable streaming.
+
+        For non-streaming workers, the default implementation calls arun() and
+        yields the result once, making all workers compatible with streaming.
 
         Args:
             ctx: Input context
 
-        Returns:
-            Modified context
+        Yields:
+            Context snapshots with progressive updates. The last yield should
+            contain the complete result.
 
-        Raises:
-            NotImplementedError: Subclasses must implement this
+        Example:
+            class StreamingLLM(Worker):
+                async def astream(self, ctx: Context):
+                    chunks = []
+                    async for token in self.llm.stream(ctx.query):
+                        chunks.append(token)
+                        ctx.response = "".join(chunks)
+                        yield ctx  # Incremental update
+                    # Final yield has complete response
         """
-        raise NotImplementedError(f"Worker '{self.name}' must implement __call__")
-
-    def to_dict(self) -> dict:
-        """Export worker structure as dictionary."""
-        return {"type": "Worker", "name": self.name, "class": self.__class__.__name__}
+        # Default: call arun and yield once (non-streaming behavior)
+        result = await self.arun(ctx)
+        yield result
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(name='{self.name}')"

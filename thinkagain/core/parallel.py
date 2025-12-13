@@ -94,10 +94,6 @@ class Parallel(Worker):
         self._log(ctx, "Completed parallel execution")
         return merged_ctx
 
-    async def acall(self, ctx: Context) -> Context:
-        """Backward-compatible alias for ``arun``."""
-        return await self.arun(ctx)
-
     def _default_merge(self, original_ctx: Context, results: List[Context]) -> Context:
         """
         Default merge strategy: combine all documents from parallel workers.
@@ -132,19 +128,6 @@ class Parallel(Worker):
 
     def _log(self, ctx: Context, message: str) -> None:
         ctx.log(f"[{self.name}] {message}")
-
-    def to_dict(self) -> dict:
-        """Export parallel structure as dictionary."""
-        return {
-            "type": "Parallel",
-            "name": self.name,
-            "workers": [
-                worker.to_dict()
-                if hasattr(worker, "to_dict")
-                else {"type": "Unknown", "name": str(worker)}
-                for worker in self.workers
-            ],
-        }
 
     def __repr__(self) -> str:
         return f"Parallel(name='{self.name}', workers={len(self.workers)})"
