@@ -30,7 +30,7 @@ from thinkagain import Context, Worker, Graph, END
 class RetrieveDocs(Worker):
     """Simulate document retrieval from a knowledge source."""
 
-    def __call__(self, ctx: Context) -> Context:
+    async def arun(self, ctx: Context) -> Context:
         attempt = ctx.get("retrieval_attempt", 0) + 1
         ctx.retrieval_attempt = attempt
 
@@ -46,7 +46,7 @@ class RetrieveDocs(Worker):
 class RerankDocs(Worker):
     """Keep only the top documents so downstream workers stay simple."""
 
-    def __call__(self, ctx: Context) -> Context:
+    async def arun(self, ctx: Context) -> Context:
         keep = ctx.get("top_n", 2)
         ctx.documents = ctx.documents[:keep]
         ctx.log(f"[{self.name}] Keeping top {len(ctx.documents)} docs")
@@ -56,7 +56,7 @@ class RerankDocs(Worker):
 class GenerateAnswer(Worker):
     """Pretend to call an LLM to produce an answer."""
 
-    def __call__(self, ctx: Context) -> Context:
+    async def arun(self, ctx: Context) -> Context:
         doc_summary = ", ".join(ctx.documents) if ctx.documents else "no docs"
         ctx.answer = f"Answer about '{ctx.query}' using {doc_summary}"
         ctx.log(f"[{self.name}] Generated answer with {len(ctx.documents)} docs")
@@ -66,7 +66,7 @@ class GenerateAnswer(Worker):
 class CritiqueAnswer(Worker):
     """Provide a toy quality score so the graph can branch."""
 
-    def __call__(self, ctx: Context) -> Context:
+    async def arun(self, ctx: Context) -> Context:
         doc_count = len(ctx.documents)
         ctx.quality = 0.9 if doc_count >= 3 else 0.7 if doc_count == 2 else 0.4
         ctx.log(f"[{self.name}] Quality score = {ctx.quality:.2f}")
@@ -76,7 +76,7 @@ class CritiqueAnswer(Worker):
 class RefineQuery(Worker):
     """Refine the query when the critique is not satisfied."""
 
-    def __call__(self, ctx: Context) -> Context:
+    async def arun(self, ctx: Context) -> Context:
         refinements = ctx.get("refinements", 0) + 1
         ctx.refinements = refinements
         ctx.query = f"{ctx.query} (detail {refinements})"

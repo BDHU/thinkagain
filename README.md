@@ -50,6 +50,17 @@ If you are using [uv](https://github.com/astral-sh/uv), simply do:
 uv add thinkagain
 ```
 
+## OpenAI-Compatible Server
+
+ThinkAgain ships an optional OpenAI-compatible `/v1/chat/completions` server.
+
+```bash
+pip install -e ".[serve]"
+python -m thinkagain.serve.openai.serve_completion
+```
+
+See `thinkagain/serve/README.md` for full usage and integration examples. A runnable script lives at `examples/serve_openai_demo.py`.
+
 ## Quick Start
 
 ```python

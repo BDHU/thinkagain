@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Dict, Optional, Set, Tuple
 
 from .constants import END
-from .runtime import EdgeTarget
+from .runtime import EdgeTarget, DirectEdge, ConditionalEdge
 
 if TYPE_CHECKING:
     from .graph import Graph
@@ -100,19 +100,22 @@ class GraphFlattener:
         mapping: Dict[str, Tuple[str, str]],
         default_target: str,
     ) -> EdgeTarget:
-        if isinstance(edge, tuple):
-            route_fn, paths = edge
+        if isinstance(edge, ConditionalEdge):
             updated_paths: Dict[str, str] = {}
-            for label, target in paths.items():
+            for label, target in edge.paths.items():
                 if target == END:
                     updated_paths[label] = default_target
                 else:
                     updated_paths[label] = mapping[target][0]
-            return (route_fn, updated_paths)
+            return ConditionalEdge(route_fn=edge.route_fn, paths=updated_paths)
 
-        if edge == END:
-            return default_target
-        return mapping[edge][0]
+        if isinstance(edge, DirectEdge):
+            if edge.target == END:
+                return DirectEdge(target=default_target)
+            return DirectEdge(target=mapping[edge.target][0])
+
+        # Should not reach here with new edge classes
+        raise TypeError(f"Unknown edge type: {type(edge)}")
 
 
 __all__ = ["GraphFlattener"]

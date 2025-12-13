@@ -17,7 +17,7 @@ from .executable import Executable
 from .worker import Worker
 from .graph import Graph
 from .compiled_graph import CompiledGraph
-from .runtime import StreamEvent
+from .runtime import StreamEvent, DirectEdge, ConditionalEdge
 
 __all__ = [
     "Context",
@@ -27,4 +27,6 @@ __all__ = [
     "END",
     "CompiledGraph",
     "StreamEvent",
+    "DirectEdge",
+    "ConditionalEdge",
 ]

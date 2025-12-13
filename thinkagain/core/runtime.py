@@ -12,14 +12,29 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Callable, Dict, Literal, Optional, Tuple, Union
+from typing import Any, AsyncIterator, Callable, Dict, Literal, Optional, Union
 
 from .context import Context
-from .executable import run_sync
 
-EdgeMap = Dict[str, str]
-ConditionalEdge = Tuple[Callable[[Context], str], EdgeMap]
-EdgeTarget = Union[str, ConditionalEdge]
+
+@dataclass
+class DirectEdge:
+    """Direct edge to a single target node."""
+
+    target: str
+
+
+@dataclass
+class ConditionalEdge:
+    """Conditional edge that routes based on context state."""
+
+    route_fn: Callable[[Context], str]
+    paths: Dict[str, str]
+
+
+EdgeTarget = Union[
+    DirectEdge, ConditionalEdge, str
+]  # str for backward compat during migration
 
 
 @dataclass
@@ -31,6 +46,7 @@ class StreamEvent:
     ctx: Context
     step: int
     info: Dict[str, Any]
+    streaming: bool = False  # True if this is an intermediate streaming update
 
 
 async def execute_graph(
@@ -118,14 +134,34 @@ async def stream_graph_events(
             current = next_node
             continue
 
-        ctx = await _execute_node(nodes, current, ctx, _log)
+        # Execute node with streaming support
+        final_ctx = ctx
+        async for ctx_snapshot in _execute_node_stream(nodes, current, ctx, _log):
+            final_ctx = ctx_snapshot
+            # Check if this is the last yield (final result)
+            # We'll yield intermediate updates with streaming=True
+            # For now, yield all of them and let the consumer decide
+            yield StreamEvent(
+                type="node",
+                node=current,
+                ctx=ctx_snapshot,
+                step=len(execution_path) + 1,
+                info={"log_prefix": log_prefix},
+                streaming=True,  # Intermediate update
+            )
+
+        # Update context to final result
+        ctx = final_ctx
         execution_path.append(current)
+
+        # Yield final node completion event
         yield StreamEvent(
             type="node",
             node=current,
             ctx=ctx,
             step=len(execution_path),
             info={"log_prefix": log_prefix},
+            streaming=False,  # Final completion
         )
 
         next_node = await _resolve_next_node(edges, current, ctx, end_token, _log)
@@ -157,12 +193,13 @@ async def stream_graph_events(
     )
 
 
-async def _execute_node(
+async def _execute_node_stream(
     nodes: Dict[str, Any],
     node_name: str,
     ctx: Context,
     log: Callable[[str], None],
-) -> Context:
+) -> AsyncIterator[Context]:
+    """Execute a node and yield context snapshots during execution."""
     node = nodes[node_name]
 
     # Delay Graph import to avoid cycles.
@@ -177,7 +214,14 @@ async def _execute_node(
         log(f"Executing: {node_name}")
 
     try:
-        return await _invoke(node, ctx)
+        # Check if node supports streaming (has astream method)
+        if hasattr(node, "astream"):
+            async for ctx_snapshot in node.astream(ctx):
+                yield ctx_snapshot
+        else:
+            # Fallback to regular invocation for non-Worker nodes
+            result = await _invoke(node, ctx)
+            yield result
     except Exception as exc:  # pragma: no cover - logs and re-raises exceptions
         log(f"Error in node '{node_name}' ({type(exc).__name__}): {exc}")
         raise
@@ -196,27 +240,34 @@ async def _resolve_next_node(
         log(f"Node '{current}' has no outgoing edge, terminating")
         return None
 
-    if isinstance(edge, tuple):
-        route_fn, edge_map = edge
+    # Handle ConditionalEdge
+    if isinstance(edge, ConditionalEdge):
         try:
-            route_result = await _call_route(route_fn, ctx)
+            route_result = await _call_route(edge.route_fn, ctx)
         except Exception as exc:
             log(f"Error in routing function: {exc}")
             raise
 
         log(f"Conditional route from '{current}': '{route_result}'")
 
-        if route_result in edge_map:
-            return edge_map[route_result]
         if route_result == end_token:
             return end_token
 
-        available = list(edge_map.keys()) + [end_token]
+        if route_result in edge.paths:
+            return edge.paths[route_result]
+
+        available = list(edge.paths.keys()) + [end_token]
         raise ValueError(
             f"Route function returned '{route_result}' but no matching edge. "
             f"Available paths: {available}"
         )
 
+    # Handle DirectEdge
+    if isinstance(edge, DirectEdge):
+        log(f"Direct edge: '{current}' → '{edge.target}'")
+        return edge.target
+
+    # Backward compat: plain string
     log(f"Direct edge: '{current}' → '{edge}'")
     return edge
 
@@ -226,7 +277,8 @@ async def _invoke(node: Any, ctx: Context) -> Context:
         return await node.arun(ctx)
     if asyncio.iscoroutinefunction(node):
         return await node(ctx)
-    return await run_sync(node, ctx)
+    # Sync fallback: run in thread pool
+    return await asyncio.to_thread(node, ctx)
 
 
 async def _call_route(route: Callable[[Context], str], ctx: Context) -> str:
@@ -238,6 +290,8 @@ async def _call_route(route: Callable[[Context], str], ctx: Context) -> str:
 __all__ = [
     "execute_graph",
     "EdgeTarget",
+    "DirectEdge",
+    "ConditionalEdge",
     "StreamEvent",
     "stream_graph_events",
     "_invoke",

@@ -10,7 +10,7 @@ from thinkagain.core.worker import Worker
 class CounterWorker(Worker):
     """Increment a counter stored in the Context."""
 
-    def __call__(self, ctx: Context) -> Context:
+    async def arun(self, ctx: Context) -> Context:
         ctx.count = (ctx.count or 0) + 1
         return ctx
 

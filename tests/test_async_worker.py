@@ -4,7 +4,7 @@ from thinkagain import Context, Worker, async_worker
 
 
 class _SuffixWorker(Worker):
-    def __call__(self, ctx: Context) -> Context:  # pragma: no cover - trivial
+    async def arun(self, ctx: Context) -> Context:
         ctx.value.append("suffix")
         return ctx
 
