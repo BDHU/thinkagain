@@ -30,7 +30,7 @@ class Executable:
     Everything is composable with everything.
     """
 
-    def __init__(self, name: str = None):
+    def __init__(self, name: str | None = None):
         """
         Initialize executable with a name.
 

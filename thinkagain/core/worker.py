@@ -68,7 +68,7 @@ class Worker(Executable):
             print(ctx_snapshot.response)  # See incremental updates
     """
 
-    def __init__(self, name: str = None):
+    def __init__(self, name: str | None = None):
         """
         Initialize worker with a name.
 

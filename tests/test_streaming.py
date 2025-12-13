@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
-from thinkagain import Context, Executable, Graph, Worker, END
+from thinkagain import Context, Graph, Worker, END
+from thinkagain.core.graph_executor import GraphExecutor
 
 
 class Appender(Worker):
@@ -26,7 +27,7 @@ def _build_linear_graph() -> Graph:
 
 
 async def _gather_events(
-    executable: "Executable",
+    executable: GraphExecutor,
 ) -> tuple[Context, list[tuple[str, str | None, list[str]]]]:
     ctx = Context()
     events = []
