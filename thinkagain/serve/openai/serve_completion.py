@@ -1,326 +1,78 @@
-"""
-OpenAI-Compatible API Server for ThinkAgain
-============================================
+"""FastAPI wiring that exposes ThinkAgain graphs via the OpenAI API surface."""
 
-This module provides reusable components to create an OpenAI-compatible API
-server that wraps ThinkAgain graph execution.
-
-Usage:
-    1. Import create_app and GraphRegistry
-    2. Register your custom graphs
-    3. Run the server
-
-Example:
-    from thinkagain import Graph, Worker, Context, END
-    from thinkagain.serve.openai.serve_completion import create_app, GraphRegistry
-
-    # Define your worker
-    class MyWorker(Worker):
-        def __call__(self, ctx: Context) -> Context:
-            ctx.response = f"Response to: {ctx.user_query}"
-            return ctx
-
-    # Build your graph
-    graph = Graph(name="my_graph")
-    graph.add_node("worker", MyWorker())
-    graph.add_edge("worker", END)
-
-    # Create registry and register your graph
-    registry = GraphRegistry()
-    registry.register("my-model", graph, set_default=True)
-
-    # Create the FastAPI app
-    app = create_app(registry)
-
-    # Run with: uvicorn my_module:app
-"""
-
+import hashlib
+import json
 import time
 import uuid
-from typing import AsyncIterator, Optional, Dict, List
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 try:
     from fastapi import FastAPI, HTTPException
     from fastapi.responses import StreamingResponse
-    from pydantic import BaseModel
 except ImportError:
     raise ImportError(
-        "FastAPI and pydantic are required for the OpenAI server. "
-        "Install them with: pip install -e '.[serve]' (or: pip install 'thinkagain[serve]')"
+        "FastAPI is required for the OpenAI server. "
+        "Install with: pip install -e '.[serve]' (or: pip install 'thinkagain[serve]')"
     )
 
-from thinkagain import Context, Worker, Graph, END
+try:
+    from jsonschema import ValidationError, validate as jsonschema_validate
+except ImportError:
+    jsonschema_validate = None  # type: ignore[assignment]
+    ValidationError = None  # type: ignore[assignment]
+
+from thinkagain import Context, Graph
+
+from .models import (
+    ChatCompletionChunk,
+    ChatCompletionChoice,
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    ChatCompletionStreamChoice,
+    DeltaMessage,
+    JsonSchema,
+    Message,
+    ResponseFormat,
+    Usage,
+)
+
+NormalizedResponseFormat = Optional[Dict[str, Any]]
 
 
 # -----------------------------------------------------------------------------
-# Pydantic Models for OpenAI API Compatibility
-# -----------------------------------------------------------------------------
-
-
-class Message(BaseModel):
-    role: str
-    content: str
-
-
-class ChatCompletionRequest(BaseModel):
-    model: str = "thinkagain"
-    messages: List[Message]
-    temperature: Optional[float] = 1.0
-    max_tokens: Optional[int] = None
-    stream: bool = False
-    top_p: Optional[float] = 1.0
-    n: Optional[int] = 1
-    stop: Optional[List[str]] = None
-
-
-class ChatCompletionChoice(BaseModel):
-    index: int
-    message: Message
-    finish_reason: str
-
-
-class Usage(BaseModel):
-    prompt_tokens: int
-    completion_tokens: int
-    total_tokens: int
-
-
-class ChatCompletionResponse(BaseModel):
-    id: str
-    object: str = "chat.completion"
-    created: int
-    model: str
-    choices: List[ChatCompletionChoice]
-    usage: Usage
-
-
-class DeltaMessage(BaseModel):
-    role: Optional[str] = None
-    content: Optional[str] = None
-
-
-class ChatCompletionStreamChoice(BaseModel):
-    index: int
-    delta: DeltaMessage
-    finish_reason: Optional[str] = None
-
-
-class ChatCompletionChunk(BaseModel):
-    id: str
-    object: str = "chat.completion.chunk"
-    created: int
-    model: str
-    choices: List[ChatCompletionStreamChoice]
-
-
-# -----------------------------------------------------------------------------
-# ThinkAgain Graph Registry
+# Registry
 # -----------------------------------------------------------------------------
 
 
 class GraphRegistry:
-    """Registry for managing multiple ThinkAgain graphs."""
+    """Track graphs and the default entry."""
 
     def __init__(self):
         self._graphs: Dict[str, Graph] = {}
-        self._default_graph_name: Optional[str] = None
+        self._default: Optional[str] = None
 
     def register(self, name: str, graph: Graph, set_default: bool = False):
-        """Register a graph with a name."""
         self._graphs[name] = graph
-        if set_default or not self._default_graph_name:
-            self._default_graph_name = name
+        if set_default or not self._default:
+            self._default = name
 
-    def get(self, name: Optional[str] = None) -> Graph:
-        """
-        Get a graph by name, or the default graph if no name provided.
-
-        This method preserves the original behavior for backward compatibility.
-        Newer code should prefer ``get_required()`` and ``get_default()`` for
-        clearer semantics.
-        """
-        if name is None:
-            return self.get_default()
-        return self.get_required(name)
-
-    def get_default(self) -> Graph:
-        """
-        Get the default graph.
-
-        Raises:
-            KeyError: If no default graph has been registered.
-        """
-        if self._default_graph_name is None:
+    def get(self, name: Optional[str] = None) -> tuple[Graph, str]:
+        """Get graph by name or default. Returns (graph, name) tuple."""
+        key = name or self._default
+        if not key:
             raise KeyError("No default graph set in registry")
-        return self._graphs[self._default_graph_name]
-
-    def get_required(self, name: str) -> Graph:
-        """
-        Get a graph by name.
-
-        Raises:
-            KeyError: If the graph name does not exist.
-        """
-        if name not in self._graphs:
-            raise KeyError(f"Graph '{name}' not found in registry")
-        return self._graphs[name]
+        if key not in self._graphs:
+            raise KeyError(f"Graph '{key}' not found in registry")
+        return self._graphs[key], key
 
     def list_graphs(self) -> List[str]:
-        """List all registered graph names."""
         return list(self._graphs.keys())
 
 
-# Note: Don't use a global registry - users should create their own
-# See create_app() function below for the proper pattern
-
-
 # -----------------------------------------------------------------------------
-# Example ThinkAgain Workers (Customizable)
-# -----------------------------------------------------------------------------
-
-
-class ProcessQuery(Worker):
-    """Process the user's query and extract key information."""
-
-    async def arun(self, ctx: Context) -> Context:
-        # Extract the user query from messages
-        user_message = ctx.user_query
-        ctx.processed_query = user_message.strip()
-        ctx.log(f"[{self.name}] Processed query: {ctx.processed_query}")
-        return ctx
-
-
-class GenerateResponse(Worker):
-    """Generate a response based on the processed query."""
-
-    async def arun(self, ctx: Context) -> Context:
-        query = ctx.get("processed_query", ctx.user_query)
-
-        # This is a mock response - replace with actual LLM call
-        # Example: ctx.response = your_llm_client.complete(query)
-        ctx.response = (
-            f"I received your message: '{query}'\n\n"
-            "This is a mock response from ThinkAgain. To integrate with an actual LLM:\n"
-            "1. Replace this worker with your LLM API call\n"
-            "2. Or pass an LLM client to the worker during initialization\n"
-            "3. The response will be returned to the OpenAI-compatible API"
-        )
-
-        ctx.log(f"[{self.name}] Generated response ({len(ctx.response)} chars)")
-        return ctx
-
-
-class EnhanceResponse(Worker):
-    """Optionally enhance or refine the response."""
-
-    async def arun(self, ctx: Context) -> Context:
-        # Add some enhancement logic
-        original = ctx.response
-        ctx.response = f"{original}\n\n---\nProcessed by ThinkAgain Graph"
-        ctx.log(f"[{self.name}] Enhanced response")
-        return ctx
-
-
-def build_default_graph() -> Graph:
-    """Build the default chat completion graph."""
-    graph = Graph(name="chat_completion")
-
-    # Add nodes
-    graph.add_node("process", ProcessQuery())
-    graph.add_node("generate", GenerateResponse())
-    graph.add_node("enhance", EnhanceResponse())
-
-    # Set up flow
-    graph.set_entry("process")
-    graph.add_edge("process", "generate")
-    graph.add_edge("generate", "enhance")
-    graph.add_edge("enhance", END)
-
-    return graph
-
-
-# -----------------------------------------------------------------------------
-# Helper Functions
-# -----------------------------------------------------------------------------
-
-
-def extract_user_query(messages: List[Message]) -> str:
-    """Extract the last user message from the conversation."""
-    for msg in reversed(messages):
-        if msg.role == "user":
-            return msg.content
-    return ""
-
-
-def estimate_tokens(text: str) -> int:
-    """Rough token estimation (4 chars ≈ 1 token)."""
-    return len(text) // 4
-
-
-async def execute_graph_streaming(
-    graph: Graph, ctx: Context, request_id: str, model: str
-) -> AsyncIterator[str]:
-    """Execute graph with true incremental streaming support."""
-    created = int(time.time())
-
-    # Send initial chunk with role
-    initial_chunk = ChatCompletionChunk(
-        id=request_id,
-        created=created,
-        model=model,
-        choices=[
-            ChatCompletionStreamChoice(
-                index=0,
-                delta=DeltaMessage(role="assistant", content=""),
-                finish_reason=None,
-            )
-        ],
-    )
-    yield f"data: {initial_chunk.model_dump_json()}\n\n"
-
-    # Execute the graph and stream incremental updates
-    prev_response = ""
-    async for event in graph.stream(ctx):
-        # Stream intermediate updates from streaming workers
-        if event.type == "node" and event.streaming and hasattr(event.ctx, "response"):
-            current_response = event.ctx.response
-            # Calculate delta (new content since last update)
-            if current_response and current_response != prev_response:
-                delta_content = current_response[len(prev_response) :]
-                prev_response = current_response
-
-                chunk = ChatCompletionChunk(
-                    id=request_id,
-                    created=created,
-                    model=model,
-                    choices=[
-                        ChatCompletionStreamChoice(
-                            index=0,
-                            delta=DeltaMessage(content=delta_content),
-                            finish_reason=None,
-                        )
-                    ],
-                )
-                yield f"data: {chunk.model_dump_json()}\n\n"
-
-    # Send final chunk with finish_reason
-    final_chunk = ChatCompletionChunk(
-        id=request_id,
-        created=created,
-        model=model,
-        choices=[
-            ChatCompletionStreamChoice(
-                index=0, delta=DeltaMessage(), finish_reason="stop"
-            )
-        ],
-    )
-    yield f"data: {final_chunk.model_dump_json()}\n\n"
-    yield "data: [DONE]\n\n"
-
-
-# -----------------------------------------------------------------------------
-# Error helpers (OpenAI-style shape)
+# Errors
 # -----------------------------------------------------------------------------
 
 
@@ -329,68 +81,358 @@ def _openai_error(
     *,
     type_: str = "server_error",
     param: Optional[str] = None,
-    code: Optional[str] = None,
     status_code: int = 500,
 ) -> HTTPException:
-    """
-    Return an HTTPException with an OpenAI-compatible error body.
-
-    This keeps client behavior predictable for users of official SDKs.
-    """
     return HTTPException(
         status_code=status_code,
         detail={
-            "error": {
-                "message": message,
-                "type": type_,
-                "param": param,
-                "code": code,
-            }
+            "error": {"message": message, "type": type_, "param": param, "code": None}
         },
     )
 
 
+def _invalid_request(message: str, *, param: Optional[str] = None) -> HTTPException:
+    return _openai_error(
+        message, type_="invalid_request_error", param=param, status_code=400
+    )
+
+
 # -----------------------------------------------------------------------------
-# FastAPI Application Factory
+# Helpers
+# -----------------------------------------------------------------------------
+
+
+def _read_field(obj: Any, field: str) -> Any:
+    """Read field from dict-like or attribute-like object."""
+    if isinstance(obj, dict):
+        return obj.get(field)
+    return getattr(obj, field, None)
+
+
+def _estimate_tokens(text: str) -> int:
+    return len(text) // 4 if text else 0
+
+
+def _get_usage(result: Any, user_query: str, response_text: str) -> Usage:
+    """Extract or estimate token usage from the graph result."""
+    usage = _read_field(result, "usage")
+
+    if hasattr(usage, "to_usage"):
+        return usage.to_usage()
+
+    if isinstance(usage, dict):
+        prompt = int(usage.get("prompt_tokens") or 0)
+        completion = int(usage.get("completion_tokens") or 0)
+    else:
+        prompt, completion = (
+            _estimate_tokens(user_query),
+            _estimate_tokens(response_text),
+        )
+
+    return Usage(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        total_tokens=prompt + completion,
+    )
+
+
+def _model_fingerprint(model: str) -> str:
+    return f"fp_{hashlib.md5(model.encode()).hexdigest()[:12]}"
+
+
+def _extract_user_query(messages: List[Message]) -> str:
+    for msg in reversed(messages):
+        if msg.role == "user" and msg.content:
+            return msg.content
+    return ""
+
+
+def _stringify_response(raw: Any) -> str:
+    if raw is None:
+        return "No response generated"
+    if isinstance(raw, str):
+        return raw
+    try:
+        return json.dumps(raw)
+    except TypeError:
+        return str(raw)
+
+
+def _resolve_graph(registry: GraphRegistry, model: Optional[str]) -> tuple[Graph, str]:
+    """Fetch graph for the model name, raising OpenAI-style error if missing."""
+    try:
+        return registry.get(model)
+    except KeyError as exc:
+        raise _openai_error(
+            str(exc), type_="invalid_request_error", param="model", status_code=404
+        ) from exc
+
+
+def _build_context(
+    request: ChatCompletionRequest,
+    model: str,
+    user_query: str,
+    response_format: NormalizedResponseFormat,
+) -> Context:
+    ctx = Context(
+        **request.model_dump(exclude={"model", "stream"}),
+        model=model,
+        user_query=user_query,
+    )
+    if response_format:
+        ctx.response_format = response_format
+    return ctx
+
+
+# -----------------------------------------------------------------------------
+# Response Format Validation
+# -----------------------------------------------------------------------------
+
+
+def _normalize_response_format(
+    rf: Optional[ResponseFormat],
+) -> NormalizedResponseFormat:
+    if not rf or rf.type == "text":
+        return None
+    if rf.type == "json_object":
+        return {"type": "json_object"}
+    if rf.type == "json_schema":
+        return _validate_and_normalize_schema(rf.json_schema)
+    raise _invalid_request(
+        f"Unsupported response_format type '{rf.type}'", param="response_format.type"
+    )
+
+
+def _validate_and_normalize_schema(schema: Optional[JsonSchema]) -> Dict[str, Any]:
+    if not schema or not schema.schema_:
+        raise _invalid_request(
+            "response_format.json_schema.schema is required when type is 'json_schema'.",
+            param="response_format",
+        )
+
+    if jsonschema_validate is None:
+        raise _openai_error(
+            "Structured outputs require 'jsonschema'. Install with: pip install 'thinkagain[serve]'",
+            status_code=500,
+        )
+
+    body = schema.schema_
+    if schema.strict is not True:
+        raise _invalid_request(
+            "Structured outputs require json_schema.strict = true.",
+            param="response_format.json_schema.strict",
+        )
+    if body.get("type") != "object":
+        raise _invalid_request(
+            "Structured outputs require a root object schema.",
+            param="response_format.json_schema.schema.type",
+        )
+    if body.get("additionalProperties") is not False:
+        raise _invalid_request(
+            "Structured output schemas must set additionalProperties: false.",
+            param="response_format.json_schema.schema.additionalProperties",
+        )
+
+    props, req = body.get("properties"), body.get("required")
+    if not isinstance(props, dict) or not props:
+        raise _invalid_request(
+            "Structured output schemas must define properties.",
+            param="response_format.json_schema.schema.properties",
+        )
+    if not isinstance(req, list) or set(props) != set(req):
+        raise _invalid_request(
+            "Structured outputs require every property to be listed as required.",
+            param="response_format.json_schema.schema.required",
+        )
+
+    return {
+        "type": "json_schema",
+        "json_schema": schema.model_dump(by_alias=True, exclude_none=True),
+    }
+
+
+def _validate_structured_response(text: str, fmt: NormalizedResponseFormat):
+    if not fmt:
+        return
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise _openai_error(
+            f"Model response is not valid JSON: {exc}",
+            type_="invalid_response_error",
+            status_code=422,
+        )
+
+    if fmt["type"] == "json_object":
+        if not isinstance(parsed, dict):
+            raise _openai_error(
+                "JSON mode responses must serialize to an object.",
+                type_="invalid_response_error",
+                status_code=422,
+            )
+        return
+
+    schema_body = fmt.get("json_schema", {}).get("schema")
+    if not schema_body:
+        raise _openai_error(
+            "Structured output schema missing at validation time.", status_code=500
+        )
+
+    try:
+        jsonschema_validate(instance=parsed, schema=schema_body)
+    except ValidationError as exc:  # type: ignore[misc]
+        raise _openai_error(
+            f"Model response does not match schema: {exc.message}",
+            type_="invalid_response_error",
+            status_code=422,
+        )
+
+
+# -----------------------------------------------------------------------------
+# Response Building
+# -----------------------------------------------------------------------------
+
+
+def _build_response(
+    request_id: str,
+    model: str,
+    result: Any,
+    user_query: str,
+    response_format: NormalizedResponseFormat,
+) -> ChatCompletionResponse:
+    raw, refusal = _read_field(result, "response"), _read_field(result, "refusal")
+    text = _stringify_response(raw)
+
+    if not refusal:
+        _validate_structured_response(text, response_format)
+
+    return ChatCompletionResponse(
+        id=request_id,
+        created=int(time.time()),
+        model=model,
+        choices=[
+            ChatCompletionChoice(
+                index=0,
+                message=Message(
+                    role="assistant", content=None if refusal else text, refusal=refusal
+                ),
+                finish_reason="content_filter" if refusal else "stop",
+            )
+        ],
+        usage=_get_usage(result, user_query, refusal or text),
+        system_fingerprint=_model_fingerprint(model),
+    )
+
+
+# -----------------------------------------------------------------------------
+# Streaming
+# -----------------------------------------------------------------------------
+
+
+@dataclass
+class _StreamState:
+    """Track streamed text and compute deltas."""
+
+    response: str = ""
+    refusal: str = ""
+
+    def delta(self, field: str, current: Optional[str]) -> Optional[str]:
+        cur = current or ""
+        prev = getattr(self, field)
+        if not cur or cur == prev:
+            return None
+        setattr(self, field, cur)
+        return cur[len(prev) :]
+
+
+def _stream_chunk(
+    request_id: str,
+    created: int,
+    model: str,
+    fingerprint: str,
+    *,
+    content: Optional[str] = None,
+    refusal: Optional[str] = None,
+    role: Optional[str] = None,
+    finish: Optional[str] = None,
+) -> str:
+    chunk = ChatCompletionChunk(
+        id=request_id,
+        created=created,
+        model=model,
+        choices=[
+            ChatCompletionStreamChoice(
+                index=0,
+                delta=DeltaMessage(role=role, content=content, refusal=refusal),
+                finish_reason=finish,
+            )
+        ],
+        system_fingerprint=fingerprint,
+    )
+    return f"data: {chunk.model_dump_json()}\n\n"
+
+
+async def _stream_response(
+    graph: Graph,
+    ctx: Context,
+    request_id: str,
+    model: str,
+    response_format: NormalizedResponseFormat = None,
+) -> AsyncIterator[str]:
+    created, fingerprint = int(time.time()), _model_fingerprint(model)
+    yield _stream_chunk(
+        request_id, created, model, fingerprint, role="assistant", content=""
+    )
+
+    state = _StreamState()
+    async for event in graph.stream(ctx):
+        if event.type != "node" or not event.streaming:
+            continue
+        for field in ("refusal", "response"):
+            if delta := state.delta(field, getattr(event.ctx, field, None)):
+                yield _stream_chunk(
+                    request_id,
+                    created,
+                    model,
+                    fingerprint,
+                    **{"refusal" if field == "refusal" else "content": delta},
+                )
+                break
+
+    if response_format and not state.refusal:
+        _validate_structured_response(state.response, response_format)
+
+    yield _stream_chunk(
+        request_id,
+        created,
+        model,
+        fingerprint,
+        finish="content_filter" if state.refusal else "stop",
+    )
+    yield "data: [DONE]\n\n"
+
+
+# -----------------------------------------------------------------------------
+# App Factory
 # -----------------------------------------------------------------------------
 
 
 def create_app(registry: GraphRegistry) -> FastAPI:
-    """
-    Create a FastAPI application with the given graph registry.
-
-    Args:
-        registry: GraphRegistry with your graphs already registered
-
-    Returns:
-        FastAPI application ready to run
-
-    Example:
-        registry = GraphRegistry()
-        registry.register("my-model", my_graph, set_default=True)
-        app = create_app(registry)
-    """
-
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
-        """Initialize the application on startup."""
-        print("\n" + "=" * 72)
-        print("ThinkAgain OpenAI-Compatible Server")
-        print("=" * 72)
-        print(f"Registered graphs: {registry.list_graphs()}")
-        print("=" * 72 + "\n")
+    async def lifespan(_: FastAPI):
+        print(f"\n{'=' * 72}\nThinkAgain OpenAI-Compatible Server\n{'=' * 72}")
+        print(f"Registered graphs: {registry.list_graphs()}\n{'=' * 72}\n")
         yield
 
     app = FastAPI(
         title="ThinkAgain OpenAI API",
         description="OpenAI-compatible API for ThinkAgain graph execution",
-        version="1.0.0",
         lifespan=lifespan,
     )
 
     @app.get("/")
     async def root():
-        """Root endpoint with API information."""
         return {
             "message": "ThinkAgain OpenAI-Compatible API Server",
             "endpoints": {
@@ -403,162 +445,44 @@ def create_app(registry: GraphRegistry) -> FastAPI:
 
     @app.get("/health")
     async def health():
-        """Health check endpoint."""
         return {"status": "healthy"}
 
     @app.get("/v1/models")
     async def list_models():
-        """List available models (graphs)."""
-        graphs = registry.list_graphs()
+        now = int(time.time())
         return {
             "object": "list",
             "data": [
-                {
-                    "id": graph_name,
-                    "object": "model",
-                    "created": int(time.time()),
-                    "owned_by": "thinkagain",
-                }
-                for graph_name in graphs
+                {"id": n, "object": "model", "created": now, "owned_by": "thinkagain"}
+                for n in registry.list_graphs()
             ],
         }
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: ChatCompletionRequest):
-        """
-        OpenAI-compatible chat completions endpoint.
-
-        This endpoint executes a ThinkAgain graph and returns the result
-        in OpenAI's chat completion format.
-        """
-        # Basic validation: messages and user content
-        user_query = extract_user_query(request.messages)
+        user_query = _extract_user_query(request.messages)
         if not user_query:
-            raise _openai_error(
-                "No user message found",
-                type_="invalid_request_error",
-                param="messages",
-                status_code=400,
-            )
+            raise _invalid_request("No user message found", param="messages")
 
-        # Model selection: require explicit model name if provided
-        try:
-            model_name = request.model
-            if model_name:
-                graph = registry.get_required(model_name)
-            else:
-                graph = registry.get_default()
-        except KeyError as exc:
-            raise _openai_error(
-                str(exc),
-                type_="invalid_request_error",
-                param="model",
-                status_code=404,
-            )
-
-        # Create context with the user query and request metadata
-        ctx = Context(
-            user_query=user_query,
-            messages=request.messages,
-            temperature=request.temperature,
-            max_tokens=request.max_tokens,
-            top_p=request.top_p,
-            n=request.n,
-            stop=request.stop,
-            model=model_name,
-        )
-
-        # Generate request ID
+        graph, model = _resolve_graph(registry, request.model)
+        fmt = _normalize_response_format(request.response_format)
+        ctx = _build_context(request, model, user_query, fmt)
         request_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
 
-        # Handle streaming vs non-streaming
         try:
             if request.stream:
                 return StreamingResponse(
-                    execute_graph_streaming(graph, ctx, request_id, model_name),
+                    _stream_response(graph, ctx, request_id, model, fmt),
                     media_type="text/event-stream",
                 )
-
-            # Execute the graph
-            result = await graph.arun(ctx)
-
-            # Extract response
-            response_text = result.get("response", "No response generated")
-
-            # Build OpenAI-compatible response
-            created = int(time.time())
-
-            # Estimate tokens
-            prompt_tokens = estimate_tokens(user_query)
-            completion_tokens = estimate_tokens(response_text)
-
-            return ChatCompletionResponse(
-                id=request_id,
-                created=created,
-                model=model_name,
-                choices=[
-                    ChatCompletionChoice(
-                        index=0,
-                        message=Message(role="assistant", content=response_text),
-                        finish_reason="stop",
-                    )
-                ],
-                usage=Usage(
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    total_tokens=prompt_tokens + completion_tokens,
-                ),
+            return _build_response(
+                request_id, model, await graph.arun(ctx), user_query, fmt
             )
         except HTTPException:
-            # Re-raise OpenAI-shaped errors unchanged
             raise
         except Exception as exc:
-            # Catch-all for unexpected errors
             raise _openai_error(
-                f"Unexpected server error: {exc}",
-                type_="server_error",
-                status_code=500,
-            )
+                f"Unexpected server error: {exc}", status_code=500
+            ) from exc
 
     return app
-
-
-# -----------------------------------------------------------------------------
-# Example Demo (only runs when executed directly)
-# -----------------------------------------------------------------------------
-
-
-if __name__ == "__main__":
-    import os
-    import uvicorn
-
-    # This is just a demo - users should create their own script
-    # See examples/serve_openai_demo.py for a runnable version
-
-    print("=" * 72)
-    print("Demo Mode: Running with mock workers")
-    print("=" * 72)
-    print("For production use, create your own script that:")
-    print("1. Defines your custom workers with real LLM integration")
-    print("2. Builds your graph")
-    print("3. Calls create_app(registry)")
-    print("=" * 72 + "\n")
-
-    # Create demo graph
-    demo_graph = build_default_graph()
-
-    # Create registry and register the demo graph
-    demo_registry = GraphRegistry()
-    demo_registry.register("demo", demo_graph, set_default=True)
-
-    # Create the app
-    demo_app = create_app(demo_registry)
-
-    host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", "8000"))
-    display_host = "localhost" if host in {"0.0.0.0", "::"} else host
-
-    print("Starting demo server...")
-    print(f"Endpoint: http://{display_host}:{port}/v1/chat/completions")
-    print(f"Docs: http://{display_host}:{port}/docs\n")
-    uvicorn.run(demo_app, host=host, port=port)

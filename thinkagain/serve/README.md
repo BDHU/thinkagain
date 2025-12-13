@@ -109,4 +109,14 @@ or:
 uvicorn my_server:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
+## Demo server
+
+Run the built-in demo server:
+
+```bash
+python -m thinkagain.serve.openai
+```
+
+This starts a demo server with a mock graph on `http://localhost:8000`.
+
 For a more complete example, see `examples/serve_openai_demo.py` and the library implementation in `thinkagain/serve/openai/serve_completion.py`.
