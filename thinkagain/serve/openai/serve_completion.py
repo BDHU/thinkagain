@@ -144,8 +144,6 @@ class GraphRegistry:
             return self.get_default()
         return self.get_required(name)
 
-        return self._graphs[name]
-
     def get_default(self) -> Graph:
         """
         Get the default graph.
