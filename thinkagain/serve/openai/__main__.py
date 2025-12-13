@@ -41,7 +41,12 @@ if __name__ == "__main__":
     app = create_app(registry)
 
     host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", "8000"))
+    port_str = os.getenv("PORT", "8000")
+    try:
+        port = int(port_str)
+    except ValueError:
+        port = 8000
+        print(f"Warning: Invalid PORT '{port_str}', using default 8000.")
     display_host = "localhost" if host in {"0.0.0.0", "::"} else host
 
     print("Starting demo server...")
