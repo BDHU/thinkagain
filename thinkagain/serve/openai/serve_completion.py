@@ -280,6 +280,13 @@ def _validate_structured_response(text: str, fmt: NormalizedResponseFormat):
             "Structured output schema missing at validation time.", status_code=500
         )
 
+    if jsonschema_validate is None:
+        raise _openai_error(
+            "jsonschema package required for structured output validation. "
+            "Install with: pip install jsonschema",
+            status_code=500,
+        )
+
     try:
         jsonschema_validate(instance=parsed, schema=schema_body)
     except ValidationError as exc:  # type: ignore[misc]

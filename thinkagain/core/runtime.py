@@ -12,7 +12,17 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Callable, Dict, Literal, Optional, Union
+from collections.abc import Awaitable as AwaitableABC
+from typing import (
+    Any,
+    Awaitable,
+    AsyncIterator,
+    Callable,
+    Dict,
+    Literal,
+    Optional,
+    Union,
+)
 
 from .context import Context
 
@@ -281,10 +291,13 @@ async def _invoke(node: Any, ctx: Context) -> Context:
     return await asyncio.to_thread(node, ctx)
 
 
-async def _call_route(route: Callable[[Context], str], ctx: Context) -> str:
-    if asyncio.iscoroutinefunction(route):
-        return await route(ctx)
-    return route(ctx)
+async def _call_route(
+    route: Callable[[Context], str | Awaitable[str]], ctx: Context
+) -> str:
+    result = route(ctx)
+    if isinstance(result, AwaitableABC):
+        return await result
+    return result
 
 
 __all__ = [

@@ -170,7 +170,7 @@ def build_retrieval_stage() -> Graph:
     return RetrieveDocs() >> RerankDocs()
 
 
-def build_generation_stage() -> Graph:
+def build_generation_stage() -> Worker:
     return GenerateAnswer()
 
 

@@ -237,21 +237,6 @@ class Graph(GraphExecutor):
 
         return reachable
 
-    def visualize(self) -> str:
-        """
-        Generate Mermaid diagram syntax for the graph.
-
-        Returns:
-            Mermaid diagram code that can be rendered or saved
-
-        Example:
-            print(graph.visualize())
-            # Copy output to mermaid.live or GitHub markdown
-        """
-        from .visualization import generate_mermaid_diagram
-
-        return generate_mermaid_diagram(self.nodes, self.edges, self.entry_point)
-
     def compile(self) -> "CompiledGraph":
         """
         Compile graph into an optimized, flattened representation.
