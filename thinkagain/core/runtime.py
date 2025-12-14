@@ -1,24 +1,21 @@
 """
-Runtime helpers shared by Graph and CompiledGraph.
+Runtime execution engine for compiled graphs.
 
-This module centralizes the mechanics for executing graph structures so
-that builder-oriented classes (Graph) and immutable executors
-(CompiledGraph) can share the exact same behavior. Keeping the execution
-loop, logging, and utility helpers in one place reduces duplication and
-lowers the surface area for bugs.
+Executes nodes, following edges until reaching END.
+Supports fan-out (parallel), cycles, and conditional routing.
 """
 
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from collections.abc import Awaitable as AwaitableABC
+from dataclasses import dataclass
 from typing import (
     Any,
-    Awaitable,
     AsyncIterator,
     Callable,
     Dict,
+    List,
     Literal,
     Optional,
     Union,
@@ -26,74 +23,73 @@ from typing import (
 
 from .context import Context
 
-
-@dataclass
-class DirectEdge:
-    """Direct edge to a single target node."""
-
-    target: str
-
-
-@dataclass
-class ConditionalEdge:
-    """Conditional edge that routes based on context state."""
-
-    route_fn: Callable[[Context], str]
-    paths: Dict[str, str]
-
-
-EdgeTarget = Union[
-    DirectEdge, ConditionalEdge, str
-]  # str for backward compat during migration
+# Edge target: static string(s) or dynamic callable
+EdgeTarget = Union[str, List[str], Callable[[Context], Union[str, List[str]]]]
+EdgeMap = Dict[str, EdgeTarget]
 
 
 @dataclass
 class StreamEvent:
-    """Structured event emitted while a graph executes."""
-
+    """Event emitted during graph execution."""
     type: Literal["start", "node", "end"]
     node: Optional[str]
     ctx: Context
     step: int
     info: Dict[str, Any]
-    streaming: bool = False  # True if this is an intermediate streaming update
+    streaming: bool = False
+
+
+async def _resolve_targets(edge: EdgeTarget, ctx: Context, end: str) -> List[str]:
+    """Resolve edge to list of target nodes."""
+    if isinstance(edge, str):
+        return [] if edge == end else [edge]
+    elif isinstance(edge, list):
+        return [t for t in edge if t != end]
+    else:
+        result = edge(ctx)
+        if isinstance(result, AwaitableABC):
+            result = await result
+        if isinstance(result, str):
+            return [] if result == end else [result]
+        return [t for t in result if t != end]
+
+
+async def _invoke(node: Any, ctx: Context) -> Context:
+    """Execute a node."""
+    if hasattr(node, "arun"):
+        try:
+            return await node.arun(ctx)
+        except NotImplementedError:
+            pass
+    # Fallback to astream (consume all, return last)
+    if hasattr(node, "astream"):
+        result = ctx
+        async for result in node.astream(ctx):
+            pass
+        return result
+    if asyncio.iscoroutinefunction(node):
+        return await node(ctx)
+    return await asyncio.to_thread(node, ctx)
 
 
 async def execute_graph(
     *,
     ctx: Context,
     nodes: Dict[str, Any],
-    edges: Dict[str, EdgeTarget],
-    entry_point: Optional[str],
+    edges: EdgeMap,
+    entry_point: str,
     max_steps: Optional[int],
     end_token: str,
     log_prefix: str,
 ) -> Context:
-    """
-    Execute a graph or compiled graph with shared semantics.
-
-    Args:
-        ctx: Context instance to mutate while running.
-        nodes: Mapping of node names to executables/callables.
-        edges: Mapping of node names to next node (direct or conditional).
-        entry_point: Node to start from.
-        max_steps: Optional guard against infinite loops.
-        end_token: Sentinel string representing graph termination.
-        log_prefix: Text inserted before log messages (e.g. "[Graph:rag]").
-    """
+    """Execute graph and return final context."""
     final_ctx = ctx
-
     async for event in stream_graph_events(
-        ctx=ctx,
-        nodes=nodes,
-        edges=edges,
-        entry_point=entry_point,
-        max_steps=max_steps,
-        end_token=end_token,
-        log_prefix=log_prefix,
+        ctx=ctx, nodes=nodes, edges=edges, entry_point=entry_point,
+        max_steps=max_steps, end_token=end_token, log_prefix=log_prefix,
     ):
-        final_ctx = event.ctx
-
+        if event.type == "end":
+            final_ctx = event.ctx
     return final_ctx
 
 
@@ -101,211 +97,80 @@ async def stream_graph_events(
     *,
     ctx: Context,
     nodes: Dict[str, Any],
-    edges: Dict[str, EdgeTarget],
-    entry_point: Optional[str],
+    edges: EdgeMap,
+    entry_point: str,
     max_steps: Optional[int],
     end_token: str,
     log_prefix: str,
 ) -> AsyncIterator[StreamEvent]:
-    """Yield structured events as the graph executes."""
-    if entry_point is None:
-        raise ValueError("Entry point not set. Use set_entry() before execution.")
+    """Execute graph, yielding events for each node."""
 
-    def _log(message: str) -> None:
-        ctx.log(f"{log_prefix} {message}")
+    execution_path: List[str] = []
+    step = 0
+    last_ctx = ctx.copy()
 
-    current = entry_point
-    execution_path: list[str] = []
+    # Current wave of execution: list of (node_name, input_context)
+    current: List[tuple[str, Context]] = [(entry_point, ctx.copy())]
 
-    _log("Starting execution")
-    _log(f"Entry point: {current}")
     yield StreamEvent(
-        type="start",
-        node=current,
-        ctx=ctx,
-        step=0,
+        type="start", node=entry_point, ctx=ctx, step=0,
         info={"entry_point": entry_point},
     )
 
-    step = 0
-    while True:
-        if current in (None, end_token):
-            _log(f"Reached END after {step} steps")
-            break
-
-        # Check if this is a virtual END node (from flattened subgraphs)
-        # These nodes exist only as edge targets, not as executable nodes
-        if current not in nodes and current.endswith("__END__"):
-            _log(f"Passing through virtual end node: {current}")
-            # Don't execute anything, just follow the edge
-            next_node = await _resolve_next_node(edges, current, ctx, end_token, _log)
-            if next_node in (None, end_token):
-                break
-            current = next_node
-            continue
-
-        # Execute node with streaming support
-        final_ctx = ctx
-        async for ctx_snapshot in _execute_node_stream(nodes, current, ctx, _log):
-            final_ctx = ctx_snapshot
-            # Check if this is the last yield (final result)
-            # We'll yield intermediate updates with streaming=True
-            # For now, yield all of them and let the consumer decide
-            yield StreamEvent(
-                type="node",
-                node=current,
-                ctx=ctx_snapshot,
-                step=len(execution_path) + 1,
-                info={"log_prefix": log_prefix},
-                streaming=True,  # Intermediate update
-            )
-
-        # Update context to final result
-        ctx = final_ctx
-        execution_path.append(current)
-
-        # Yield final node completion event
-        yield StreamEvent(
-            type="node",
-            node=current,
-            ctx=ctx,
-            step=len(execution_path),
-            info={"log_prefix": log_prefix},
-            streaming=False,  # Final completion
-        )
-
-        next_node = await _resolve_next_node(edges, current, ctx, end_token, _log)
-        if next_node in (None, end_token):
-            break
-
-        current = next_node
-        step += 1
-
+    while current:
         if max_steps is not None and step >= max_steps:
-            _log(f"WARNING: Terminated after max_steps={max_steps}")
-            _log("This may indicate an infinite loop")
             break
 
-    ctx.execution_path = execution_path
-    ctx.total_steps = len(execution_path)
+        # Execute all nodes in current wave in parallel
+        async def run_node(name: str, input_ctx: Context) -> tuple[str, Context]:
+            # Handle virtual END nodes from flattening
+            if name not in nodes and name.endswith("__END__"):
+                return name, input_ctx
+            return name, await _invoke(nodes[name], input_ctx)
 
-    _log("Completed execution")
-    _log(f"Total steps: {ctx.total_steps}")
-    path_display = " → ".join(execution_path) or "(none)"
-    _log(f"Path: {path_display}")
+        results = await asyncio.gather(*[
+            run_node(name, input_ctx) for name, input_ctx in current
+        ])
+
+        # Collect next wave
+        next_wave: List[tuple[str, Context]] = []
+
+        for node_name, result_ctx in results:
+            if not node_name.endswith("__END__"):
+                execution_path.append(node_name)
+                step += 1
+                last_ctx = result_ctx
+
+                yield StreamEvent(
+                    type="node", node=node_name, ctx=result_ctx, step=step,
+                    info={}, streaming=False,
+                )
+
+            # Get successors
+            edge = edges.get(node_name)
+            if edge is not None:
+                targets = await _resolve_targets(edge, result_ctx, end_token)
+                for target in targets:
+                    next_wave.append((target, result_ctx.copy()))
+
+        current = next_wave
+
+    # Use the last executed context as final
+    final_ctx = last_ctx.copy()
+    final_ctx.execution_path = execution_path
+    final_ctx.total_steps = len(execution_path)
 
     yield StreamEvent(
-        type="end",
-        node=None,
-        ctx=ctx,
-        step=ctx.total_steps,
+        type="end", node=None, ctx=final_ctx, step=step,
         info={"path": tuple(execution_path)},
     )
 
 
-async def _execute_node_stream(
-    nodes: Dict[str, Any],
-    node_name: str,
-    ctx: Context,
-    log: Callable[[str], None],
-) -> AsyncIterator[Context]:
-    """Execute a node and yield context snapshots during execution."""
-    node = nodes[node_name]
-
-    # Delay Graph import to avoid cycles.
-    from .graph import Graph
-    from .compiled_graph import CompiledGraph
-
-    if isinstance(node, Graph):
-        log(f"Entering subgraph: {node_name} ({node.name})")
-    elif isinstance(node, CompiledGraph):
-        log(f"Entering compiled subgraph: {node_name} ({node.name})")
-    else:
-        log(f"Executing: {node_name}")
-
-    try:
-        # Check if node supports streaming (has astream method)
-        if hasattr(node, "astream"):
-            async for ctx_snapshot in node.astream(ctx):
-                yield ctx_snapshot
-        else:
-            # Fallback to regular invocation for non-Worker nodes
-            result = await _invoke(node, ctx)
-            yield result
-    except Exception as exc:  # pragma: no cover - logs and re-raises exceptions
-        log(f"Error in node '{node_name}' ({type(exc).__name__}): {exc}")
-        raise
-
-
-async def _resolve_next_node(
-    edges: Dict[str, EdgeTarget],
-    current: str,
-    ctx: Context,
-    end_token: str,
-    log: Callable[[str], None],
-) -> Optional[str]:
-    edge = edges.get(current)
-
-    if edge is None:
-        log(f"Node '{current}' has no outgoing edge, terminating")
-        return None
-
-    # Handle ConditionalEdge
-    if isinstance(edge, ConditionalEdge):
-        try:
-            route_result = await _call_route(edge.route_fn, ctx)
-        except Exception as exc:
-            log(f"Error in routing function: {exc}")
-            raise
-
-        log(f"Conditional route from '{current}': '{route_result}'")
-
-        if route_result == end_token:
-            return end_token
-
-        if route_result in edge.paths:
-            return edge.paths[route_result]
-
-        available = list(edge.paths.keys()) + [end_token]
-        raise ValueError(
-            f"Route function returned '{route_result}' but no matching edge. "
-            f"Available paths: {available}"
-        )
-
-    # Handle DirectEdge
-    if isinstance(edge, DirectEdge):
-        log(f"Direct edge: '{current}' → '{edge.target}'")
-        return edge.target
-
-    # Backward compat: plain string
-    log(f"Direct edge: '{current}' → '{edge}'")
-    return edge
-
-
-async def _invoke(node: Any, ctx: Context) -> Context:
-    if hasattr(node, "arun"):
-        return await node.arun(ctx)
-    if asyncio.iscoroutinefunction(node):
-        return await node(ctx)
-    # Sync fallback: run in thread pool
-    return await asyncio.to_thread(node, ctx)
-
-
-async def _call_route(
-    route: Callable[[Context], str | Awaitable[str]], ctx: Context
-) -> str:
-    result = route(ctx)
-    if isinstance(result, AwaitableABC):
-        return await result
-    return result
-
-
 __all__ = [
     "execute_graph",
-    "EdgeTarget",
-    "DirectEdge",
-    "ConditionalEdge",
-    "StreamEvent",
     "stream_graph_events",
+    "StreamEvent",
+    "EdgeTarget",
+    "EdgeMap",
     "_invoke",
 ]

@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from thinkagain import Context, Graph, Worker, END
-from thinkagain.core.graph_executor import GraphExecutor
+from thinkagain import Context, Graph, Worker, END, CompiledGraph
 
 
 class Appender(Worker):
@@ -18,29 +17,32 @@ class Appender(Worker):
 
 def _build_linear_graph() -> Graph:
     graph = Graph(name="linear")
-    graph.add_node("first", Appender("a"))
-    graph.add_node("second", Appender("b"))
+    graph.add("first", Appender("a"))
+    graph.add("second", Appender("b"))
     graph.set_entry("first")
-    graph.add_edge("first", "second")
-    graph.add_edge("second", END)
+    graph.edge("first", "second")
+    graph.edge("second", END)
     return graph
 
 
 async def _gather_events(
-    executable: GraphExecutor,
+    compiled: CompiledGraph,
 ) -> tuple[Context, list[tuple[str, str | None, list[str]]]]:
     ctx = Context()
     events = []
-    async for event in executable.stream(ctx):
+    final_ctx = ctx
+    async for event in compiled.stream(ctx):
         # Only collect final node events (not intermediate streaming events)
         if event.type != "node" or not event.streaming:
-            events.append((event.type, event.node, list(ctx.get("values", []))))
-    return ctx, events
+            events.append((event.type, event.node, list(event.ctx.get("values", []))))
+        if event.type == "end":
+            final_ctx = event.ctx
+    return final_ctx, events
 
 
 def test_graph_stream_emits_ordered_events():
-    graph = _build_linear_graph()
-    ctx, events = asyncio.run(_gather_events(graph))
+    compiled = _build_linear_graph().compile()
+    ctx, events = asyncio.run(_gather_events(compiled))
     assert [e[0] for e in events] == ["start", "node", "node", "end"]
     assert [e[1] for e in events if e[0] == "node"] == ["first", "second"]
     assert ctx.values == ["a", "b"]
@@ -82,24 +84,25 @@ def test_worker_astream_yields_incremental_updates():
 
 
 def test_graph_streaming_flag():
-    """Test graph.stream() marks intermediate vs final events."""
+    """Test graph.stream() yields final result from streaming worker.
+
+    Note: The parallel execution model doesn't yield intermediate streaming
+    events - it only yields the final result from each node. For true streaming
+    of intermediate results, use Worker.astream() directly.
+    """
 
     async def run():
         graph = Graph(name="test")
-        graph.add_node("counter", StreamingCounter())
-        graph.add_edge("counter", END)
+        graph.add("counter", StreamingCounter())
+        graph.edge("counter", END)
 
-        streaming_counts = []
+        compiled = graph.compile()
         final_count = None
 
-        async for event in graph.stream(Context()):
+        async for event in compiled.stream(Context()):
             if event.type == "node" and hasattr(event.ctx, "count"):
-                if event.streaming:
-                    streaming_counts.append(event.ctx.count)
-                else:
-                    final_count = event.ctx.count
+                final_count = event.ctx.count
 
-        assert streaming_counts == [1, 2, 3]
         assert final_count == 3
 
     asyncio.run(run())

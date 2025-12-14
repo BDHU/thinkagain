@@ -4,17 +4,13 @@ import re
 
 import pytest
 
-from thinkagain.core.graph import END, Graph
-from thinkagain.core.worker import Worker
-from thinkagain.core.context import Context
+from thinkagain import Graph, END, Worker, Context
 
 
 class DummyWorker(Worker):
     """Simple worker for wiring graphs."""
 
-    async def arun(
-        self, ctx: Context
-    ) -> Context:  # pragma: no cover - trivial passthrough
+    async def arun(self, ctx: Context) -> Context:
         return ctx
 
 
@@ -22,10 +18,10 @@ def test_direct_self_reference_raises_value_error() -> None:
     graph = Graph(name="self_ref")
     worker = DummyWorker(name="worker")
 
-    graph.add_node("worker", worker)
-    graph.add_node("self", graph)
-    graph.add_edge("worker", "self")
-    graph.add_edge("self", END)
+    graph.add("worker", worker)
+    graph.add("self", graph)
+    graph.edge("worker", "self")
+    graph.edge("self", END)
     graph.set_entry("worker")
 
     with pytest.raises(ValueError, match=re.compile("cycle detected", re.IGNORECASE)):
@@ -37,14 +33,14 @@ def test_indirect_self_reference_is_detected() -> None:
     g2 = Graph(name="graph2")
     worker = DummyWorker(name="worker")
 
-    g1.add_node("worker", worker)
-    g1.add_node("g2", g2)
-    g1.add_edge("worker", "g2")
-    g1.add_edge("g2", END)
+    g1.add("worker", worker)
+    g1.add("g2", g2)
+    g1.edge("worker", "g2")
+    g1.edge("g2", END)
     g1.set_entry("worker")
 
-    g2.add_node("g1", g1)
-    g2.add_edge("g1", END)
+    g2.add("g1", g1)
+    g2.edge("g1", END)
     g2.set_entry("g1")
 
     with pytest.raises(ValueError, match=re.compile("cycle detected", re.IGNORECASE)):
@@ -57,14 +53,14 @@ def test_normal_nested_graph_compiles() -> None:
     worker1 = DummyWorker(name="worker1")
     worker2 = DummyWorker(name="worker2")
 
-    inner.add_node("w2", worker2)
-    inner.add_edge("w2", END)
+    inner.add("w2", worker2)
+    inner.edge("w2", END)
     inner.set_entry("w2")
 
-    outer.add_node("w1", worker1)
-    outer.add_node("subgraph", inner)
-    outer.add_edge("w1", "subgraph")
-    outer.add_edge("subgraph", END)
+    outer.add("w1", worker1)
+    outer.add("subgraph", inner)
+    outer.edge("w1", "subgraph")
+    outer.edge("subgraph", END)
     outer.set_entry("w1")
 
     compiled = outer.compile()

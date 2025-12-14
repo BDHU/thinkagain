@@ -2,36 +2,38 @@
 CompiledGraph - Immutable executable graph representation.
 
 This is the result of calling Graph.compile(). It represents a graph
-that has been validated, potentially optimized, and is ready for execution.
+that has been validated and is ready for execution.
 
 The compilation pattern separates graph construction from execution:
 - Graph: Builder API for constructing graph structure
-- CompiledGraph: Optimized, immutable executor
+- CompiledGraph: Immutable executor
 
 Benefits:
 - Validate once at compile time, not on every execution
-- Enable compile-time optimizations
 - Clear separation of concerns
+- Can cache predecessor maps and other derived data
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, AsyncIterator, Dict, Optional
 
-from .graph_executor import GraphExecutor
-from .runtime import EdgeTarget
+from .constants import END
+from .context import Context
+from .executable import Executable
+from .runtime import EdgeMap, StreamEvent, execute_graph, stream_graph_events
 
 
-class CompiledGraph(GraphExecutor):
+class CompiledGraph(Executable):
     """
     Immutable, executable graph representation.
 
     This is created by Graph.compile() and should not be instantiated directly.
-    All validation and optimization happens at compile time.
+    All validation happens at compile time.
 
     Example:
         graph = Graph()
-        graph.add_node("a", worker_a)
-        graph.add_node("b", worker_b)
-        graph.add_edge("a", "b")
+        graph.add("a", worker_a)
+        graph.add("b", worker_b)
+        graph.edge("a", "b")
 
         # Compile for execution
         compiled = graph.compile()
@@ -45,7 +47,7 @@ class CompiledGraph(GraphExecutor):
         self,
         name: str,
         nodes: Dict[str, Any],
-        edges: Dict[str, EdgeTarget],
+        edges: EdgeMap,
         entry_point: str,
         max_steps: Optional[int] = None,
     ):
@@ -59,18 +61,42 @@ class CompiledGraph(GraphExecutor):
             entry_point: Starting node
             max_steps: Optional step limit
         """
-        super().__init__(
-            name=name,
-            nodes=nodes,
-            edges=edges,
-            entry_point=entry_point,
-            max_steps=max_steps,
-        )
-        # Make immutable (shallow - prevents adding/removing nodes)
-        self._sealed = True
+        super().__init__(name)
+        self.nodes = nodes
+        self.edges = edges
+        self.entry_point = entry_point
+        self.max_steps = max_steps
 
-    def _log_prefix(self) -> str:
-        return f"[CompiledGraph:{self.name}]"
+    async def arun(self, ctx: Context) -> Context:
+        """Execute the graph and return the final context."""
+        return await execute_graph(
+            ctx=ctx,
+            nodes=self.nodes,
+            edges=self.edges,
+            entry_point=self.entry_point,
+            max_steps=self.max_steps,
+            end_token=END,
+            log_prefix=f"[{self.name}]",
+        )
+
+    async def stream(self, ctx: Context) -> AsyncIterator[StreamEvent]:
+        """Yield StreamEvent objects as each node executes."""
+        async for event in stream_graph_events(
+            ctx=ctx,
+            nodes=self.nodes,
+            edges=self.edges,
+            entry_point=self.entry_point,
+            max_steps=self.max_steps,
+            end_token=END,
+            log_prefix=f"[{self.name}]",
+        ):
+            yield event
+
+    def visualize(self) -> str:
+        """Generate Mermaid diagram syntax for the graph."""
+        from .visualization import generate_mermaid_diagram
+
+        return generate_mermaid_diagram(self.nodes, self.edges, self.entry_point)
 
     def __repr__(self) -> str:
         return f"CompiledGraph(name='{self.name}', nodes={len(self.nodes)})"

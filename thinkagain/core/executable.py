@@ -3,8 +3,7 @@ Base interface for all executable components.
 
 Everything that transforms Context inherits from Executable:
 - Workers (leaf nodes)
-- Graphs (DAGs with cycles)
-- Functions (raw callables)
+- CompiledGraphs (executable graphs)
 """
 
 import asyncio
@@ -12,22 +11,18 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .context import Context
-    from .graph import Graph
 
 
 class Executable:
     """
-    Base class for anything that transforms Context.
+    Base class for anything that can be executed with a Context.
 
-    All components in thinkagain implement this interface:
+    Executables implement:
     - arun(ctx) -> ctx: asynchronous execution (required)
-    - __call__(ctx) -> ctx: synchronous wrapper (provided automatically)
-    - __rshift__(other) -> Graph: composition via >> operator
+    - __call__(ctx) -> ctx: synchronous wrapper (convenience)
 
-    This unified interface enables seamless composition:
-        worker1 >> worker2 >> graph1 >> worker3
-
-    Everything is composable with everything.
+    Workers and CompiledGraphs are Executables.
+    Graph is a builder, not an Executable - use graph.compile() to get one.
     """
 
     def __init__(self, name: str | None = None):
@@ -71,47 +66,6 @@ class Executable:
             Subclasses must implement this method.
         """
         raise NotImplementedError(f"{self.__class__.__name__} must implement arun()")
-
-    def __rshift__(self, other) -> "Graph":
-        """
-        Compose executables using >> operator.
-
-        This always treats both operands as black boxes, creating a simple
-        2-node sequential graph. This ensures associativity:
-            (A >> B) >> C  ≡  A >> (B >> C)
-
-        To flatten subgraphs, use compile():
-            pipeline = worker1 >> subgraph >> worker2
-            flat = pipeline.compile()
-
-        Args:
-            other: Next executable in the chain
-
-        Returns:
-            Graph containing both executables in sequence
-
-        Example:
-            # Black-box composition (always)
-            pipeline = worker1 >> worker2 >> graph1 >> worker3
-
-            # Execute with nested subgraphs
-            result = await pipeline.arun(ctx)
-
-            # Or compile flat for debugging
-            flat = pipeline.compile()
-            print(flat.visualize())
-        """
-        from .graph import Graph, END
-
-        # ALWAYS create simple sequential graph (black box)
-        # No special handling for Graph types - treat everything uniformly
-        g = Graph(name=f"{self.name}_seq")
-        g.add_node("_0", self)
-        g.add_node("_1", other)
-        g.set_entry("_0")
-        g.add_edge("_0", "_1")
-        g.add_edge("_1", END)
-        return g
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(name='{self.name}')"

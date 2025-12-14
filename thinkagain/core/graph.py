@@ -1,5 +1,5 @@
 """
-Graph-based execution supporting arbitrary cycles and conditional routing.
+Graph-based execution supporting arbitrary cycles, conditional routing, and parallel execution.
 
 Provides Graph class for complex workflows with dynamic routing.
 Everything is a Graph - the >> operator creates sequential graphs automatically.
@@ -9,50 +9,66 @@ Use Graph when you need:
 - Dynamic routing based on runtime state
 - Multi-agent interactions with complex flow
 - Subgraph composition (graphs within graphs)
+- Fan-out/fan-in parallel execution
 
 For simple sequential flows, use the >> operator:
     pipeline = worker1 >> worker2 >> worker3
 
 Example - Self-correcting RAG with cycle:
-    graph = Graph(name="self_correcting_rag")
-    graph.add_node("retrieve", retrieve_worker)
-    graph.add_node("critique", critique_worker)
-    graph.add_node("refine", refine_worker)
-    graph.add_node("generate", generate_worker)
+    graph = Graph()
+    graph.add("retrieve", retrieve_worker)
+    graph.add("critique", critique_worker)
+    graph.add("refine", refine_worker)
+    graph.add("generate", generate_worker)
 
     graph.set_entry("retrieve")
-    graph.add_edge("retrieve", "critique")
-    graph.add_conditional_edge(
-        "critique",
-        route=lambda ctx: "refine" if ctx.quality < 0.8 else "generate",
-        paths={"refine": "refine", "generate": "generate"}
-    )
-    graph.add_edge("refine", "retrieve")  # Cycle!
-    graph.add_edge("generate", END)
+    graph.edge("retrieve", "critique")
+    graph.edge("critique", lambda ctx: "refine" if ctx.quality < 0.8 else "generate")
+    graph.edge("refine", "retrieve")  # Cycle!
+    graph.edge("generate", END)
 
-    result = await graph.arun(ctx)
+    compiled = graph.compile()
+    result = await compiled.arun(ctx)
+
+Example - Fan-out/fan-in parallel execution:
+    graph = Graph()
+    graph.add("query", query_worker)
+    graph.add("vector_search", vector_worker)
+    graph.add("web_search", web_worker)
+    graph.add("rerank", rerank_worker)
+
+    graph.set_entry("query")
+    # Fan-out: query feeds both searches in parallel
+    graph.edge("query", ["vector_search", "web_search"])
+    # Fan-in: both searches feed into rerank
+    graph.edge("vector_search", "rerank")
+    graph.edge("web_search", "rerank")
+    graph.edge("rerank", END)
+
+    compiled = graph.compile()
+    result = await compiled.arun(ctx)
 """
 
 import warnings
 from collections import deque
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional, Set
 
 from .constants import END
 from .context import Context
-from .graph_executor import GraphExecutor
-from .runtime import EdgeTarget, DirectEdge, ConditionalEdge
-from .graph_flattener import GraphFlattener
 
 if TYPE_CHECKING:
     from .compiled_graph import CompiledGraph
 
-RouteFn = Callable[[Context], str]
-EdgePaths = Dict[str, str]
+# Edge target can be:
+# - str: single target node
+# - list[str]: fan-out to multiple targets
+# - Callable[[Context], str | list[str]]: dynamic routing
+EdgeTarget = str | list[str] | Callable[[Context], str | list[str]]
 
 
-class Graph(GraphExecutor):
+class Graph:
     """
-    Async-first graph supporting arbitrary cycles and conditional routing.
+    Async-first graph supporting arbitrary cycles, conditional routing, and parallel execution.
 
     Graphs can contain:
     - Workers (leaf computations)
@@ -61,6 +77,16 @@ class Graph(GraphExecutor):
     - Any Executable
 
     All composition is natural - just add executables as nodes.
+    Fan-out and fan-in are automatic based on edge topology.
+
+    Graphs must be compiled before execution:
+        graph = Graph()
+        graph.add("a", worker_a)
+        graph.add("b", worker_b)
+        graph.edge("a", "b")
+
+        compiled = graph.compile()
+        result = await compiled.arun(ctx)
     """
 
     def __init__(self, name: str = "graph", max_steps: Optional[int] = None):
@@ -72,15 +98,13 @@ class Graph(GraphExecutor):
             max_steps: Optional maximum execution steps to prevent infinite loops.
                       If None (default), no limit is enforced.
         """
-        super().__init__(
-            name=name,
-            nodes={},
-            edges={},
-            entry_point=None,
-            max_steps=max_steps,
-        )
+        self.name = name
+        self.nodes: dict[str, Any] = {}
+        self.edges: dict[str, EdgeTarget] = {}
+        self.entry_point: Optional[str] = None
+        self.max_steps = max_steps
 
-    def add_node(self, name: str, executable: Any) -> "Graph":
+    def add(self, name: str, executable: Any) -> "Graph":
         """
         Add a node to the graph.
 
@@ -101,11 +125,10 @@ class Graph(GraphExecutor):
             ValueError: If node name already exists
 
         Example:
-            # Add various types of nodes
-            graph.add_node("worker", MyWorker())
-            graph.add_node("subgraph", another_graph)
-            graph.add_node("pipeline", worker1 >> worker2)
-            graph.add_node("custom", lambda ctx: ctx)
+            graph.add("worker", MyWorker())
+            graph.add("subgraph", another_graph)
+            graph.add("pipeline", worker1 >> worker2)
+            graph.add("custom", lambda ctx: ctx)
         """
         if name in self.nodes:
             raise ValueError(f"Node '{name}' already exists")
@@ -115,6 +138,78 @@ class Graph(GraphExecutor):
         # Auto-set entry point if this is the first node
         if self.entry_point is None:
             self.entry_point = name
+
+        return self
+
+    def edge(self, source: str, target: EdgeTarget) -> "Graph":
+        """
+        Add an edge from source node to target(s).
+
+        The target can be:
+        - str: Single target node (or END to terminate)
+        - list[str]: Fan-out to multiple targets in parallel
+        - Callable[[Context], str | list[str]]: Dynamic routing based on context
+
+        Args:
+            source: Source node name
+            target: Target node(s) or routing function
+
+        Returns:
+            Self for method chaining
+
+        Raises:
+            ValueError: If source node doesn't exist, or static targets don't exist
+
+        Examples:
+            # Static edge
+            graph.edge("a", "b")
+
+            # Fan-out (parallel execution)
+            graph.edge("query", ["vector_search", "web_search"])
+
+            # Conditional routing (named function)
+            def route_by_quality(ctx: Context) -> str:
+                return "generate" if ctx.quality > 0.8 else "refine"
+            graph.edge("critique", route_by_quality)
+
+            # Conditional routing (lambda)
+            graph.edge("critique", lambda ctx: "generate" if ctx.quality > 0.8 else "refine")
+
+            # Conditional fan-out
+            graph.edge("classify", lambda ctx: ["email", "sms"] if ctx.urgent else ["email"])
+        """
+        self._ensure_node_exists(source)
+
+        # Validate static targets (not callables)
+        if isinstance(target, str):
+            self._assert_valid_target(target)
+        elif isinstance(target, list):
+            for t in target:
+                self._assert_valid_target(t)
+        # Callables are validated at runtime
+
+        # If source already has an edge, we need to handle it
+        if source in self.edges:
+            existing = self.edges[source]
+            # If both are static, merge them into a list (fan-out)
+            if isinstance(existing, str) and isinstance(target, str):
+                self.edges[source] = [existing, target]
+            elif isinstance(existing, list) and isinstance(target, str):
+                if target not in existing:
+                    existing.append(target)
+            elif isinstance(existing, list) and isinstance(target, list):
+                for t in target:
+                    if t not in existing:
+                        existing.append(t)
+            else:
+                # One is callable - can't merge, replace
+                raise ValueError(
+                    f"Node '{source}' already has an edge. "
+                    f"Cannot mix callable routing with multiple edge() calls. "
+                    f"Use a single edge() call with all targets."
+                )
+        else:
+            self.edges[source] = target
 
         return self
 
@@ -135,68 +230,90 @@ class Graph(GraphExecutor):
         self.entry_point = name
         return self
 
-    def add_edge(self, from_node: str, to_node: str) -> "Graph":
+    def compile(self, *, flatten: bool = True) -> "CompiledGraph":
         """
-        Add a direct edge between two nodes.
+        Compile graph into an executable representation.
+
+        This validates the graph structure and returns an immutable
+        executor. Build graphs once, compile, and then execute the
+        compiled artifact many times.
 
         Args:
-            from_node: Source node name
-            to_node: Destination node name (or END to terminate)
+            flatten: If True (default), inline all subgraphs into a flat structure.
+                    If False, preserve subgraph boundaries (nested execution).
 
         Returns:
-            Self for method chaining
+            CompiledGraph ready for execution
 
         Raises:
-            ValueError: If nodes don't exist or from_node already has an edge
-        """
-        self._ensure_node_exists(from_node)
-        self._assert_edge_available(from_node)
-        self._assert_valid_target(to_node)
-        self.edges[from_node] = DirectEdge(target=to_node)
-        return self
-
-    def add_conditional_edge(
-        self, from_node: str, route: RouteFn, paths: EdgePaths
-    ) -> "Graph":
-        """
-        Add a conditional edge that routes based on context state.
-
-        The route function examines the context and returns a key from
-        the paths dict, which maps to the next node.
-
-        Args:
-            from_node: Source node name
-            route: Function that takes Context and returns a path key
-            paths: Mapping of route keys to node names
-
-        Returns:
-            Self for method chaining
+            ValueError: If graph structure is invalid
 
         Example:
-            graph.add_conditional_edge(
-                "critique",
-                route=lambda ctx: "high" if ctx.score > 0.8 else "low",
-                paths={"high": "generate", "low": "refine"}
-            )
+            graph = Graph()
+            graph.add("a", worker_a)
+            graph.add("b", subgraph_b)
+            graph.edge("a", "b")
 
-        Raises:
-            ValueError: If from_node doesn't exist or already has an edge
+            # Flattened (default) - all nodes visible
+            flat = graph.compile()
+            result = await flat.arun(ctx)
+
+            # Nested - subgraphs execute as units
+            nested = graph.compile(flatten=False)
+            result = await nested.arun(ctx)
         """
-        self._ensure_node_exists(from_node)
-        self._assert_edge_available(from_node)
-        normalized_paths = self._normalize_paths(paths)
-        self.edges[from_node] = ConditionalEdge(route_fn=route, paths=normalized_paths)
-        return self
-
-    def _validate_before_run(self) -> None:
-        super()._validate_before_run()
         self._validate()
 
-    def _log_prefix(self) -> str:
-        return f"[Graph:{self.name}]"
+        if flatten:
+            return self._compile_flat()
+        else:
+            return self._compile_nested()
 
-    def _validate(self):
-        """Validate graph structure (called lazily on first execution)."""
+    def _compile_flat(self) -> "CompiledGraph":
+        """Compile with all subgraphs recursively inlined."""
+        from .compiled_graph import CompiledGraph
+        from .graph_flattener import GraphFlattener
+
+        flattener = GraphFlattener(self)
+        flat_nodes, flat_edges, new_entry = flattener.flatten()
+
+        if new_entry is None:
+            raise ValueError("Entry point missing when flattening graph")
+
+        return CompiledGraph(
+            name=f"{self.name}_compiled",
+            nodes=flat_nodes,
+            edges=flat_edges,
+            entry_point=new_entry,
+            max_steps=self.max_steps,
+        )
+
+    def _compile_nested(self) -> "CompiledGraph":
+        """Compile preserving subgraph boundaries."""
+        from .compiled_graph import CompiledGraph
+
+        if self.entry_point is None:
+            raise ValueError("Entry point not set")
+
+        # Recursively compile any subgraphs, but don't flatten
+        compiled_nodes: dict[str, Any] = {}
+        for name, node in self.nodes.items():
+            if isinstance(node, Graph):
+                # Compile subgraph (also nested)
+                compiled_nodes[name] = node.compile(flatten=False)
+            else:
+                compiled_nodes[name] = node
+
+        return CompiledGraph(
+            name=f"{self.name}_compiled",
+            nodes=compiled_nodes,
+            edges=self.edges.copy(),
+            entry_point=self.entry_point,
+            max_steps=self.max_steps,
+        )
+
+    def _validate(self) -> None:
+        """Validate graph structure."""
         if self.entry_point is None:
             raise ValueError(
                 "Entry point not set. Use set_entry() or add the first node."
@@ -209,16 +326,18 @@ class Graph(GraphExecutor):
             warnings.warn(f"Unreachable nodes detected: {unreachable}")
 
         # Detect nodes without outgoing edges (warning only)
-        dead_ends = [node for node in self.nodes if node not in self.edges]
+        dead_ends = [
+            node for node in self.nodes if node not in self.edges
+        ]
         if dead_ends:
             warnings.warn(
                 f"Nodes without outgoing edges: {dead_ends}. "
                 f"Consider adding edges to END."
             )
 
-    def _find_reachable_nodes(self) -> set:
+    def _find_reachable_nodes(self) -> Set[str]:
         """BFS to find all reachable nodes from entry point."""
-        reachable = set()
+        reachable: Set[str] = set()
         queue = deque([self.entry_point])
 
         while queue:
@@ -228,88 +347,41 @@ class Graph(GraphExecutor):
 
             reachable.add(current)
 
-            edge = self.edges.get(current)
-            if not edge:
+            edge_value = self.edges.get(current)
+            if edge_value is None:
                 continue
-            for target in self._edge_targets(edge):
+
+            targets = self._get_static_targets(edge_value)
+            for target in targets:
                 if target != END:
                     queue.append(target)
 
         return reachable
 
-    def compile(self) -> "CompiledGraph":
-        """
-        Compile graph into an optimized, flattened representation.
+    def _get_static_targets(self, edge: EdgeTarget) -> list[str]:
+        """Extract statically known targets from an edge (for validation)."""
+        if isinstance(edge, str):
+            return [edge]
+        elif isinstance(edge, list):
+            return edge
+        else:
+            # Callable - can't know targets statically, return empty
+            # This means we can't detect unreachable nodes behind conditionals
+            return []
 
-        This validates the graph structure and returns an immutable
-        executor with all subgraphs inlined. Build graphs once, compile,
-        and then execute the compiled artifact many times.
+    def visualize(self) -> str:
+        """
+        Generate Mermaid diagram syntax for the graph.
 
         Returns:
-            CompiledGraph ready for execution
-
-        Raises:
-            ValueError: If graph structure is invalid
-
-        Example:
-            # Build graph
-            graph = Graph()
-            graph.add_node("a", worker_a)
-            graph.add_node("b", subgraph_b)
-            graph.add_edge("a", "b")
-
-            # Compile for execution (flattened view)
-            flat = graph.compile()
-            result = await flat.arun(ctx)
+            Mermaid diagram code
         """
-        # Validate first
-        self._validate()
+        from .visualization import generate_mermaid_diagram
 
-        return self._compile_flat()
+        if self.entry_point is None:
+            raise ValueError("Entry point not set")
 
-    def _compile_flat(self) -> "CompiledGraph":
-        """
-        Helper that compiles the graph with all subgraphs recursively inlined.
-
-        This flattens the graph structure by:
-        1. Recursively expanding all Graph nodes into their constituent nodes
-        2. Prefixing node names to avoid collisions (e.g., subgraph__worker)
-        3. Adding virtual __END__ nodes for each subgraph
-        4. Rewiring edges: subgraph's END references become subgraph__END__ nodes
-        5. Parent edges connect to subgraph__END__ nodes, not internal nodes
-
-        This approach treats END as a proper node, eliminating edge-merging complexity.
-
-        Returns:
-            CompiledGraph with flattened structure
-
-        Raises:
-            ValueError: If a cycle is detected in the graph hierarchy
-
-        Example:
-            # Before flattening:
-            # outer: subgraph -> END
-            # subgraph: worker -> (loop: worker, done: END)
-            #
-            # After flattening:
-            # outer: subgraph__worker -> (loop: subgraph__worker, done: subgraph__END__)
-            #        subgraph__END__ -> END
-        """
-        from .compiled_graph import CompiledGraph
-
-        flattener = GraphFlattener(self)
-        flat_nodes, flat_edges, new_entry = flattener.flatten()
-
-        if new_entry is None:
-            raise ValueError("Entry point missing when flattening graph")
-
-        return CompiledGraph(
-            name=f"{self.name}_flat",
-            nodes=flat_nodes,
-            edges=flat_edges,
-            entry_point=new_entry,
-            max_steps=self.max_steps,
-        )
+        return generate_mermaid_diagram(self.nodes, self.edges, self.entry_point)
 
     def __repr__(self) -> str:
         return f"Graph(name='{self.name}', nodes={len(self.nodes)}, entry='{self.entry_point}')"
@@ -318,37 +390,8 @@ class Graph(GraphExecutor):
         if name not in self.nodes:
             raise ValueError(f"Node '{name}' does not exist")
 
-    def _assert_edge_available(self, name: str) -> None:
-        if name in self.edges:
-            raise ValueError(
-                f"Node '{name}' already has an outgoing edge. "
-                f"Use add_conditional_edge for multiple paths."
-            )
-
-    def _assert_valid_target(
-        self, target: str, *, path_label: Optional[str] = None
-    ) -> None:
+    def _assert_valid_target(self, target: str) -> None:
         if target == END:
             return
         if target not in self.nodes:
-            if path_label is not None:
-                raise ValueError(
-                    f"Path '{path_label}' points to non-existent node '{target}'"
-                )
-            raise ValueError(f"Node '{target}' does not exist")
-
-    def _normalize_paths(self, paths: EdgePaths) -> EdgePaths:
-        normalized: EdgePaths = {}
-        for label, target in paths.items():
-            self._assert_valid_target(target, path_label=label)
-            normalized[label] = target
-        return normalized
-
-    @staticmethod
-    def _edge_targets(edge: EdgeTarget) -> Iterable[str]:
-        if isinstance(edge, ConditionalEdge):
-            return edge.paths.values()
-        if isinstance(edge, DirectEdge):
-            return (edge.target,)
-        # Backward compat: plain string
-        return (edge,)
+            raise ValueError(f"Target node '{target}' does not exist")
