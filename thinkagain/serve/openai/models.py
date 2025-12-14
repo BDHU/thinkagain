@@ -72,7 +72,9 @@ class ChatCompletionRequest(BaseModel):
 class ChatCompletionChoice(BaseModel):
     index: int
     message: Message
-    finish_reason: Literal["stop", "length", "tool_calls", "content_filter"] | None
+    finish_reason: Optional[
+        Literal["stop", "length", "tool_calls", "content_filter"]
+    ] = None
 
 
 class Usage(BaseModel):

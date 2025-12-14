@@ -7,26 +7,23 @@ that wrap ThinkAgain graph execution.
 
 Usage:
     from thinkagain.serve.openai.serve_completion import create_app, GraphRegistry
-    from thinkagain import Graph, Worker, Context, END
+    from thinkagain import Graph, Executable, Context, END
 
-    # Define your worker
-    class MyWorker(Worker):
-        def __call__(self, ctx: Context) -> Context:
+    class MyExecutable(Executable):
+        async def arun(self, ctx: Context) -> Context:
             ctx.response = "Your response here"
             return ctx
 
-    # Build graph
+    # Build and compile graph
     graph = Graph(name="my_graph")
-    graph.add_node("worker", MyWorker())
-    graph.add_edge("worker", END)
+    graph.add("worker", MyExecutable())
+    graph.edge("worker", END)
+    compiled = graph.compile()
 
-    # Create app
+    # Register and create app
     registry = GraphRegistry()
-    registry.register("my-model", graph, set_default=True)
+    registry.register("my-model", compiled, set_default=True)
     app = create_app(registry)
-
-    # Run with uvicorn
-    # uvicorn my_module:app
 
 See thinkagain/serve/README.md for full documentation.
 """

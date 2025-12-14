@@ -23,7 +23,7 @@ except ImportError:
     jsonschema_validate = None  # type: ignore[assignment]
     ValidationError = None  # type: ignore[assignment]
 
-from thinkagain import Context, Graph
+from thinkagain import Context, CompiledGraph
 
 from .models import (
     ChatCompletionChunk,
@@ -47,18 +47,18 @@ NormalizedResponseFormat = Optional[Dict[str, Any]]
 
 
 class GraphRegistry:
-    """Track graphs and the default entry."""
+    """Track compiled graphs and the default entry."""
 
     def __init__(self):
-        self._graphs: Dict[str, Graph] = {}
+        self._graphs: Dict[str, CompiledGraph] = {}
         self._default: Optional[str] = None
 
-    def register(self, name: str, graph: Graph, set_default: bool = False):
+    def register(self, name: str, graph: CompiledGraph, set_default: bool = False):
         self._graphs[name] = graph
         if set_default or not self._default:
             self._default = name
 
-    def get(self, name: Optional[str] = None) -> tuple[Graph, str]:
+    def get(self, name: Optional[str] = None) -> tuple[CompiledGraph, str]:
         """Get graph by name or default. Returns (graph, name) tuple."""
         key = name or self._default
         if not key:
@@ -159,7 +159,9 @@ def _stringify_response(raw: Any) -> str:
         return str(raw)
 
 
-def _resolve_graph(registry: GraphRegistry, model: Optional[str]) -> tuple[Graph, str]:
+def _resolve_graph(
+    registry: GraphRegistry, model: Optional[str]
+) -> tuple[CompiledGraph, str]:
     """Fetch graph for the model name, raising OpenAI-style error if missing."""
     try:
         return registry.get(model)
@@ -382,7 +384,7 @@ def _stream_chunk(
 
 
 async def _stream_response(
-    graph: Graph,
+    graph: CompiledGraph,
     ctx: Context,
     request_id: str,
     model: str,

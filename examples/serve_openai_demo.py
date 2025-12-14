@@ -1,22 +1,21 @@
 """
-Simple Example: Basic OpenAI Server Setup
-==========================================
+Example: Basic OpenAI Server Setup
+==================================
 
-This example shows how to create a simple OpenAI-compatible server
-with your own custom worker.
+Shows how to create a simple OpenAI-compatible server with a custom executable.
 
 Run with:
     python examples/serve_openai_demo.py
-    # or (when running via module path)
+    # or
     uvicorn examples.serve_openai_demo:app --reload
 """
 
-from thinkagain import Context, Worker, Graph, END
+from thinkagain import Context, Executable, Graph, END
 from thinkagain.serve.openai.serve_completion import create_app, GraphRegistry
 
 
-class MyWorker(Worker):
-    """Your custom worker - replace with your LLM integration."""
+class MyExecutable(Executable):
+    """Your custom executable - replace with your LLM integration."""
 
     async def arun(self, ctx: Context) -> Context:
         ctx.response = f"You asked: '{ctx.user_query}'\n\nThis is a custom response!"
@@ -25,12 +24,12 @@ class MyWorker(Worker):
 
 # Build graph
 graph = Graph(name="simple")
-graph.add_node("worker", MyWorker())
-graph.add_edge("worker", END)
+graph.add("worker", MyExecutable())
+graph.edge("worker", END)
 
 # Create app
 registry = GraphRegistry()
-registry.register("simple", graph, set_default=True)
+registry.register("simple", graph.compile(), set_default=True)
 app = create_app(registry)
 
 

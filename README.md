@@ -13,18 +13,18 @@ A minimal, debuggable agent framework for building explicit pipelines and comput
 
 ## Why ThinkAgain?
 
-- **Composable** – Workers and graphs compose naturally with `>>` operator
-- **Transparent** – `Context` carries state and execution history; `graph.visualize()` shows your pipeline
+- **Explicit** – Build graphs with `add()` and `edge()`, then `compile()` to execute
+- **Transparent** – `Context` carries state and execution history; `visualize()` shows your pipeline
 - **Debuggable** – Stream execution events, inspect history, and export plans as data
 - **Simple** – Just Python classes; no DSLs or hidden orchestration layers
 - **Async-first** – Native async support with sync wrappers when needed
 
 ## Core Concepts
 
-- **Worker** – Implement your logic; subclass and define `__call__` or `arun`
-- **Graph** – Connect workers with edges; supports routing and cycles
+- **Executable** – Base class for components; implement `arun()` (and optionally `astream()` for streaming)
+- **Graph** – Builder for connecting executables with edges; supports routing and cycles
+- **CompiledGraph** – Executable created by `graph.compile()`; run with `arun()` or `stream()`
 - **Context** – Dict-like container that flows through your pipeline, tracking history
-- **Executable** – Base interface that enables `>>` composition
 
 ## Installation
 
@@ -36,59 +36,69 @@ uv add thinkagain
 
 ## Quick Start
 
-**Sequential pipelines** with the `>>` operator:
+**Define your executables:**
 
 ```python
-from thinkagain import Context, Worker
+from thinkagain import Context, Executable, Graph, END
 
-class Retriever(Worker):
+class Retriever(Executable):
     async def arun(self, ctx: Context) -> Context:
         ctx.documents = await self.search(ctx.query)
         return ctx
 
-pipeline = Retriever() >> Reranker() >> Generator()
-ctx = await pipeline.arun(Context(query="What is ML?"))
-print(ctx.answer)
+class Generator(Executable):
+    async def arun(self, ctx: Context) -> Context:
+        ctx.answer = await self.generate(ctx.documents)
+        return ctx
 ```
 
-**Graphs** with routing and cycles:
+**Build and run a graph:**
 
 ```python
-from thinkagain import Graph, END
+graph = Graph(name="rag_pipeline")
+graph.add("retrieve", Retriever())
+graph.add("generate", Generator())
+graph.edge("retrieve", "generate")
+graph.edge("generate", END)
 
+result = await graph.compile().arun(Context(query="What is ML?"))
+print(result.answer)
+```
+
+**Graphs with routing and cycles:**
+
+```python
 graph = Graph(name="self_correcting_rag")
-graph.add_node("retrieve", Retriever())
-graph.add_node("generate", Generator())
-graph.add_node("critique", Critic())
+graph.add("retrieve", Retriever())
+graph.add("generate", Generator())
+graph.add("critique", Critic())
 
 graph.set_entry("retrieve")
-graph.add_edge("retrieve", "generate")
-graph.add_conditional_edge(
-    "generate",
-    route=lambda ctx: "done" if ctx.quality >= 0.8 else "critique",
-    paths={"done": END, "critique": "critique"},
-)
-graph.add_edge("critique", "retrieve")  # retry loop
+graph.edge("retrieve", "generate")
+graph.edge("generate", "critique")
+graph.edge("critique", lambda ctx: END if ctx.quality >= 0.8 else "retrieve")
 
-ctx = await graph.arun(Context(query="What is ML?"))
+result = await graph.compile().arun(Context(query="What is ML?"))
 ```
 
-**Decorator syntax** for simple workers:
+**Decorator syntax** for simple executables:
 
 ```python
-from thinkagain import async_worker
+from thinkagain import async_executable
 
-@async_worker
+@async_executable
 async def fetch(ctx: Context) -> Context:
     ctx.data = await ctx.client.get(ctx.url)
     return ctx
 
-pipeline = fetch >> process
+graph = Graph()
+graph.add("fetch", fetch)
+graph.edge("fetch", END)
 ```
 
 ## Examples
 
-Run the demo to see pipelines, graphs, and visualization:
+Run the demo to see graphs and visualization:
 
 ```bash
 python examples/minimal_demo.py
@@ -100,11 +110,9 @@ Optional server with OpenAI-compatible `/v1/chat/completions` endpoint:
 
 ```bash
 pip install "thinkagain[serve]"
-# or with uv
-uv pip install -e ".[serve]"
 
 # Start server
-python -m thinkagain.serve.openai.serve_completion
+python -m thinkagain.serve.openai
 ```
 
 See [thinkagain/serve/README.md](thinkagain/serve/README.md) for details.

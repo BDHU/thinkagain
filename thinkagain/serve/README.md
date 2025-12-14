@@ -1,11 +1,11 @@
 # ThinkAgain OpenAI-Compatible Server
 
-This package exposes ThinkAgain graphs behind an OpenAI-style `/v1/chat/completions` API using FastAPI. It is intended to be imported and configured from your own script.
+This package exposes ThinkAgain graphs behind an OpenAI-style `/v1/chat/completions` API using FastAPI.
 
 ## Install
 
 ```bash
-pip install -e ".[serve]"
+pip install "thinkagain[serve]"
 ```
 
 This pulls in `fastapi`, `uvicorn`, and friends.
@@ -15,22 +15,22 @@ This pulls in `fastapi`, `uvicorn`, and friends.
 `my_server.py`:
 
 ```python
-from thinkagain import Context, Worker, Graph, END
+from thinkagain import Context, Executable, Graph, END
 from thinkagain.serve.openai.serve_completion import create_app, GraphRegistry
 
 
-class MyWorker(Worker):
+class MyExecutable(Executable):
     async def arun(self, ctx: Context) -> Context:
         ctx.response = f"Response to: {ctx.user_query}"
         return ctx
 
 
 graph = Graph(name="my_graph")
-graph.add_node("worker", MyWorker())
-graph.add_edge("worker", END)
+graph.add("worker", MyExecutable())
+graph.edge("worker", END)
 
 registry = GraphRegistry()
-registry.register("my-model", graph, set_default=True)
+registry.register("my-model", graph.compile(), set_default=True)
 
 app = create_app(registry)
 
@@ -93,7 +93,7 @@ For each request, the server populates your `Context`, including:
 - `ctx.messages` – full conversation history
 - `ctx.temperature`, `ctx.max_tokens`, etc. – request params
 
-Use these in your workers as needed.
+Use these in your executables as needed.
 
 ## Production
 
@@ -119,4 +119,4 @@ python -m thinkagain.serve.openai
 
 This starts a demo server with a mock graph on `http://localhost:8000`.
 
-For a more complete example, see `examples/serve_openai_demo.py` and the library implementation in `thinkagain/serve/openai/serve_completion.py`.
+For a more complete example, see `examples/serve_openai_demo.py`.

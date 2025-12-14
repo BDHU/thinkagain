@@ -1,9 +1,9 @@
 import asyncio
 
-from thinkagain import Context, Worker, Graph, END, async_worker
+from thinkagain import Context, Executable, Graph, END, async_executable
 
 
-class _SuffixWorker(Worker):
+class _SuffixExecutable(Executable):
     async def arun(self, ctx: Context) -> Context:
         ctx.value.append("suffix")
         return ctx
@@ -12,19 +12,19 @@ class _SuffixWorker(Worker):
 def test_async_worker_decorator_runs_and_composes() -> None:
     calls: list[str] = []
 
-    @async_worker
+    @async_executable
     async def starter(ctx: Context) -> Context:
         calls.append("starter")
         ctx.value.append("starter")
         return ctx
 
-    assert isinstance(starter, Worker)
+    assert isinstance(starter, Executable)
     assert starter.name == "starter"
 
     # Build pipeline using Graph
     graph = Graph()
     graph.add("starter", starter)
-    graph.add("suffix", _SuffixWorker())
+    graph.add("suffix", _SuffixExecutable())
     graph.edge("starter", "suffix")
     graph.edge("suffix", END)
 
