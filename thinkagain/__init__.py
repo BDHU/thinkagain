@@ -3,26 +3,31 @@ thinkagain - A minimal agent framework where everything is a Graph.
 
 Core concepts:
 - Context: Shared state that flows through execution
-- Executable: Base interface for all components
-- Worker: Leaf computations (your business logic)
-- Graph: DAG with cycles and conditional routing
+- Executable: Base class for components (implement arun, optionally astream)
+- Graph: Builder for DAGs with cycles and conditional routing
 
-Everything composes with >> operator.
-Graphs can contain graphs (subgraphs) naturally.
+Compose workflows by building Graph instances (add nodes, connect edges,
+then compile). Graphs can contain graphs (subgraphs) naturally.
 """
 
-from .core import Context, Executable, Worker, Graph, CompiledGraph, END, StreamEvent
-from .core.worker import async_worker
+from .core import (
+    Context,
+    Executable,
+    async_executable,
+    Graph,
+    CompiledGraph,
+    END,
+    StreamEvent,
+)
 
 __version__ = "0.1.1"
 
 __all__ = [
     "Context",
     "Executable",
-    "Worker",
+    "async_executable",
     "Graph",
     "CompiledGraph",
     "END",
     "StreamEvent",
-    "async_worker",
 ]

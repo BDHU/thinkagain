@@ -2,12 +2,10 @@
 Minimal ThinkAgain Demo
 =======================
 
-This single script keeps the examples approachable while still covering all
-of the core primitives provided by thinkagain:
-
-1. Sequential pipelines composed with the ``>>`` operator
-2. Explicit graphs with conditional routing and cycles
-3. Composing subgraphs together and compiling them into an executable plan
+Demonstrates the core primitives:
+1. Simple graph with linear flow
+2. Graphs with conditional routing and cycles
+3. Composing subgraphs and compiling them
 
 Run with: ``python examples/minimal_demo.py``
 """
@@ -16,25 +14,22 @@ import asyncio
 import sys
 from pathlib import Path
 
-# Add project root to the import path when the file is executed directly
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from thinkagain import Context, Worker, Graph, END
+from thinkagain import Context, Executable, Graph, END
 
 
 # -----------------------------------------------------------------------------
-# Basic workers reused across the scenarios below
+# Basic executables
 # -----------------------------------------------------------------------------
 
 
-class RetrieveDocs(Worker):
-    """Simulate document retrieval from a knowledge source."""
+class RetrieveDocs(Executable):
+    """Simulate document retrieval."""
 
     async def arun(self, ctx: Context) -> Context:
         attempt = ctx.get("retrieval_attempt", 0) + 1
         ctx.retrieval_attempt = attempt
-
-        # Slowly increase recall on each retry to illustrate graph loops
         doc_count = min(3, 1 + attempt)
         ctx.documents = [f"{ctx.query} fact #{i}" for i in range(1, doc_count + 1)]
         ctx.log(
@@ -43,8 +38,8 @@ class RetrieveDocs(Worker):
         return ctx
 
 
-class RerankDocs(Worker):
-    """Keep only the top documents so downstream workers stay simple."""
+class RerankDocs(Executable):
+    """Keep only top documents."""
 
     async def arun(self, ctx: Context) -> Context:
         keep = ctx.get("top_n", 2)
@@ -53,8 +48,8 @@ class RerankDocs(Worker):
         return ctx
 
 
-class GenerateAnswer(Worker):
-    """Pretend to call an LLM to produce an answer."""
+class GenerateAnswer(Executable):
+    """Pretend to call an LLM."""
 
     async def arun(self, ctx: Context) -> Context:
         doc_summary = ", ".join(ctx.documents) if ctx.documents else "no docs"
@@ -63,8 +58,8 @@ class GenerateAnswer(Worker):
         return ctx
 
 
-class CritiqueAnswer(Worker):
-    """Provide a toy quality score so the graph can branch."""
+class CritiqueAnswer(Executable):
+    """Provide a quality score."""
 
     async def arun(self, ctx: Context) -> Context:
         doc_count = len(ctx.documents)
@@ -73,8 +68,8 @@ class CritiqueAnswer(Worker):
         return ctx
 
 
-class RefineQuery(Worker):
-    """Refine the query when the critique is not satisfied."""
+class RefineQuery(Executable):
+    """Refine the query when critique is not satisfied."""
 
     async def arun(self, ctx: Context) -> Context:
         refinements = ctx.get("refinements", 0) + 1
@@ -85,29 +80,28 @@ class RefineQuery(Worker):
 
 
 # -----------------------------------------------------------------------------
-# Demo 1: Sequential pipelines
+# Demo 1: Simple linear graph
 # -----------------------------------------------------------------------------
 
 
-def sequential_pipeline_demo() -> None:
+def simple_graph_demo() -> None:
     print("\n" + "=" * 72)
-    print("1) Sequential pipelines with >> operator")
+    print("1) Simple linear graph")
     print("=" * 72)
 
-    # Build the pipeline using the >> operator (sugar over Graph)
-    rag_pipeline = RetrieveDocs() >> RerankDocs() >> GenerateAnswer()
-    async_ctx = Context(query="thinkagain overview", top_n=2)
-    async_result = asyncio.run(rag_pipeline.arun(async_ctx))
+    graph = Graph(name="rag_pipeline")
+    graph.add("retrieve", RetrieveDocs())
+    graph.add("rerank", RerankDocs())
+    graph.add("generate", GenerateAnswer())
+    graph.edge("retrieve", "rerank")
+    graph.edge("rerank", "generate")
+    graph.edge("generate", END)
 
-    print(f"Async answer: {async_result.answer}")
-    print(f"Execution path: {' → '.join(async_result.execution_path)}")
+    ctx = Context(query="thinkagain overview", top_n=2)
+    result = asyncio.run(graph.compile().arun(ctx))
 
-    # Sync execution also works
-    sync_pipeline = RetrieveDocs() >> RerankDocs() >> GenerateAnswer()
-    sync_result = sync_pipeline(Context(query="sync usage", top_n=1))
-
-    print(f"Sync answer:  {sync_result.answer}")
-    print(f"History tail: {sync_result.history[-2:]}")
+    print(f"Answer: {result.answer}")
+    print(f"Execution path: {' -> '.join(result.execution_path)}")
 
 
 # -----------------------------------------------------------------------------
@@ -116,49 +110,40 @@ def sequential_pipeline_demo() -> None:
 
 
 def build_self_correcting_graph() -> Graph:
-    graph = Graph(name="self_correcting_rag")
-    graph.add_node("retrieve", RetrieveDocs())
-    graph.add_node("generate", GenerateAnswer())
-    graph.add_node("critique", CritiqueAnswer())
-    graph.add_node("refine", RefineQuery())
+    graph = Graph(name="self_correcting_rag", max_steps=20)
+    graph.add("retrieve", RetrieveDocs())
+    graph.add("generate", GenerateAnswer())
+    graph.add("critique", CritiqueAnswer())
+    graph.add("refine", RefineQuery())
 
     graph.set_entry("retrieve")
-    graph.add_edge("retrieve", "generate")
-    graph.add_edge("generate", "critique")
+    graph.edge("retrieve", "generate")
+    graph.edge("generate", "critique")
 
     def routing(ctx: Context) -> str:
         high_quality = ctx.quality >= 0.8
         max_attempts = ctx.retrieval_attempt >= 3
-        return "done" if high_quality or max_attempts else "refine"
+        return END if high_quality or max_attempts else "refine"
 
-    graph.add_conditional_edge(
-        "critique",
-        route=routing,
-        paths={
-            "done": END,
-            "refine": "refine",
-        },
-    )
-    graph.add_edge("refine", "retrieve")  # Cycle back to retrieval
+    graph.edge("critique", routing)
+    graph.edge("refine", "retrieve")
     return graph
 
 
 async def graph_demo() -> None:
     print("\n" + "=" * 72)
-    print("2) Explicit graphs with a feedback loop")
+    print("2) Graph with conditional routing and cycles")
     print("=" * 72)
 
-    agent = build_self_correcting_graph()
+    graph = build_self_correcting_graph()
     ctx = Context(query="why explicit graphs matter", top_n=2)
-    result = await agent.arun(ctx)
+    result = await graph.compile().arun(ctx)
 
     print(f"Answer: {result.answer}")
-    print(
-        f"Quality: {result.quality:.2f} after {result.retrieval_attempt} retrieval attempts"
-    )
-    print(f"Execution path: {' → '.join(result.execution_path)}")
+    print(f"Quality: {result.quality:.2f} after {result.retrieval_attempt} attempts")
+    print(f"Execution path: {' -> '.join(result.execution_path)}")
     print("\nGraph structure (Mermaid):")
-    print(agent.visualize())
+    print(graph.visualize())
 
 
 # -----------------------------------------------------------------------------
@@ -167,30 +152,33 @@ async def graph_demo() -> None:
 
 
 def build_retrieval_stage() -> Graph:
-    return RetrieveDocs() >> RerankDocs()
+    graph = Graph(name="retrieval_stage")
+    graph.add("retrieve", RetrieveDocs())
+    graph.add("rerank", RerankDocs())
+    graph.edge("retrieve", "rerank")
+    graph.edge("rerank", END)
+    return graph
 
 
-def build_generation_stage() -> Worker:
-    return GenerateAnswer()
-
-
-async def composition_and_compile_demo() -> None:
+async def composition_demo() -> None:
     print("\n" + "=" * 72)
-    print("3) Composing subgraphs and compiling the plan")
+    print("3) Composing subgraphs")
     print("=" * 72)
 
-    retrieval = build_retrieval_stage()
-    generation = build_generation_stage()
+    # Build outer graph with subgraph
+    outer = Graph(name="composed_pipeline")
+    outer.add("retrieval", build_retrieval_stage())
+    outer.add("generate", GenerateAnswer())
+    outer.edge("retrieval", "generate")
+    outer.edge("generate", END)
 
-    composed = retrieval >> generation
-    compiled = composed.compile()
-
-    ctx = Context(query="compilation benefits", top_n=2)
+    compiled = outer.compile()
+    ctx = Context(query="subgraph composition", top_n=2)
     result = await compiled.arun(ctx)
 
-    print(f"Compiled answer: {result.answer}")
-    print(f"Flat execution path: {' → '.join(result.execution_path)}")
-    print(f"Recent logs: {result.history[-3:]}")
+    print(f"Answer: {result.answer}")
+    print(f"Execution path: {' -> '.join(result.execution_path)}")
+    print(f"Flattened nodes: {list(compiled.nodes.keys())}")
 
 
 # -----------------------------------------------------------------------------
@@ -200,9 +188,9 @@ async def composition_and_compile_demo() -> None:
 
 async def async_main() -> None:
     await graph_demo()
-    await composition_and_compile_demo()
+    await composition_demo()
 
 
 if __name__ == "__main__":
-    sequential_pipeline_demo()
+    simple_graph_demo()
     asyncio.run(async_main())

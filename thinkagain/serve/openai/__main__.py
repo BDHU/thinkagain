@@ -4,18 +4,18 @@ import os
 
 import uvicorn
 
-from thinkagain import END, Context, Graph, Worker
+from thinkagain import END, Context, Graph, Executable
 
 from .serve_completion import GraphRegistry, create_app
 
 
-class ProcessQuery(Worker):
+class ProcessQuery(Executable):
     async def arun(self, ctx: Context) -> Context:
         ctx.processed_query = ctx.user_query.strip()
         return ctx
 
 
-class GenerateResponse(Worker):
+class GenerateResponse(Executable):
     async def arun(self, ctx: Context) -> Context:
         query = ctx.get("processed_query", ctx.user_query)
         ctx.response = (
@@ -27,17 +27,17 @@ class GenerateResponse(Worker):
 
 def build_demo_graph() -> Graph:
     graph = Graph(name="demo")
-    graph.add_node("process", ProcessQuery())
-    graph.add_node("generate", GenerateResponse())
+    graph.add("process", ProcessQuery())
+    graph.add("generate", GenerateResponse())
     graph.set_entry("process")
-    graph.add_edge("process", "generate")
-    graph.add_edge("generate", END)
+    graph.edge("process", "generate")
+    graph.edge("generate", END)
     return graph
 
 
 if __name__ == "__main__":
     registry = GraphRegistry()
-    registry.register("demo", build_demo_graph(), set_default=True)
+    registry.register("demo", build_demo_graph().compile(), set_default=True)
     app = create_app(registry)
 
     host = os.getenv("HOST", "0.0.0.0")

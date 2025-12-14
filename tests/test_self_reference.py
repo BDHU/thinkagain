@@ -4,19 +4,17 @@ import re
 
 import pytest
 
-from thinkagain import Graph, END, Worker, Context
+from thinkagain import Graph, END, Executable, Context
 
 
-class DummyWorker(Worker):
-    """Simple worker for wiring graphs."""
-
+class DummyExecutable(Executable):
     async def arun(self, ctx: Context) -> Context:
         return ctx
 
 
 def test_direct_self_reference_raises_value_error() -> None:
     graph = Graph(name="self_ref")
-    worker = DummyWorker(name="worker")
+    worker = DummyExecutable(name="worker")
 
     graph.add("worker", worker)
     graph.add("self", graph)
@@ -31,7 +29,7 @@ def test_direct_self_reference_raises_value_error() -> None:
 def test_indirect_self_reference_is_detected() -> None:
     g1 = Graph(name="graph1")
     g2 = Graph(name="graph2")
-    worker = DummyWorker(name="worker")
+    worker = DummyExecutable(name="worker")
 
     g1.add("worker", worker)
     g1.add("g2", g2)
@@ -50,8 +48,8 @@ def test_indirect_self_reference_is_detected() -> None:
 def test_normal_nested_graph_compiles() -> None:
     outer = Graph(name="outer")
     inner = Graph(name="inner")
-    worker1 = DummyWorker(name="worker1")
-    worker2 = DummyWorker(name="worker2")
+    worker1 = DummyExecutable(name="worker1")
+    worker2 = DummyExecutable(name="worker2")
 
     inner.add("w2", worker2)
     inner.edge("w2", END)

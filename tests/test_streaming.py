@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 
-from thinkagain import Context, Graph, Worker, END, CompiledGraph
+from typing import Optional
+
+from thinkagain import Context, Graph, Executable, END, CompiledGraph
 
 
-class Appender(Worker):
+class Appender(Executable):
     def __init__(self, label: str):
         super().__init__(name=f"append_{label}")
         self.label = label
@@ -27,7 +29,7 @@ def _build_linear_graph() -> Graph:
 
 async def _gather_events(
     compiled: CompiledGraph,
-) -> tuple[Context, list[tuple[str, str | None, list[str]]]]:
+) -> tuple[Context, list[tuple[str, Optional[str], list[str]]]]:
     ctx = Context()
     events = []
     final_ctx = ctx
@@ -57,13 +59,8 @@ def test_compiled_graph_stream_matches_runtime():
     assert ctx.values == ["a", "b"]
 
 
-# ============================================================================
-# Tests for Worker.astream() incremental streaming
-# ============================================================================
-
-
-class StreamingCounter(Worker):
-    """Worker that yields 3 incremental updates."""
+class StreamingCounter(Executable):
+    """Executable that yields 3 incremental updates."""
 
     async def astream(self, ctx: Context):
         for i in range(1, 4):
@@ -72,8 +69,6 @@ class StreamingCounter(Worker):
 
 
 def test_worker_astream_yields_incremental_updates():
-    """Test streaming worker yields multiple snapshots."""
-
     async def run():
         worker = StreamingCounter()
         ctx = Context()
@@ -84,12 +79,7 @@ def test_worker_astream_yields_incremental_updates():
 
 
 def test_graph_streaming_flag():
-    """Test graph.stream() yields final result from streaming worker.
-
-    Note: The parallel execution model doesn't yield intermediate streaming
-    events - it only yields the final result from each node. For true streaming
-    of intermediate results, use Worker.astream() directly.
-    """
+    """Streaming executables yield intermediate events (streaming=True)."""
 
     async def run():
         graph = Graph(name="test")
@@ -97,12 +87,19 @@ def test_graph_streaming_flag():
         graph.edge("counter", END)
 
         compiled = graph.compile()
+        streaming_counts = []
         final_count = None
 
         async for event in compiled.stream(Context()):
-            if event.type == "node" and hasattr(event.ctx, "count"):
-                final_count = event.ctx.count
+            if event.type == "node":
+                if event.streaming:
+                    streaming_counts.append(event.ctx.count)
+                else:
+                    final_count = event.ctx.count
 
+        assert streaming_counts == [1, 2, 3], (
+            f"Expected [1, 2, 3], got {streaming_counts}"
+        )
         assert final_count == 3
 
     asyncio.run(run())

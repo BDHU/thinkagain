@@ -2,10 +2,10 @@
 
 import asyncio
 
-from thinkagain import Context, Graph, END, Worker
+from thinkagain import Context, Graph, END, Executable
 
 
-class CounterWorker(Worker):
+class CounterExecutable(Executable):
     """Increment a counter stored in the Context."""
 
     async def arun(self, ctx: Context) -> Context:
@@ -20,9 +20,8 @@ def _route(ctx: Context) -> str:
 
 def _build_cycle_graph(name: str = "cycle_graph") -> Graph:
     graph = Graph(name=name, max_steps=10)
-    graph.add("worker", CounterWorker())
+    graph.add("worker", CounterExecutable())
     graph.set_entry("worker")
-    # Conditional edge using callable
     graph.edge("worker", _route)
     return graph
 
@@ -37,7 +36,6 @@ def _build_nested_graph() -> Graph:
 
 
 def _run(compiled) -> Context:
-    """Helper to execute a compiled graph and return its context."""
     return asyncio.run(compiled.arun(Context()))
 
 
