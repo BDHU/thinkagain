@@ -123,22 +123,6 @@ See [thinkagain/serve/README.md](thinkagain/serve/README.md) for details.
 - [DESIGN.md](DESIGN.md) – control-flow primitives and roadmap
 - [examples/](examples/) – working demos
 
-## Citation
-
-If you use ThinkAgain in your research, please cite:
-
-```bibtex
-@misc{hu2025patchworkunifiedframeworkrag,
-      title={Patchwork: A Unified Framework for RAG Serving}, 
-      author={Bodun Hu and Luis Pabon and Saurabh Agarwal and Aditya Akella},
-      year={2025},
-      eprint={2505.07833},
-      archivePrefix={arXiv},
-      primaryClass={cs.DC},
-      url={https://arxiv.org/abs/2505.07833}, 
-}
-```
-
 ## License
 
 Apache 2.0 – see [LICENSE](LICENSE)
