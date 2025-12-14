@@ -172,12 +172,14 @@ async def stream_graph_events(
                 while pending > 0:
                     name, payload, is_final = await queue.get()
                     if name is None:
+                        assert isinstance(payload, Exception)
                         for task in tasks:
                             task.cancel()
                         await asyncio.gather(*tasks, return_exceptions=True)
                         raise payload  # type: ignore[misc]
+                    assert isinstance(payload, Context)
                     if is_final:
-                        final_results[name] = payload  # type: ignore[assignment]
+                        final_results[name] = payload
                         pending -= 1
                         continue
                     yield StreamEvent(
