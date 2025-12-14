@@ -5,12 +5,12 @@ Shared visualization helpers for graphs.
 from typing import Any, Dict
 
 from .constants import END
-from .runtime import EdgeTarget, DirectEdge, ConditionalEdge
+from .runtime import EdgeMap
 
 
 def generate_mermaid_diagram(
     nodes: Dict[str, Any],
-    edges: Dict[str, EdgeTarget],
+    edges: EdgeMap,
     entry_point: str,
 ) -> str:
     """
@@ -39,16 +39,19 @@ def generate_mermaid_diagram(
 
     lines.append("    END([END])")
 
-    for from_node, edge in edges.items():
-        if isinstance(edge, ConditionalEdge):
-            for label, to_node in edge.paths.items():
-                target = "END" if to_node == END else to_node
-                lines.append(f"    {from_node} -->|{label}| {target}")
-        elif isinstance(edge, DirectEdge):
-            target = "END" if edge.target == END else edge.target
+    for from_node, edge_value in edges.items():
+        if isinstance(edge_value, str):
+            # Single target
+            target = "END" if edge_value == END else edge_value
             lines.append(f"    {from_node} --> {target}")
+        elif isinstance(edge_value, list):
+            # Fan-out to multiple targets
+            for to_node in edge_value:
+                target = "END" if to_node == END else to_node
+                lines.append(f"    {from_node} --> {target}")
         else:
-            raise TypeError(f"Unknown edge type: {type(edge)}")
+            # Callable - show as dynamic routing
+            lines.append(f"    {from_node} -->|dynamic| ???")
 
     return "\n".join(lines)
 

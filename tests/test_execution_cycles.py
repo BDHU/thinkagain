@@ -2,9 +2,7 @@
 
 import asyncio
 
-from thinkagain.core.context import Context
-from thinkagain.core.graph import END, Graph
-from thinkagain.core.worker import Worker
+from thinkagain import Context, Graph, END, Worker
 
 
 class CounterWorker(Worker):
@@ -17,44 +15,36 @@ class CounterWorker(Worker):
 
 def _route(ctx: Context) -> str:
     """Loop until we've incremented three times."""
-    return "loop" if (ctx.count or 0) < 3 else "done"
+    return "worker" if (ctx.count or 0) < 3 else END
 
 
 def _build_cycle_graph(name: str = "cycle_graph") -> Graph:
     graph = Graph(name=name, max_steps=10)
-    graph.add_node("worker", CounterWorker())
+    graph.add("worker", CounterWorker())
     graph.set_entry("worker")
-    graph.add_conditional_edge(
-        "worker",
-        route=_route,
-        paths={"loop": "worker", "done": END},
-    )
+    # Conditional edge using callable
+    graph.edge("worker", _route)
     return graph
 
 
 def _build_nested_graph() -> Graph:
     inner = _build_cycle_graph(name="inner_cycle")
     outer = Graph(name="outer")
-    outer.add_node("subgraph", inner)
+    outer.add("subgraph", inner)
     outer.set_entry("subgraph")
-    outer.add_edge("subgraph", END)
+    outer.edge("subgraph", END)
     return outer
 
 
-def _run(executable) -> Context:
-    """Helper to execute a graph/compiled graph and return its context."""
-    return asyncio.run(executable.arun(Context()))
+def _run(compiled) -> Context:
+    """Helper to execute a compiled graph and return its context."""
+    return asyncio.run(compiled.arun(Context()))
 
 
 def _assert_three_iterations(ctx: Context) -> None:
     assert ctx.count == 3
     assert ctx.execution_path == ["worker", "worker", "worker"]
     assert ctx.total_steps == 3
-
-
-def test_non_compiled_cycle() -> None:
-    ctx = _run(_build_cycle_graph())
-    _assert_three_iterations(ctx)
 
 
 def test_compiled_cycle() -> None:

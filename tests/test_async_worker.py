@@ -1,6 +1,6 @@
 import asyncio
 
-from thinkagain import Context, Worker, async_worker
+from thinkagain import Context, Worker, Graph, END, async_worker
 
 
 class _SuffixWorker(Worker):
@@ -21,8 +21,14 @@ def test_async_worker_decorator_runs_and_composes() -> None:
     assert isinstance(starter, Worker)
     assert starter.name == "starter"
 
-    pipeline = starter >> _SuffixWorker()
-    ctx = asyncio.run(pipeline.arun(Context(value=[])))
+    # Build pipeline using Graph
+    graph = Graph()
+    graph.add("starter", starter)
+    graph.add("suffix", _SuffixWorker())
+    graph.edge("starter", "suffix")
+    graph.edge("suffix", END)
+
+    ctx = asyncio.run(graph.compile().arun(Context(value=[])))
 
     assert ctx.value == ["starter", "suffix"]
     assert calls == ["starter"]
