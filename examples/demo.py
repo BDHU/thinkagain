@@ -8,7 +8,7 @@ Demonstrates the declarative API with lazy materialization:
 3. Loops with while
 4. Self-correcting RAG pattern
 
-Run with: ``python examples/declarative_demo.py``
+Run with: ``python examples/demo.py``
 """
 
 import asyncio
@@ -21,7 +21,7 @@ from thinkagain import Node, run, Context, Executable
 
 
 # -----------------------------------------------------------------------------
-# Executables (same as minimal_demo.py)
+# Executables
 # -----------------------------------------------------------------------------
 
 

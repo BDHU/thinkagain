@@ -1,8 +1,20 @@
-# ThinkAgain Design Document
+# ThinkAgain Design (Historical Notes)
 
 ## Overview
 
-A minimal, debuggable agent framework focused on explicit control and transparency. The framework captures computation graphs **before execution** while remaining simple and easy to understand.
+A minimal, debuggable agent framework focused on explicit control and transparency.
+The framework originally captured computation graphs **before execution** via an
+explicit `Graph`/`Pipeline` API. The current core library is intentionally much
+smaller and focuses on:
+
+- `Context` – state and history
+- `Executable` – async components
+- `Node` – declarative wrapper
+- `LazyContext` – lazy chaining and materialization
+- `run` – execution helper
+
+The sections below describe the earlier, graph-centric design and are kept for
+historical context and future experimentation.
 
 ## Core Architecture
 

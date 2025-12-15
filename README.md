@@ -9,22 +9,26 @@
 
 ---
 
-A minimal, debuggable agent framework for building explicit pipelines and computation graphs. ThinkAgain captures execution plans before they run so you can reason about complex control flow without hidden state.
+A minimal, debuggable framework for building explicit, async-first AI pipelines.
+ThinkAgain focuses on **declarative composition**: you define reusable components
+(`Executable`), wrap them in `Node` objects, and chain them with a lazy
+`Context` that only executes when you materialize it.
 
 ## Why ThinkAgain?
 
-- **Explicit** – Build graphs with `add()` and `edge()`, then `compile()` to execute
-- **Transparent** – `Context` carries state and execution history; `visualize()` shows your pipeline
-- **Debuggable** – Stream execution events, inspect history, and export plans as data
-- **Simple** – Just Python classes; no DSLs or hidden orchestration layers
-- **Async-first** – Native async support with sync wrappers when needed
+- **Declarative** – Build pipelines by chaining `Node` objects in async functions
+- **Transparent** – `Context` carries state and execution history you control
+- **Debuggable** – Lazy execution lets you insert checks and branches naturally
+- **Simple** – Just Python classes and async functions; no DSLs or hidden runtime
+- **Async-first** – Native async API with a small, focused core
 
 ## Core Concepts
 
-- **Executable** – Base class for components; implement `arun()` (and optionally `astream()` for streaming)
-- **Graph** – Builder for connecting executables with edges; supports routing and cycles
-- **CompiledGraph** – Executable created by `graph.compile()`; run with `arun()` or `stream()`
+- **Executable** – Base class for components; implement `arun(ctx)` to transform a `Context`
+- **Node** – Lightweight wrapper around an executable that supports lazy chaining
 - **Context** – Dict-like container that flows through your pipeline, tracking history
+- **LazyContext** – Deferred view over `Context` that records pending `Node` calls
+- **run** – Helper that normalizes input, runs your async pipeline, and returns a `Context`
 
 ## Installation
 
@@ -39,85 +43,75 @@ uv add thinkagain
 **Define your executables:**
 
 ```python
-from thinkagain import Context, Executable, Graph, END
+from thinkagain import Context, Executable
 
 class Retriever(Executable):
     async def arun(self, ctx: Context) -> Context:
-        ctx.documents = await self.search(ctx.query)
+        # populate ctx.documents based on ctx.query
+        ctx.documents = ["doc1", "doc2"]
+        ctx.log("Retrieved documents")
         return ctx
 
 class Generator(Executable):
     async def arun(self, ctx: Context) -> Context:
-        ctx.answer = await self.generate(ctx.documents)
+        ctx.answer = f"Answer based on {ctx.documents}"
+        ctx.log("Generated answer")
         return ctx
 ```
 
-**Build and run a graph:**
+**Declare a pipeline with Nodes:**
 
 ```python
-graph = Graph(name="rag_pipeline")
-graph.add("retrieve", Retriever())
-graph.add("generate", Generator())
-graph.edge("retrieve", "generate")
-graph.edge("generate", END)
+from thinkagain import Node, run
 
-result = await graph.compile().arun(Context(query="What is ML?"))
-print(result.answer)
-```
+retrieve = Node(Retriever())
+generate = Node(Generator())
 
-**Graphs with routing and cycles:**
-
-```python
-graph = Graph(name="self_correcting_rag")
-graph.add("retrieve", Retriever())
-graph.add("generate", Generator())
-graph.add("critique", Critic())
-
-graph.set_entry("retrieve")
-graph.edge("retrieve", "generate")
-graph.edge("generate", "critique")
-graph.edge("critique", lambda ctx: END if ctx.quality >= 0.8 else "retrieve")
-
-result = await graph.compile().arun(Context(query="What is ML?"))
-```
-
-**Decorator syntax** for simple executables:
-
-```python
-from thinkagain import async_executable
-
-@async_executable
-async def fetch(ctx: Context) -> Context:
-    ctx.data = await ctx.client.get(ctx.url)
+async def pipeline(ctx):
+    ctx = await retrieve(ctx)
+    ctx = await generate(ctx)
     return ctx
 
-graph = Graph()
-graph.add("fetch", fetch)
-graph.edge("fetch", END)
+result = await run(pipeline, {"query": "What is ML?"})
+print(result.answer)
+print(result.history)
+```
+
+**Lazy materialization and control flow:**
+
+```python
+from thinkagain import LazyContext, NeedsMaterializationError
+
+async def conditional_pipeline(ctx: LazyContext) -> LazyContext:
+    ctx = await retrieve(ctx)
+    ctx = await generate(ctx)
+
+    # Materialize before branching on computed values
+    ctx = await ctx  # executes pending nodes
+
+    if ctx.answer.startswith("Answer based on"):
+        ctx.log("Answer looks good")
+    else:
+        ctx.log("Answer needs refinement")
+
+    return ctx
 ```
 
 ## Examples
 
-Run the demo to see graphs and visualization:
+Run the declarative demo to see conditional branches and loops:
 
 ```bash
-python examples/minimal_demo.py
+python examples/demo.py
 ```
 
-## OpenAI-Compatible Server
+## Notes on Older Documentation
 
-Optional server with OpenAI-compatible `/v1/chat/completions` endpoint:
-
-```bash
-pip install "thinkagain[serve]"
-
-# Start server
-python -m thinkagain.serve.openai
-```
-
-See [thinkagain/serve/README.md](thinkagain/serve/README.md) for details.
-
-## Learn More
+Earlier versions of ThinkAgain exposed a richer `Graph` API with visualization,
+compiled graphs, and an OpenAI-compatible server. The current core library is
+intentionally much smaller and focuses on the declarative `Node` + `run`
+pipeline model shown above. The architectural docs in `ARCHITECTURE.md` and
+`DESIGN.md` describe that earlier design and are kept as historical notes.
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) – design rationale
 - [DESIGN.md](DESIGN.md) – control-flow primitives and roadmap

@@ -1,10 +1,28 @@
 # thinkagain Architecture
 
-## Philosophy: Everything is a Graph
+## Current Architecture: Declarative Pipelines
 
-The core insight of thinkagain is that **all execution can be modeled as graphs**, and **graphs compose naturally**.
+The current core of thinkagain is intentionally small. Instead of exposing a
+large graph builder surface, it focuses on **declarative async pipelines**
+built from a few primitives:
 
-Instead of having separate abstractions for pipelines, workflows, agents, and subgraphs, we have one unified concept: **Executable**.
+- `Context` – dict-like state container with history
+- `Executable` – base class for async components (`arun(ctx) -> ctx`)
+- `Node` – lightweight wrapper that enables lazy chaining
+- `LazyContext` – collects pending `Node` calls and materializes on demand
+- `run` – helper that normalizes inputs, runs your async pipeline, and returns a `Context`
+
+You write regular async functions that accept a `LazyContext`, chain `Node`
+objects, and optionally choose where to materialize before branching.
+
+## Historical Design: Everything is a Graph
+
+Earlier versions of thinkagain exposed a rich `Graph` API. The core insight was
+that **all execution can be modeled as graphs**, and **graphs compose naturally**.
+
+Instead of having separate abstractions for pipelines, workflows, agents, and
+subgraphs, the design used one unified concept: **Executable**, with `Graph`
+implementing the same interface as leaf workers.
 
 ## Core Hierarchy
 
