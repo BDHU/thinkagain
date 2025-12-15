@@ -1,14 +1,21 @@
 """Run declarative pipelines."""
 
-from typing import Awaitable, Callable
+from typing import Callable
 
 from .context import Context
-from .lazy import LazyContext
 
 
-async def run(fn: Callable[[LazyContext], Awaitable[LazyContext]], ctx: dict | None = None) -> Context:
-    """Run pipeline and return final context."""
-    result = await fn(LazyContext(ctx or {}))
+def run(fn: Callable[[Context], Context], ctx: dict | None = None) -> Context:
+    """Run pipeline synchronously and return final context."""
+    result = fn(Context(ctx))
     if result.is_pending:
-        result = await result
-    return Context(result.data)
+        result._sync()
+    return result
+
+
+async def arun(fn: Callable[[Context], Context], ctx: dict | None = None) -> Context:
+    """Run pipeline asynchronously - use this for concurrent request handling."""
+    result = fn(Context(ctx))
+    if result.is_pending:
+        await result._async_sync()
+    return result

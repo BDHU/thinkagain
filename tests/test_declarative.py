@@ -1,219 +1,190 @@
 """Tests for declarative API."""
 
-import asyncio
 import pytest
-from thinkagain import Node, run, Context, LazyContext, NeedsMaterializationError
+from thinkagain import Node, run, Context, node
 
 
 # Test functions
+@node
 async def add_one(ctx):
     ctx.value = ctx.get("value", 0) + 1
     return ctx
 
 
+@node
 async def double(ctx):
     ctx.value = ctx.value * 2
     return ctx
 
 
-async def set_score(ctx, score):
-    ctx.score = score
-    return ctx
-
-
-async def append_log(ctx, msg):
-    ctx.logs = ctx.get("logs", []) + [msg]
-    return ctx
-
-
-# Nodes
-add = Node(add_one)
-dbl = Node(double)
-
-
 def test_linear_pipeline():
-    async def pipeline(ctx):
-        ctx = await add(ctx)
-        ctx = await dbl(ctx)
+    def pipeline(ctx):
+        ctx = add_one(ctx)
+        ctx = double(ctx)
         return ctx
 
-    result = asyncio.run(run(pipeline, {"value": 5}))
+    result = run(pipeline, {"value": 5})
     assert result.value == 12  # (5+1)*2
 
 
 def test_empty_pipeline():
-    async def pipeline(ctx):
+    def pipeline(ctx):
         return ctx
 
-    result = asyncio.run(run(pipeline, {"value": 42}))
+    result = run(pipeline, {"value": 42})
     assert result.value == 42
 
 
 def test_dict_input():
-    async def pipeline(ctx):
-        ctx = await add(ctx)
+    def pipeline(ctx):
+        ctx = add_one(ctx)
         return ctx
 
-    result = asyncio.run(run(pipeline, {"value": 10}))
+    result = run(pipeline, {"value": 10})
     assert result.value == 11
 
 
 def test_none_input():
-    async def pipeline(ctx):
-        ctx = await add(ctx)
+    def pipeline(ctx):
+        ctx = add_one(ctx)
         return ctx
 
-    result = asyncio.run(run(pipeline))
+    result = run(pipeline)
     assert result.value == 1
 
 
-def test_explicit_materialization():
-    async def pipeline(ctx):
-        ctx = await add(ctx)
-        ctx = await ctx
+def test_auto_materialization():
+    def pipeline(ctx):
+        ctx = add_one(ctx)
+        # Accessing .value auto-materializes
         assert ctx.value == 6
-        ctx = await dbl(ctx)
+        ctx = double(ctx)
         return ctx
 
-    result = asyncio.run(run(pipeline, {"value": 5}))
+    result = run(pipeline, {"value": 5})
     assert result.value == 12
 
 
-def test_access_before_materialization_raises():
-    async def pipeline(ctx):
-        ctx = await add(ctx)
-        _ = ctx.value
-        return ctx
-
-    with pytest.raises(NeedsMaterializationError):
-        asyncio.run(run(pipeline, {"value": 5}))
-
-
-def test_set_before_materialization_raises():
-    async def pipeline(ctx):
-        ctx = await add(ctx)
-        ctx.foo = "bar"
-        return ctx
-
-    with pytest.raises(NeedsMaterializationError):
-        asyncio.run(run(pipeline, {"value": 5}))
-
-
 def test_if_else_branching():
+    @node
     async def high(ctx):
         ctx.score = 0.9
         return ctx
 
+    @node
     async def low(ctx):
         ctx.score = 0.3
         return ctx
 
-    high_node = Node(high)
-    low_node = Node(low)
-
-    async def pipeline(ctx):
-        if ctx.use_high:
-            ctx = await high_node(ctx)
+    def pipeline(ctx):
+        if ctx.use_high:  # auto-materializes to check
+            ctx = high(ctx)
         else:
-            ctx = await low_node(ctx)
+            ctx = low(ctx)
         return ctx
 
-    assert asyncio.run(run(pipeline, {"use_high": True})).score == 0.9
-    assert asyncio.run(run(pipeline, {"use_high": False})).score == 0.3
+    assert run(pipeline, {"use_high": True}).score == 0.9
+    assert run(pipeline, {"use_high": False}).score == 0.3
 
 
-def test_conditional_after_materialization():
+def test_conditional_after_node():
+    @node
     async def log_high(ctx):
         ctx.logs = ["high"]
         return ctx
 
+    @node
     async def log_low(ctx):
         ctx.logs = ["low"]
         return ctx
 
-    h = Node(log_high)
-    l = Node(log_low)
-
-    async def pipeline(ctx):
-        ctx = await add(ctx)
-        ctx = await ctx
+    def pipeline(ctx):
+        ctx = add_one(ctx)
+        # Accessing ctx.value auto-materializes
         if ctx.value > 5:
-            ctx = await h(ctx)
+            ctx = log_high(ctx)
         else:
-            ctx = await l(ctx)
+            ctx = log_low(ctx)
         return ctx
 
-    assert asyncio.run(run(pipeline, {"value": 10})).logs == ["high"]
-    assert asyncio.run(run(pipeline, {"value": 2})).logs == ["low"]
+    assert run(pipeline, {"value": 10}).logs == ["high"]
+    assert run(pipeline, {"value": 2}).logs == ["low"]
 
 
 def test_while_loop():
-    async def pipeline(ctx):
-        ctx = await ctx
-        while ctx.value < 5:
-            ctx = await add(ctx)
-            ctx = await ctx
+    def pipeline(ctx):
+        while ctx.value < 5:  # auto-materializes each iteration
+            ctx = add_one(ctx)
         return ctx
 
-    result = asyncio.run(run(pipeline, {"value": 0}))
+    result = run(pipeline, {"value": 0})
     assert result.value == 5
 
 
 def test_for_loop():
+    @node
     async def append_x(ctx):
         ctx.logs = ctx.get("logs", []) + ["x"]
         return ctx
 
-    log = Node(append_x)
-
-    async def pipeline(ctx):
+    def pipeline(ctx):
         for _ in range(3):
-            ctx = await log(ctx)
+            ctx = append_x(ctx)
         return ctx
 
-    result = asyncio.run(run(pipeline, {}))
+    result = run(pipeline, {})
     assert result.logs == ["x", "x", "x"]
 
 
 def test_node_name():
-    assert add.name == "add_one"
+    assert add_one.name == "add_one"
 
 
 def test_node_explicit_name():
-    n = Node(add_one, name="custom")
+    @node
+    async def foo(ctx):
+        return ctx
+
+    n = Node(foo.fn, name="custom")
     assert n.name == "custom"
 
 
-def test_lazy_context_is_pending():
-    ctx = LazyContext({})
+def test_context_is_pending():
+    ctx = Context({})
     assert not ctx.is_pending
-    ctx = LazyContext({}, [add])
+    ctx = Context({}, [add_one])
     assert ctx.is_pending
 
 
 def test_nested_functions():
-    async def add_twice(ctx):
-        ctx = await add(ctx)
-        ctx = await add(ctx)
+    def add_twice(ctx):
+        ctx = add_one(ctx)
+        ctx = add_one(ctx)
         return ctx
 
-    async def pipeline(ctx):
-        ctx = await add_twice(ctx)
-        ctx = await dbl(ctx)
+    def pipeline(ctx):
+        ctx = add_twice(ctx)
+        ctx = double(ctx)
         return ctx
 
-    result = asyncio.run(run(pipeline, {"value": 5}))
+    result = run(pipeline, {"value": 5})
     assert result.value == 14  # (5+1+1)*2
 
 
 def test_early_return():
-    async def pipeline(ctx):
-        ctx = await add(ctx)
-        ctx = await ctx
-        if ctx.value > 10:
+    def pipeline(ctx):
+        ctx = add_one(ctx)
+        if ctx.value > 10:  # auto-materializes
             return ctx
-        ctx = await dbl(ctx)
+        ctx = double(ctx)
         return ctx
 
-    assert asyncio.run(run(pipeline, {"value": 5})).value == 12
-    assert asyncio.run(run(pipeline, {"value": 15})).value == 16
+    assert run(pipeline, {"value": 5}).value == 12
+    assert run(pipeline, {"value": 15}).value == 16
+
+
+def test_direct_node_call():
+    # Can call nodes directly without run()
+    ctx = add_one({"value": 5})
+    ctx = double(ctx)
+    assert ctx.value == 12
