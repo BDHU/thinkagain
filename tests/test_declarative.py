@@ -149,6 +149,15 @@ def test_node_explicit_name():
     assert n.name == "custom"
 
 
+def test_node_decorator_with_name():
+    @node(name="custom_name")
+    async def foo(ctx):
+        return ctx
+
+    assert isinstance(foo, Node)
+    assert foo.name == "custom_name"
+
+
 def test_context_is_pending():
     ctx = Context({})
     assert not ctx.is_pending

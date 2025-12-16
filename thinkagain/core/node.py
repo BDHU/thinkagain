@@ -8,7 +8,7 @@ from .context import Context
 
 
 class Node:
-    """Wraps an async function for lazy execution."""
+    """Wraps an async function for lazy execution. Works as decorator on functions and methods."""
 
     __slots__ = ("fn", "name", "_args", "_kwargs")
 
@@ -17,6 +17,12 @@ class Node:
         self.name = name or getattr(fn, "__name__", "node")
         self._args = ()
         self._kwargs = {}
+
+    def __get__(self, obj, objtype=None):
+        """Descriptor protocol: bind self for methods."""
+        if obj is None:
+            return self
+        return Node(self.fn.__get__(obj, objtype), self.name)
 
     def __call__(self, ctx: Context | dict | None = None, *args, **kwargs) -> Context:
         """Chain this node. Extra args are bound to the function."""
@@ -39,5 +45,18 @@ class Node:
         return await self.fn(ctx, *self._args, **self._kwargs)
 
 
-# Decorator alias
-node = Node
+def node(_fn: Callable | None = None, *, name: str | None = None):
+    """Decorator that wraps an async function in a Node.
+
+    Supports both @node and @node(name="custom") styles.
+    """
+
+    if _fn is None:
+        # Used as @node(name="custom")
+        def wrapper(fn: Callable) -> Node:
+            return Node(fn, name=name)
+
+        return wrapper
+
+    # Used as simple @node
+    return Node(_fn, name=name)
