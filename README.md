@@ -24,11 +24,11 @@ ThinkAgain focuses on **declarative composition**: you define reusable component
 
 ## Core Concepts
 
-- **Executable** – Base class for components; implement `arun(ctx)` to transform a `Context`
-- **Node** – Lightweight wrapper around an executable that supports lazy chaining
-- **Context** – Dict-like container that flows through your pipeline, tracking history
-- **LazyContext** – Deferred view over `Context` that records pending `Node` calls
-- **run** – Helper that normalizes input, runs your async pipeline, and returns a `Context`
+- **`@node`** – A decorator to create a reusable, chainable pipeline component from an `async` function.
+- **`Node`** – The class that wraps a component to enable lazy chaining. `@node` is a shortcut for this.
+- **`Context`** – A dict-like container that flows through the pipeline, holding state and enabling lazy execution.
+- **`run`** – A helper to execute a pipeline synchronously.
+- **`arun`** – A helper to execute a pipeline asynchronously.
 
 ## Installation
 
