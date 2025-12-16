@@ -152,7 +152,7 @@ def test_node_explicit_name():
 def test_context_is_pending():
     ctx = Context({})
     assert not ctx.is_pending
-    ctx = Context({}, [add_one])
+    ctx = add_one(ctx)  # chaining a node creates pending state
     assert ctx.is_pending
 
 
