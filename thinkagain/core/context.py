@@ -9,6 +9,16 @@ if TYPE_CHECKING:
     from .node import Node
 
 
+class NodeSignatureError(TypeError):
+    """Raised when a node function has an invalid signature."""
+
+    def __init__(self, node_name: str, cause: TypeError):
+        super().__init__(
+            f"Node '{node_name}' has invalid signature. "
+            f"Nodes must take exactly one parameter (ctx). Cause: {cause}"
+        )
+
+
 class NodeExecutionError(Exception):
     """Raised when a node in a pipeline fails during execution.
 
@@ -20,13 +30,11 @@ class NodeExecutionError(Exception):
 
     def __init__(self, node_name: str, executed: list[str], cause: Exception):
         self.node_name = node_name
-        # Snapshot as an immutable sequence for easier debugging.
         self.executed: tuple[str, ...] = tuple(executed)
         self.cause = cause
         executed_display = ", ".join(self.executed) if self.executed else "none"
         super().__init__(
-            f"Node '{node_name}' failed after executing: {executed_display}. "
-            f"Cause: {cause!r}"
+            f"Node '{node_name}' failed after executing: {executed_display}. Cause: {cause!r}"
         )
 
 
@@ -64,10 +72,9 @@ class Context:
             try:
                 ctx = await node.execute(ctx)
                 executed.append(node.name)
+            except (NodeExecutionError, NodeSignatureError):
+                raise
             except Exception as e:
-                # Avoid double-wrapping if a node already raised NodeExecutionError
-                if isinstance(e, NodeExecutionError):
-                    raise
                 raise NodeExecutionError(node.name, executed, e) from e
 
         object.__setattr__(self, "_data", ctx._data)
