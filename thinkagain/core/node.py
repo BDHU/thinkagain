@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from .context import Context
+from .context import Context, NodeSignatureError
 
 
 class Node:
@@ -32,7 +32,12 @@ class Node:
 
     async def execute(self, ctx: Context) -> Context:
         """Execute this node."""
-        return await self.fn(ctx)
+        try:
+            return await self.fn(ctx)
+        except TypeError as e:
+            if "argument" in str(e):
+                raise NodeSignatureError(self.name, e) from e
+            raise
 
 
 def node(_fn: Callable | None = None, *, name: str | None = None):
