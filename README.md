@@ -24,19 +24,11 @@ that only executes when you need results.
 
 ## Core Concepts
 
-<<<<<<< HEAD
 - **`@node`** – A decorator to create a reusable, chainable pipeline component from an `async` function.
 - **`Node`** – The class that wraps a component to enable lazy chaining. `@node` is a shortcut for this.
 - **`Context`** – A dict-like container that flows through the pipeline, holding state and enabling lazy execution.
 - **`run`** – A helper to execute a pipeline synchronously.
 - **`arun`** – A helper to execute a pipeline asynchronously.
-=======
-- **Context** – Dict-like state container with lazy execution and pending nodes
-- **Node** – Lightweight wrapper/decorator around an async function
-- **node** – Decorator that turns `async def fn(ctx)` into a `Node`
-- **run / arun** – Helpers that run a pipeline function and materialize pending nodes
-- **NodeExecutionError / NodeSignatureError** – Structured errors for bad nodes or failures
->>>>>>> 43f322a (Update README to reflect the declarative API change)
 
 ## Installation
 
