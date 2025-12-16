@@ -9,13 +9,13 @@ def run(fn: Callable[[Context], Context], ctx: dict | None = None) -> Context:
     """Run pipeline synchronously and return final context."""
     result = fn(Context(ctx))
     if result.is_pending:
-        result._sync()
+        result._materialize()
     return result
 
 
 async def arun(fn: Callable[[Context], Context], ctx: dict | None = None) -> Context:
-    """Run pipeline asynchronously - use this for concurrent request handling."""
+    """Run pipeline asynchronously."""
     result = fn(Context(ctx))
     if result.is_pending:
-        await result._async_sync()
+        await result._amaterialize()
     return result
