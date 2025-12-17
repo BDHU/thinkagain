@@ -1,0 +1,33 @@
+"""Core error types for thinkagain."""
+
+from __future__ import annotations
+
+
+class NodeSignatureError(TypeError):
+    """Raised when a node function has an invalid signature."""
+
+    def __init__(self, node_name: str, cause: TypeError):
+        super().__init__(
+            f"Node '{node_name}' has invalid signature. "
+            f"Nodes must take exactly one parameter (ctx). Cause: {cause}"
+        )
+
+
+class NodeExecutionError(Exception):
+    """Raised when a node in a pipeline fails during execution.
+
+    Attributes:
+        node_name: Name of the node where the error occurred.
+        executed: Names of nodes that completed successfully before the failure.
+        cause: The original exception raised by the failing node.
+    """
+
+    def __init__(self, node_name: str, executed: list[str], cause: Exception):
+        self.node_name = node_name
+        self.executed: tuple[str, ...] = tuple(executed)
+        self.cause = cause
+        executed_display = ", ".join(self.executed) if self.executed else "none"
+        super().__init__(
+            f"Node '{node_name}' failed after executing: {executed_display}. Cause: {cause!r}"
+        )
+

@@ -47,14 +47,14 @@ from thinkagain import Context, node, run
 
 @node
 async def retrieve(ctx: Context) -> Context:
-    # populate ctx["documents"] based on ctx["query"]
-    ctx["documents"] = ["doc1", "doc2"]
+    # populate documents based on query
+    ctx.set("documents", ["doc1", "doc2"])
     return ctx
 
 @node
 async def generate(ctx: Context) -> Context:
     docs = ctx.get("documents", [])
-    ctx["answer"] = f"Answer based on {docs}"
+    ctx.set("answer", f"Answer based on {docs}")
     return ctx
 ```
 
