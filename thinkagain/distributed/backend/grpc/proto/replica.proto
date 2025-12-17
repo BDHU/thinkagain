@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package thinkagain;
+
+service ReplicaService {
+  // Call a method on a replica instance
+  rpc Call(CallRequest) returns (CallResponse);
+
+  // Deploy replica instances on the server
+  rpc Deploy(DeployRequest) returns (DeployResponse);
+
+  // Shutdown replica instances on the server
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+}
+
+message CallRequest {
+  string replica_name = 1;  // Class name of the replica
+  string method = 2;        // Method to call
+  bytes args = 3;           // Pickled positional args
+  bytes kwargs = 4;         // Pickled keyword args
+}
+
+message CallResponse {
+  bytes result = 1;         // Pickled return value
+  string error = 2;         // Error message if failed
+}
+
+message DeployRequest {
+  string replica_name = 1;  // Class name of the replica
+  int32 n = 2;              // Number of instances
+  bytes args = 3;           // Pickled constructor args
+  bytes kwargs = 4;         // Pickled constructor kwargs
+}
+
+message DeployResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message ShutdownRequest {
+  string replica_name = 1;  // Class name to shutdown (empty = all)
+}
+
+message ShutdownResponse {
+  bool success = 1;
+  string error = 2;
+}

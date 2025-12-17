@@ -35,35 +35,6 @@ class Context:
         """Create a copy with isolated data (no shared mutations)."""
         return Context(self)
 
-    async def _execute_node(self, node: "Node", ctx: "Context") -> "Context":
-        """Execute a single node, routing to worker instance if needed."""
-        if node.is_bound:
-            return await self._execute_bound_node(node, ctx)
-        if node.is_method:
-            return await self._execute_worker_method_node(node, ctx)
-        return await self._execute_function_node(node, ctx)
-
-    async def _execute_bound_node(self, node: "Node", ctx: "Context") -> "Context":
-        return await node.execute(ctx)
-
-    async def _execute_worker_method_node(self, node: "Node", ctx: "Context") -> "Context":
-        from ..distributed.worker import get_worker_spec
-
-        class_name = node.class_name
-        if not class_name:
-            return await self._execute_function_node(node, ctx)
-
-        spec = get_worker_spec(class_name)
-        if spec is None:
-            return await self._execute_function_node(node, ctx)
-
-        instance = spec.get_instance()
-        bound_node = node.__get__(instance, type(instance))
-        return await bound_node.execute(ctx)
-
-    async def _execute_function_node(self, node: "Node", ctx: "Context") -> "Context":
-        return await node.execute(ctx)
-
     async def _run_pending_async(self) -> None:
         if not self._pending:
             return
@@ -73,8 +44,15 @@ class Context:
 
         for node in self._pending:
             try:
-                ctx = await self._execute_node(node, ctx)
+                ctx = await node.execute(ctx)
                 executed.append(node.name)
+                # Check if node returned ctx with unawaited pending nodes
+                if ctx._pending:
+                    pending_names = [n.name for n in ctx._pending]
+                    raise RuntimeError(
+                        f"Node '{node.name}' returned context with unawaited pending nodes: {pending_names}. "
+                        f"Use 'await ctx' before returning from a node that calls other nodes."
+                    )
             except (NodeExecutionError, NodeSignatureError):
                 raise
             except Exception as e:
@@ -115,9 +93,19 @@ class Context:
         self._run_pending_sync()
         return self._data.get(key, default)
 
+    async def aget(self, key: str, default: Any = None) -> Any:
+        """Async get - materializes pending nodes first."""
+        await self._run_pending_async()
+        return self._data.get(key, default)
+
     def set(self, key: str, value: Any) -> None:
         """Set a value on the context, materializing pending nodes first."""
         self._run_pending_sync()
+        self._data[key] = value
+
+    async def aset(self, key: str, value: Any) -> None:
+        """Async set - materializes pending nodes first."""
+        await self._run_pending_async()
         self._data[key] = value
 
     def peek(self, key: str, default: Any = None) -> Any:

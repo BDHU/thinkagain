@@ -29,6 +29,10 @@ classifiers = [
 test = [
     "pytest>=8.4.2",
 ]
+grpc = [
+    "grpcio>=1.60.0",
+    "grpcio-tools>=1.60.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/BDHU/thinkagain"
