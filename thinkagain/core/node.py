@@ -10,53 +10,40 @@ from .errors import NodeSignatureError
 
 
 class Node:
-    """Wraps an async function for lazy execution. Works as decorator on functions and methods."""
+    """Wraps an async function for lazy execution.
 
-    __slots__ = ("fn", "name", "_qualname", "_is_method", "_class_name", "_is_bound")
+    Nodes are always stateless functions: async def node(ctx) -> ctx.
+    """
+
+    __slots__ = ("fn", "name", "_validated")
 
     def __init__(self, fn: Callable, name: str | None = None):
         self.fn = fn
         self.name = name or getattr(fn, "__name__", "node")
-        self._qualname = getattr(fn, "__qualname__", self.name)
-        self._is_method = False
-        self._class_name: str | None = None
-        self._is_bound = inspect.ismethod(fn)
-        # Fallback: infer method metadata from qualname if descriptor hooks are not triggered
-        parts = self._qualname.split(".")
-        if len(parts) >= 2 and not parts[-2].startswith("<"):
-            self._is_method = True
-            self._class_name = parts[-2]
+        self._validated = False
 
-    def __set_name__(self, owner, name):
-        """Capture class metadata when used as descriptor on a class."""
-        if not self.name:
-            self.name = name
-        self._is_method = True
-        self._class_name = getattr(owner, "__name__", None)
-        if self._class_name and name:
-            self._qualname = f"{self._class_name}.{name}"
+    def _validate_signature(self) -> None:
+        """Validate signature once, cache result."""
+        if self._validated:
+            return
+        self._validated = True
 
-    @property
-    def is_method(self) -> bool:
-        return self._is_method
+        try:
+            sig = inspect.signature(self.fn)
+        except (ValueError, TypeError):
+            return  # Can't inspect (builtin, etc.) - allow runtime to catch
 
-    @property
-    def class_name(self) -> str | None:
-        return self._class_name
-
-    @property
-    def is_bound(self) -> bool:
-        return self._is_bound
-
-    def __get__(self, obj, objtype=None):
-        """Descriptor protocol: bind self for methods."""
-        if obj is None:
-            return self
-        bound = Node(self.fn.__get__(obj, objtype), self.name)
-        bound._is_method = True
-        bound._class_name = self._class_name or getattr(objtype, "__name__", None) or obj.__class__.__name__
-        bound._is_bound = True
-        return bound
+        required = [
+            p for p in sig.parameters.values()
+            if p.default is inspect.Parameter.empty
+            and p.kind in (inspect.Parameter.POSITIONAL_ONLY,
+                           inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        ]
+        if len(required) != 1:
+            raise NodeSignatureError(
+                self.name,
+                TypeError(f"expected 1 required parameter (ctx), got {len(required)}")
+            )
 
     def __call__(self, ctx: Context | dict | None = None) -> Context:
         """Chain this node to a context."""
@@ -68,10 +55,12 @@ class Node:
 
     async def execute(self, ctx: Context) -> Context:
         """Execute this node."""
+        self._validate_signature()
         try:
             return await self.fn(ctx)
         except TypeError as e:
-            if "argument" in str(e):
+            # Fallback for cases inspect couldn't catch
+            if "argument" in str(e) or "positional" in str(e):
                 raise NodeSignatureError(self.name, e) from e
             raise
 
@@ -79,7 +68,16 @@ class Node:
 def node(_fn: Callable | None = None, *, name: str | None = None):
     """Decorator that wraps an async function in a Node.
 
+    Nodes are always stateless functions that take a Context and return a Context.
+
     Supports both @node and @node(name="custom") styles.
+
+    Example:
+        @node
+        async def process(ctx):
+            value = ctx.get("input")
+            ctx.set("output", transform(value))
+            return ctx
     """
 
     if _fn is None:
