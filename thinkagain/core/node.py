@@ -34,15 +34,19 @@ class Node:
             return  # Can't inspect (builtin, etc.) - allow runtime to catch
 
         required = [
-            p for p in sig.parameters.values()
+            p
+            for p in sig.parameters.values()
             if p.default is inspect.Parameter.empty
-            and p.kind in (inspect.Parameter.POSITIONAL_ONLY,
-                           inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            and p.kind
+            in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
         ]
         if len(required) != 1:
             raise NodeSignatureError(
                 self.name,
-                TypeError(f"expected 1 required parameter (ctx), got {len(required)}")
+                TypeError(f"expected 1 required parameter (ctx), got {len(required)}"),
             )
 
     def __call__(self, ctx: Context | dict | None = None) -> Context:

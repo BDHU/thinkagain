@@ -42,9 +42,7 @@ def get_backend() -> Backend:
     elif backend_type == "grpc":
         from .backend.grpc import GrpcBackend
 
-        _backend = GrpcBackend(
-            _runtime_config["address"], _runtime_config["options"]
-        )
+        _backend = GrpcBackend(_runtime_config["address"], _runtime_config["options"])
     else:
         raise ValueError(f"Unknown backend: {backend_type}")
     return _backend

@@ -1,6 +1,5 @@
 """Tests for declarative API."""
 
-import pytest
 from thinkagain import Node, run, Context, node
 
 

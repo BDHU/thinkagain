@@ -4,7 +4,11 @@ import pytest
 
 from thinkagain import node, replica, run
 from thinkagain.distributed import runtime
-from thinkagain.distributed import clear_replica_registry, get_replica_spec, reset_backend
+from thinkagain.distributed import (
+    clear_replica_registry,
+    get_replica_spec,
+    reset_backend,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -140,6 +144,8 @@ def test_grpc_backend_end_to_end():
     """Test gRPC backend with server and client."""
     import socket
     import time
+
+    pytest.importorskip("grpc", reason="gRPC backend requires the grpc package")
     from thinkagain.distributed.backend.grpc import ReplicaRegistry, serve
 
     # Define a replica class

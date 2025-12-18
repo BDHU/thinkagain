@@ -21,6 +21,7 @@ def _ensure_grpc():
         import grpc as _grpc
         from .proto import replica_pb2 as _replica_pb2
         from .proto import replica_pb2_grpc as _replica_pb2_grpc
+
         grpc = _grpc
         replica_pb2 = _replica_pb2
         replica_pb2_grpc = _replica_pb2_grpc
@@ -58,7 +59,9 @@ class GrpcBackend:
 
     def __init__(self, address: str | None, options: dict | None = None):
         if not address:
-            raise ValueError("GrpcBackend requires an address (e.g., 'localhost:50051')")
+            raise ValueError(
+                "GrpcBackend requires an address (e.g., 'localhost:50051')"
+            )
         self._address = address
         self._options = options or {}
         self._channel = None

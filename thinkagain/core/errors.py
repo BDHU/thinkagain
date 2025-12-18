@@ -30,4 +30,3 @@ class NodeExecutionError(Exception):
         super().__init__(
             f"Node '{node_name}' failed after executing: {executed_display}. Cause: {cause!r}"
         )
-
