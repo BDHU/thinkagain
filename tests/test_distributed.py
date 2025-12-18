@@ -140,6 +140,55 @@ def test_runtime_context_manager():
         assert result.get("ok") is True
 
 
+def test_local_init_customizes_initialization():
+    """Test that __local_init__ is called to customize instance creation."""
+    init_calls = []
+
+    @replica(n=2)
+    class CustomInit:
+        @classmethod
+        def __local_init__(cls, base_value: int):
+            # Simulate instance-specific customization
+            init_calls.append(base_value)
+            # Could inspect local resources here (memory, GPU, etc.)
+            adjusted_value = base_value * 2
+            return cls(adjusted_value)
+
+        def __init__(self, value: int):
+            self.value = value
+
+        def get_value(self) -> int:
+            return self.value
+
+    CustomInit.deploy(base_value=10)
+
+    # __local_init__ should have been called twice (n=2)
+    assert len(init_calls) == 2
+    assert init_calls == [10, 10]
+
+    # Instances should have the adjusted value
+    inst1 = CustomInit.get()
+    inst2 = CustomInit.get()
+    assert inst1.value == 20
+    assert inst2.value == 20
+
+
+def test_local_init_fallback_to_regular_init():
+    """Test that classes without __local_init__ use regular __init__."""
+
+    @replica(n=2)
+    class RegularInit:
+        def __init__(self, value: int):
+            self.value = value
+
+    RegularInit.deploy(value=5)
+
+    inst1 = RegularInit.get()
+    inst2 = RegularInit.get()
+    assert inst1.value == 5
+    assert inst2.value == 5
+
+
 def test_grpc_backend_end_to_end():
     """Test gRPC backend with server and client."""
     import socket

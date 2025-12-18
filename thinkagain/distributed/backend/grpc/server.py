@@ -28,7 +28,9 @@ class ReplicaRegistry:
         if name not in self._classes:
             raise ValueError(f"Unknown replica class: {name}")
         cls = self._classes[name]
-        self._instances[name] = [cls(*args, **kwargs) for _ in range(n)]
+
+        initializer = getattr(cls, "__local_init__", cls)
+        self._instances[name] = [initializer(*args, **kwargs) for _ in range(n)]
         self._round_robin_idx[name] = 0
 
     def shutdown(self, name: str) -> None:

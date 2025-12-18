@@ -19,7 +19,9 @@ class LocalBackend:
         name = spec.cls.__name__
         if name in self._instances:
             return
-        self._instances[name] = [spec.cls(*args, **kwargs) for _ in range(spec.n)]
+
+        initializer = getattr(spec.cls, "__local_init__", spec.cls)
+        self._instances[name] = [initializer(*args, **kwargs) for _ in range(spec.n)]
         self._round_robin_idx[name] = 0
 
     def shutdown(self, spec: "ReplicaSpec") -> None:
