@@ -9,26 +9,28 @@
 
 ---
 
-A minimal, debuggable framework for building explicit, async-first AI pipelines.
-ThinkAgain focuses on **declarative composition**: you write small async
+A minimal, debuggable framework for async-first AI pipelines. Write small async
 functions, wrap them in `Node` objects, and chain them through a lazy `Context`
-that only executes when you need results.
+that only runs when you need results. When pipelines need stateful helpers
+(LLMs, retrievers, tools) you can deploy them as replica pools that run locally
+or behind a gRPC server.
 
 ## Why ThinkAgain?
 
 - **Declarative** – Build pipelines by chaining `Node` objects in plain Python
 - **Lazy** – `Context` collects pending nodes and executes them on demand
-- **Debuggable** – You control when materialization happens and where to inspect
-- **Simple** – Just a few classes and async functions; no DSLs or heavy runtime
+- **Observable** – `ctx.metadata` records timing for each node
+- **Minimal** – Small surface area, no DSLs or schedulers
 - **Async-first** – Async nodes with sync and async entrypoints (`run` / `arun`)
+- **Replica-aware** – Optional distributed runtime for stateful service pools
 
 ## Core Concepts
 
-- **`@node`** – A decorator to create a reusable, chainable pipeline component from an `async` function.
-- **`Node`** – The class that wraps a component to enable lazy chaining. `@node` is a shortcut for this.
-- **`Context`** – A dict-like container that flows through the pipeline, holding state and enabling lazy execution.
-- **`run`** – A helper to execute a pipeline synchronously.
-- **`arun`** – A helper to execute a pipeline asynchronously.
+- **`Context`** – Dict-like state that records pending nodes and metadata.
+- **`Node` / `@node`** – Wrap an `async def` so it can be lazily chained.
+- **`run` / `arun`** – Helpers that normalize inputs and materialize pending nodes.
+- **`replica`** – Decorator that turns a class into a managed pool of workers.
+- **`distributed.runtime`** – Context manager that deploys replicas on local or gRPC backends.
 
 ## Installation
 
@@ -40,14 +42,11 @@ uv add thinkagain
 
 ## Quick Start
 
-**Define your nodes:**
-
 ```python
 from thinkagain import Context, node, run
 
 @node
 async def retrieve(ctx: Context) -> Context:
-    # populate documents based on query
     ctx.set("documents", ["doc1", "doc2"])
     return ctx
 
@@ -56,40 +55,53 @@ async def generate(ctx: Context) -> Context:
     docs = ctx.get("documents", [])
     ctx.set("answer", f"Answer based on {docs}")
     return ctx
-```
 
-**Declare a pipeline with Nodes:**
-
-```python
 def pipeline(ctx: Context) -> Context:
-    # Chaining is lazy: this only records pending nodes
     ctx = retrieve(ctx)
     ctx = generate(ctx)
     return ctx
 
 result = run(pipeline, {"query": "What is ML?"})
 print(result.get("answer"))
+print(result.metadata.node_latencies)
 ```
 
-**Lazy materialization and control flow:**
+`Context` materializes pending nodes whenever you call `run`, `arun`, `ctx.get`,
+`await ctx`, or otherwise read/write actual values, so normal Python control
+flow (`if`, `while`, recursion) just works.
+
+## Distributed Replica Pools
+
+Need a stateful helper (LLM, vector store, tool adapter)? Decorate the class
+with `@replica` and let ThinkAgain manage the pool.
 
 ```python
-from thinkagain import arun
+from thinkagain import node, replica, distributed
 
-def conditional_pipeline(ctx: Context) -> Context:
-    ctx = retrieve(ctx)
-    ctx = generate(ctx)
-    # Nothing has run yet – nodes are pending on the Context
+@replica(n=2)
+class FakeLLM:
+    def __init__(self, prefix="Bot"):
+        self.prefix = prefix
+
+    def invoke(self, prompt: str) -> str:
+        return f"{self.prefix}: {prompt}"
+
+@node
+async def call_llm(ctx):
+    llm = FakeLLM.get()
+    ctx.set("reply", llm.invoke(ctx.get("prompt")))
     return ctx
 
-ctx = await arun(conditional_pipeline, {"query": "What is ML?"})
+def pipeline(ctx):
+    return call_llm(ctx)
 
-if ctx.get("answer", "").startswith("Answer based on"):
-    # You can now branch on computed values
-    ...
-else:
-    ...
+with distributed.runtime():
+    result = run(pipeline, {"prompt": "Hello"})
+    print(result.get("reply"))
 ```
+
+For remote deployments run the bundled gRPC server next to your replica classes
+and call `distributed.runtime(backend="grpc", address="host:port")`.
 
 ## Examples
 
@@ -99,16 +111,10 @@ Run the declarative demo to see conditional branches and loops:
 python examples/demo.py
 ```
 
-## Notes on Older Documentation
+## Documentation
 
-Earlier versions of ThinkAgain exposed a richer `Graph` API with visualization,
-compiled graphs, and an OpenAI-compatible server. The current core library is
-intentionally much smaller and focuses on the declarative `Node` + `run`
-pipeline model shown above. The architectural docs in `ARCHITECTURE.md` and
-`DESIGN.md` describe that earlier design and are kept as historical notes.
-
-- [ARCHITECTURE.md](ARCHITECTURE.md) – design rationale
-- [DESIGN.md](DESIGN.md) – control-flow primitives and roadmap
+- [ARCHITECTURE.md](ARCHITECTURE.md) – runtime, context, and replica layers
+- [DESIGN.md](DESIGN.md) – execution model and control-flow patterns
 - [examples/](examples/) – working demos
 
 ## License

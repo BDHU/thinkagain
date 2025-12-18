@@ -1,359 +1,156 @@
-# ThinkAgain Design (Historical Notes)
+# ThinkAgain Design
 
-## Overview
+This document captures the principles behind ThinkAgain's current
+implementation: keep the runtime tiny, make lazy execution obvious, and
+provide an easy escape hatch for stateful services without building a
+workflow engine.
 
-A minimal, debuggable agent framework focused on explicit control and transparency.
-The framework originally captured computation graphs **before execution** via an
-explicit `Graph`/`Pipeline` API. The current core library is intentionally much
-smaller and focuses on:
+## Design Goals
 
-- `Context` – state and history
-- `Executable` – async components
-- `Node` – declarative wrapper
-- `LazyContext` – lazy chaining and materialization
-- `run` – execution helper
+1. **Plain Python Pipelines** – Users write regular functions with familiar
+   control flow (`if`, `for`, `while`). No DSL, no custom graph builder.
+2. **Lazy by Default** – The framework collects pending node calls and only
+   executes when results are needed. This enables conditional logic that depends
+   on partial results and makes debugging easier.
+3. **Async-First but Sync-Friendly** – Nodes are async functions, yet the entry
+   points (`run`, `Context.get`, etc.) work from both sync and async code.
+4. **Observable Execution** – Every run records timing metadata and surfaces
+   errors with context.
+5. **Composable State** – Pipelines pass around a single `Context` object that
+   holds both state and metadata.
+6. **Optional Distribution** – Heavyweight services can be wrapped as replicas
+   and deployed to local or remote backends without touching pipeline code.
 
-The sections below describe the earlier, graph-centric design and are kept for
-historical context and future experimentation.
+## Execution Model
 
-## Core Architecture
+### Nodes and Pipelines
 
-### 1. Context (State Container)
-
-```python
-class Context:
-    - _data: dict           # Holds all pipeline state
-    - _history: list[str]   # Execution log for debugging
-```
-
-**Purpose**: Passes state between workers while tracking execution history.
-
-**Key Features**:
-- Dictionary-like attribute access
-- Built-in logging via `ctx.log()`
-- Full history tracking
-- No hidden state
-
-### 2. Worker (Computation Unit)
+- Nodes are `async def` functions that accept and return a `Context`.
+- `@node` returns a callable that simply appends itself to the context.
+- `ctx = my_node(ctx)` records pending state; nothing runs yet.
+- Pipelines are just Python functions that thread through contexts.
 
 ```python
-class Worker:
-    - name: str
-    - __call__(ctx: Context) -> Context
-    - __rshift__(other) -> Pipeline  # >> operator
-    - to_dict() -> dict              # Export structure
+@node
+async def retrieve(ctx):
+    ctx.set("documents", [...])
+    return ctx
+
+def pipeline(ctx):
+    ctx = retrieve(ctx)       # pending
+    ctx = generate(ctx)       # pending
+    return ctx                # still pending
 ```
 
-**Purpose**: Base class for any processing unit (vector DB, LLM, reranker, etc.)
+### Materialization Triggers
 
-**Key Features**:
-- Uniform interface: `ctx = worker(ctx)`
-- Composable via `>>`operator
-- Self-describing via `to_dict()`
-- Can represent services, algorithms, or LLMs
+Pending nodes run when you call `run`, `arun`, `Context.materialize`,
+`Context.amaterialize`, `ctx.get`, `ctx.set`, iterate, take `len`, or `await ctx`.
+`peek` and `pending_names` are the two safe inspection helpers that never
+materialize.
 
-### 3. Pipeline (Composition)
+### Control Flow
+
+Pipelines rely on plain Python flow:
+
+- `if ctx.get("score") > 0.8:` materializes pending work before comparison.
+- `while ctx.get("quality") < 0.9:` materializes once per iteration.
+- Helper functions or recursion work naturally because everything passes through
+  the same context object.
+
+Inside a node you can call other nodes and `await ctx` before returning:
 
 ```python
-class Pipeline:
-    - name: str
-    - nodes: list  # Workers, Switches, Loops
-    - __call__(ctx: Context) -> Context
-    - visualize() -> str
-    - to_dict() -> dict
+@node
+async def orchestrate(ctx):
+    ctx = stage_one(ctx)
+    ctx = stage_two(ctx)
+    ctx = await ctx  # make sure stage_one/two ran
+    return ctx
 ```
 
-**Purpose**: Sequential composition of workers and control flow.
+### Metadata & Error Handling
 
-**Key Features**:
-- Created via `worker1 >> worker2 >> worker3`
-- Captures graph structure before execution
-- Can be nested (pipelines in pipelines)
-- Exports to dict/JSON for inspection
+- Each run copies `ExecutionMetadata`, executes nodes sequentially, and records latency.
+- Failures are wrapped in `NodeExecutionError` with the failing node name plus the completed ones.
+- Invalid signatures trigger `NodeSignatureError` before execution.
+- Returning a context with pending nodes raises `RuntimeError` so authors remember to `await ctx`.
 
-### 4. Switch (Multi-way Conditional)
+## Distributed Replica Design
+
+### Replica Decorator
+
+`@replica(n=1)` turns a class into a pool of workers: it registers the spec,
+adds `deploy`/`shutdown`/`get` helpers, and defers instantiation until you call
+`get()` or run `distributed.deploy()`. Nodes can call replicas anywhere as long
+as a backend is configured.
+
+### Runtime Lifecycle
+
+`distributed.runtime(...):` wraps `init → deploy → shutdown` around a block,
+making sure every registered replica exists before your pipeline runs. Outside
+that block, calling `ReplicaClass.get()` triggers one-off deployment, which is
+handy for quick tests.
+
+### Backends and Remote Execution
+
+- **Local backend**: default, keeps replica instances in the current process.
+- **gRPC backend**: returns proxies whose attribute access serializes calls to a
+  remote server. Switching to gRPC is a configuration change.
+
+## Common Patterns
+
+1. **Linear pipeline**
 
 ```python
-class Switch:
-    - name: str
-    - cases: list[tuple[condition, branch]]
-    - default: branch
-    - case(condition, branch) -> Switch  # Builder
-    - set_default(branch) -> Switch      # Builder
+def rag(ctx):
+    return generate(rerank(retrieve(ctx)))
 ```
 
-**Purpose**: Multi-way branching (if/elif/else).
-
-**Key Features**:
-- Evaluates conditions in order
-- Executes first matching branch
-- Falls back to default if no match
-- Builder pattern for readability
-
-**Usage**:
-```python
-Switch(name="routing")
-    .case(lambda ctx: condition1, branch1)
-    .case(lambda ctx: condition2, branch2)
-    .set_default(default_branch)
-```
-
-### 5. Conditional (Binary Switch)
+2. **Conditional routing**
 
 ```python
-class Conditional(Switch):
-    - condition: Callable
-    - true_branch: Worker/Pipeline
-    - false_branch: Worker/Pipeline
+def maybe_rerank(ctx):
+    ctx = retrieve(ctx)
+    if ctx.get("result_count", 0) > 3:
+        ctx = rerank(ctx)
+    return generate(ctx)
 ```
 
-**Purpose**: Simple if/else branching (convenience wrapper).
-
-**Usage**:
-```python
-Conditional(
-    condition=lambda ctx: len(ctx.documents) >= 2,
-    true_branch=reranker,
-    false_branch=fallback
-)
-```
-
-### 6. Loop (Iteration)
+3. **Self-correcting loop**
 
 ```python
-class Loop:
-    - name: str
-    - condition: Callable
-    - body: Worker/Pipeline
-    - max_iterations: int
+def refine_until_good(ctx):
+    ctx = initial(ctx)
+    while ctx.get("quality", 0) < 0.85:
+        ctx = refine(ctx)
+        ctx = evaluate(ctx)
+    return ctx
 ```
 
-**Purpose**: Repeat execution while condition is true.
-
-**Key Features**:
-- Safety limit via `max_iterations`
-- Logs each iteration
-- Can nest loops and conditionals
-
-**Usage**:
-```python
-Loop(
-    condition=lambda ctx: len(ctx.documents) < 2,
-    body=refine_query >> retrieve,
-    max_iterations=3
-)
-```
-
-## Computation Graph Capture
-
-### Static Definition (Before Execution)
-
-The graph structure is captured **declaratively** using the `>>` operator:
+4. **Replica-backed node**
 
 ```python
-pipeline = (
-    retrieve
-    >> Switch(name="quality")
-        .case(lambda ctx: len(ctx.documents) >= 5, high_path)
-        .case(lambda ctx: len(ctx.documents) >= 2, med_path)
-        .set_default(low_path)
-    >> generate
-)
+@replica(n=2)
+class Tooling:
+    def invoke(self, prompt):
+        ...
 
-# Graph is fully defined - nothing has executed yet!
-graph_dict = pipeline.to_dict()  # Complete graph structure
-graph_viz = pipeline.visualize()  # ASCII visualization
+@node
+async def call_tool(ctx):
+    tool = Tooling.get()
+    ctx.set("reply", tool.invoke(ctx.get("prompt")))
+    return ctx
 ```
 
-### Graph Representation
+These patterns work identically in sync or async contexts because the only state
+that matters is the `Context` object that flows through the pipeline.
 
-Graphs are represented as nested dictionaries:
+## Future Work
 
-```json
-{
-  "type": "Pipeline",
-  "name": "rag_pipeline",
-  "nodes": [
-    {
-      "type": "Worker",
-      "name": "vector_db",
-      "class": "VectorDBWorker"
-    },
-    {
-      "type": "Switch",
-      "name": "quality_check",
-      "cases": [
-        {
-          "condition": "lambda",
-          "branch": {"type": "Worker", "name": "reranker"}
-        }
-      ],
-      "default": {
-        "type": "Pipeline",
-        "nodes": [...]
-      }
-    },
-    {
-      "type": "Worker",
-      "name": "generator",
-      "class": "GeneratorWorker"
-    }
-  ]
-}
-```
-
-### Execution Trace (Runtime)
-
-During execution, Context tracks what actually happened:
-
-```python
-ctx = pipeline.run(Context(query="What is ML?"))
-
-# Execution history
-print(ctx.history)
-# [
-#   "[Pipeline] Starting: rag_pipeline",
-#   "[vector_db] Retrieved 3 documents",
-#   "[Switch] Evaluating: quality_check",
-#   "[Switch] Case 1 evaluated to: True",
-#   "[Switch] Executing case 1",
-#   "[reranker] Reranked to top 2",
-#   "[generator] Generated answer",
-#   "[Pipeline] Completed: rag_pipeline"
-# ]
-```
-
-## Control Flow Examples
-
-### Simple Linear Pipeline
-
-```python
-pipeline = worker1 >> worker2 >> worker3
-```
-
-**Graph**:
-```
-Pipeline
-├── worker1
-├── worker2
-└── worker3
-```
-
-### Conditional Pipeline
-
-```python
-pipeline = (
-    worker1
-    >> Conditional(
-        condition=lambda ctx: ctx.value > 10,
-        true_branch=worker2,
-        false_branch=worker3
-    )
-    >> worker4
-)
-```
-
-**Graph**:
-```
-Pipeline
-├── worker1
-├── Conditional
-│   ├── TRUE: worker2
-│   └── FALSE: worker3
-└── worker4
-```
-
-### Multi-way Branching
-
-```python
-pipeline = (
-    worker1
-    >> Switch(name="routing")
-        .case(lambda ctx: ctx.score >= 0.9, high_quality)
-        .case(lambda ctx: ctx.score >= 0.5, medium_quality)
-        .set_default(low_quality)
-    >> worker2
-)
-```
-
-**Graph**:
-```
-Pipeline
-├── worker1
-├── Switch: routing
-│   ├── CASE 1: high_quality
-│   ├── CASE 2: medium_quality
-│   └── DEFAULT: low_quality
-└── worker2
-```
-
-### Loop with Retry
-
-```python
-pipeline = (
-    worker1
-    >> Loop(
-        condition=lambda ctx: not ctx.success and ctx.retries < 3,
-        body=retry_worker,
-        max_iterations=5
-    )
-    >> worker2
-)
-```
-
-**Graph**:
-```
-Pipeline
-├── worker1
-├── Loop: retry (max=5)
-│   └── Body: retry_worker
-└── worker2
-```
-
-### Complex Nested Pipeline
-
-```python
-retrieval_stage = (
-    vector_db
-    >> Loop(
-        condition=lambda ctx: len(ctx.documents) < 2,
-        body=refine_query >> vector_db,
-        max_iterations=3
-    )
-)
-
-quality_stage = (
-    Switch(name="quality")
-        .case(lambda ctx: len(ctx.documents) >= 3, reranker)
-        .set_default(web_search >> reranker)
-)
-
-pipeline = retrieval_stage >> quality_stage >> generator
-```
-
-**Graph**:
-```
-Pipeline
-├── vector_db
-├── Loop: retry (max=3)
-│   └── Body: (sub-pipeline)
-│       ├── refine_query
-│       └── vector_db
-├── Switch: quality
-│   ├── CASE 1: reranker
-│   └── DEFAULT: (sub-pipeline)
-│       ├── web_search
-│       └── reranker
-└── generator
-```
-
-## Extension Points
-
-### Future Enhancements
-1. Add declerative graph construction.
-2. Consolidate `arun` and `acall`.
-3. **Caching** - Add @cached decorator for workers
-4. **Graph Optimization** - Analyze and optimize before execution
-5. **Visualization** - Export to GraphViz, Mermaid, etc.
-6. **Distributed Execution** - Run workers on different machines
-7. **Type Checking** - Validate data flow between workers
+- Additional backends (Ray, asyncio pools, etc.) can slot into the same backend
+  protocol without touching the core runtime.
+- ExecutionMetadata could be extended with custom hooks (e.g., tracing spans) by
+  subclassing `Context` or post-processing `ctx.metadata`.
+- Higher-level helpers (e.g., loop utilities) can be built as regular nodes
+  while keeping the core surface minimal.

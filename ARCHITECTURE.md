@@ -1,324 +1,95 @@
-# thinkagain Architecture
+# ThinkAgain Architecture
 
-## Current Architecture: Declarative Pipelines
-
-The current core of thinkagain is intentionally small. Instead of exposing a
-large graph builder surface, it focuses on **declarative async pipelines**
-built from a few primitives:
-
-- `Context` – dict-like state container with history
-- `Executable` – base class for async components (`arun(ctx) -> ctx`)
-- `Node` – lightweight wrapper that enables lazy chaining
-- `LazyContext` – collects pending `Node` calls and materializes on demand
-- `run` – helper that normalizes inputs, runs your async pipeline, and returns a `Context`
-
-You write regular async functions that accept a `LazyContext`, chain `Node`
-objects, and optionally choose where to materialize before branching.
-
-## Historical Design: Everything is a Graph
-
-Earlier versions of thinkagain exposed a rich `Graph` API. The core insight was
-that **all execution can be modeled as graphs**, and **graphs compose naturally**.
-
-Instead of having separate abstractions for pipelines, workflows, agents, and
-subgraphs, the design used one unified concept: **Executable**, with `Graph`
-implementing the same interface as leaf workers.
-
-## Core Hierarchy
+ThinkAgain is intentionally small: the entire framework is organized around a
+lazy `Context`, a thin `Node` wrapper, and a lightweight distributed runtime
+for stateful services. This document explains how those pieces fit together.
 
 ```
-Executable (base interface)
-├── Worker (leaf computations - your business logic)
-└── Graph (DAG with cycles and conditional routing)
+┌────────────┐       ┌──────────┐       ┌────────────────────────┐
+│  Node fn   │  @node│  Node    │  >>   │ Context (pending state)│
+└────────────┘       └──────────┘       └────────────────────────┘
+        │                          │
+        │ run/arun                 │
+        ▼                          ▼
+┌────────────────────────────────────────────────────────────────┐
+│ Lazy materialization + ExecutionMetadata + error handling      │
+└────────────────────────────────────────────────────────────────┘
+        │                          │
+        │ needs stateful worker    │
+        ▼                          ▼
+┌────────────┐ deploy  ┌──────────────┐ get   ┌──────────────────┐
+│ @replica   │ ──────► │ ReplicaSpec  │ ────► │ Backend (local / │
+│ classes    │         └──────────────┘       │ gRPC proxy)      │
+└────────────┘                                 └──────────────────┘
 ```
 
-Both implement the same interface:
-- `__call__(ctx) -> ctx` - synchronous execution
-- `arun(ctx) -> ctx` - asynchronous execution
-- `__rshift__(other)` - composition via `>>` operator
+## 1. Core Runtime
 
-## Key Design Decisions
+### Context
 
-### 1. Unified Interface
+`thinkagain.core.context.Context` is a dict-like state container with three
+slots: `_data` (mutable state), `_pending` (nodes queued for execution), and
+`_metadata` (`ExecutionMetadata`). Methods such as `get`, `set`, `items`,
+iteration, and `len` materialize pending nodes before touching `_data`, while
+`peek` lets you inspect values without running anything. Metadata holds
+timestamps, per-node latency totals, and execution counts; it is copied once
+when a run starts so chaining stays cheap.
 
-Everything that transforms Context is an `Executable`. This means:
+### Node and `@node`
 
-```python
-# These all work the same way
-worker = MyWorker()
-graph = Graph(...)
+`thinkagain.core.node.Node` wraps an `async def (ctx) -> ctx`. On first
+execution it validates the signature, then simply appends itself to the
+context's pending list when called. `execute()` awaits the user function and
+returns the resulting context. The `@node` decorator is only syntactic sugar.
 
-# All can be called
-result = worker(ctx)
-result = graph(ctx)
+### Materialization
 
-# All can be composed
-flow = worker >> graph >> another_worker
-```
+Nothing runs until you call `run`, `arun`, `Context.materialize`,
+`Context.amaterialize`, or a method that needs actual data (`get`, iteration,
+`len`, etc.). During `_run_pending_async` the metadata copy is made once, each
+node executes sequentially, and errors are wrapped in `NodeExecutionError`
+containing the failing node plus the ones that finished beforehand. Returning a
+context that still has pending nodes raises a `RuntimeError`, which nudges node
+authors to `await ctx` before returning.
 
-### 2. Async-First Execution
+## 2. Distributed Replica Runtime
 
-The framework is async-first but supports sync:
-- Primary execution: `await graph.arun(ctx)`
-- Sync wrapper: `graph(ctx)` calls `asyncio.run(arun(ctx))`
-- Sync workers automatically wrapped in executors
+Some pipelines require stateful helpers such as LLM client pools, vector stores,
+or tool adapters. ThinkAgain bundles a small replica runtime for those cases.
 
-This simplifies the codebase significantly - only one execution path to maintain.
+### ReplicaSpec and `@replica`
 
-### 3. Sequential Composition via >>
+Decorating a class with `@thinkagain.distributed.replica` registers a
+`ReplicaSpec` (class reference, pool size, cached constructor arguments). The
+decorator adds `deploy`, `shutdown`, and `get` classmethods. Specs live in a
+registry so the runtime can deploy or tear everything down at once.
 
-The `>>` operator auto-wires nodes sequentially into a Graph:
+### Runtime Configuration
 
-```python
-# This creates a Graph with auto-wired sequential nodes
-pipeline = worker1 >> worker2 >> worker3
+`thinkagain.distributed.runtime` stores the backend choice (`local` or `grpc`),
+the server address, and options. `get_backend()` lazily instantiates that backend,
+`reset_backend()` clears it, and the `runtime(...)` context manager wraps
+`init → deploy → shutdown` around a code block. The pipeline runtime never needs
+to know where replicas live.
 
-# Equivalent to:
-graph = Graph()
-graph.add_node("_0", worker1)
-graph.add_node("_1", worker2)
-graph.add_node("_2", worker3)
-graph.add_edge("_0", "_1")
-graph.add_edge("_1", "_2")
-graph.add_edge("_2", END)
-```
+### Backends
 
-This means sequential pipelines get all graph features for free: visualization, introspection, etc.
+Two backends implement the shared protocol:
 
-### 4. Natural Subgraph Composition
+- **LocalBackend** – Keeps replicas in-process and rotates through them.
+- **GrpcBackend** – Connects to the bundled gRPC server, requests deploy/shutdown,
+  and returns proxies that pickle method calls.
 
-Because everything is an `Executable`, subgraphs "just work":
+## 3. Putting It Together
 
-```python
-# Create subgraphs
-research_agent = Graph(name="research")
-research_agent.add_node("query", QueryWorker())
-research_agent.add_node("search", SearchWorker())
-# ... configure ...
+1. **Define nodes** with `@node` and write plain Python pipelines that receive
+   a `Context`. Pipelines can use any control flow (`if`, `while`, recursion)
+   because nodes only run when the context is materialized.
+2. **Optionally declare replicas** for heavy, stateful resources and wrap the
+   code that runs nodes inside `distributed.runtime(...)`.
+3. **Execute** via `run`/`arun` and inspect `ctx.metadata` (latencies) or
+   `ctx.to_dict()` for the final state.
 
-writing_agent = Graph(name="writing")
-# ... configure ...
-
-# Compose them in a coordinator graph
-coordinator = Graph(name="coordinator")
-coordinator.add_node("research", research_agent)  # Graph as node!
-coordinator.add_node("write", writing_agent)      # Graph as node!
-coordinator.add_edge("research", "write")
-```
-
-**No special API needed.** Graphs are just executables, so they can be nodes in other graphs.
-
-### 5. Eliminated Features
-
-To stay minimal, we removed:
-- **Conditional/Switch/Loop control flow** - Use Graph with conditional edges instead
-- **Step-by-step debugging** - Simplified to logs and visualization
-- **Parallel execution** - Can be added back as a separate Worker if needed
-- **Separate sync/async paths** - One async path, sync wraps it
-
-## Code Metrics
-
-### Before (v0.1.0)
-- `graph.py`: 676 lines
-- `pipeline.py`: 505 lines
-- `worker.py`: 142 lines
-- **Total core**: ~1,566 lines
-
-### After (v0.1.1)
-- `executable.py`: 151 lines (new base)
-- `graph.py`: 472 lines (-204)
-- `pipeline.py`: 81 lines (-424)
-- `worker.py`: 144 lines (+2)
-- **Total core**: ~848 lines
-
-**~46% code reduction** while gaining subgraph composition!
-
-## Usage Patterns
-
-### Pattern 1: Simple Sequential Pipeline
-
-```python
-# Using >> operator to create a sequential Graph
-pipeline = worker1 >> worker2 >> worker3
-result = await pipeline.arun(ctx)
-```
-
-### Pattern 2: Graph with Cycles
-
-```python
-graph = Graph(name="self_correcting")
-graph.add_node("retrieve", retriever)
-graph.add_node("critique", critic)
-graph.add_node("refine", refiner)
-
-graph.add_edge("retrieve", "critique")
-graph.add_conditional_edge(
-    "critique",
-    route=lambda ctx: "done" if ctx.quality > 0.8 else "refine",
-    paths={"done": END, "refine": "refine"}
-)
-graph.add_edge("refine", "retrieve")  # Cycle!
-
-result = await graph.arun(ctx)
-```
-
-### Pattern 3: Multi-Agent with Subgraphs
-
-```python
-# Build specialized agents
-agent1 = Graph(name="specialist1")
-# ... configure agent1 ...
-
-agent2 = Graph(name="specialist2")
-# ... configure agent2 ...
-
-# Orchestrate in coordinator
-coordinator = Graph(name="coordinator")
-coordinator.add_node("agent1", agent1)  # Subgraph!
-coordinator.add_node("agent2", agent2)  # Subgraph!
-coordinator.add_edge("agent1", "agent2")
-
-# Or use >> for linear composition
-system = agent1 >> agent2
-```
-
-### Pattern 4: State Transformation Between Subgraphs
-
-```python
-# Subgraph with different context needs
-def transform_context(ctx: Context) -> Context:
-    """Adapter for subgraph with different schema."""
-    sub_ctx = Context(specialized_data=ctx.general_data)
-    result_ctx = subgraph(sub_ctx)
-    ctx.result = result_ctx.output
-    return ctx
-
-graph = Graph()
-graph.add_node("preprocessor", preprocessor)
-graph.add_node("specialist", transform_context)  # Wrapper function
-graph.add_node("postprocessor", postprocessor)
-```
-
-### Pattern 5: Wrap plain async functions as workers
-
-```python
-from thinkagain import async_worker, Context
-
-@async_worker
-async def fetch(ctx: Context) -> Context:
-    ctx.data = await ctx.client.get(ctx.query)
-    return ctx
-
-pipeline = fetch >> cleanup  # cleanup can be any Worker
-result = await pipeline.arun(Context(query="ping"))
-```
-
-## Benefits
-
-1. **Simpler Mental Model**
-   - One concept: composable executables
-   - No need to learn multiple abstractions
-
-2. **Smaller Codebase**
-   - 46% less code to maintain
-   - Easier to understand and debug
-
-3. **Emergent Complexity**
-   - Complex behaviors emerge from simple composition
-   - No special cases or conditional logic
-
-4. **Natural Subgraphs**
-   - No special API for subgraphs
-   - Just compose graphs like any other executable
-
-5. **Better Testability**
-   - Everything has the same interface
-   - Mock/stub any level easily
-
-6. **Reusability**
-   - Build graphs once, reuse everywhere
-   - Compose in different ways
-
-## Migration Guide
-
-### From v0.1.0 to v0.2.0
-
-#### Breaking Changes
-
-1. **Imports changed**
-   ```python
-   # Old
-   from thinkagain import Conditional, Switch, Loop
-
-   # New - use Graph with conditional edges instead
-   from thinkagain import Graph
-   ```
-
-2. **Execution API changed**
-   ```python
-   # Old
-   result = pipeline.run(ctx)        # sync
-   result = await pipeline.arun(ctx) # async
-
-   # New
-   result = pipeline(ctx)            # sync
-   result = await pipeline.arun(ctx) # async (preferred)
-   ```
-
-3. **Control flow changed**
-   ```python
-   # Old - Conditional
-   pipeline = (
-       worker1
-       >> Conditional(
-           condition=lambda ctx: ctx.score > 0.5,
-           true_branch=worker2,
-           false_branch=worker3
-       )
-   )
-
-   # New - Graph with conditional edge
-   graph = Graph()
-   graph.add_node("w1", worker1)
-   graph.add_node("w2", worker2)
-   graph.add_node("w3", worker3)
-   graph.add_edge("w1", "w2")  # Add logic node if needed
-   graph.add_conditional_edge(
-       "w2",
-       route=lambda ctx: "high" if ctx.score > 0.5 else "low",
-       paths={"high": "w2", "low": "w3"}
-   )
-   ```
-
-4. **Steps API removed**
-   ```python
-   # Old
-   for step in graph.steps(ctx):
-       print(step.node, step.ctx)
-
-   # New - use logging instead
-   ctx.log_enabled = True
-   result = await graph.arun(ctx)
-   for entry in result.history:
-       print(entry)
-   ```
-
-#### Non-Breaking Changes
-
-- `Worker` now extends `Executable` (implementation detail)
-- `>>` operator still works exactly the same way
-
-## Examples
-
-- [examples/minimal_demo.py](examples/minimal_demo.py) - A tiny script that walks through pipelines, graphs with feedback loops, and compiled execution.
-
-## Future Considerations
-
-Possible additions (if needed):
-
-1. **Parallel Execution** - Add back as a special Worker type
-2. **Debugging Tools** - Better introspection and visualization
-3. **Persistence** - Checkpointing and resume
-4. **Stream Processing** - Yield results during execution
-
----
+Because there is only one execution path and one state container, the runtime
+stays predictable and easy to debug while still supporting scaling out stateful
+services when needed.
