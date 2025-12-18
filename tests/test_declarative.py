@@ -196,3 +196,38 @@ def test_direct_node_call():
     ctx = add_one({"value": 5})
     ctx = double(ctx)
     assert ctx.get("value") == 12
+
+
+def test_context_metadata_records_timings():
+    def pipeline(ctx):
+        ctx = add_one(ctx)
+        ctx = double(ctx)
+        return ctx
+
+    result = run(pipeline, {"value": 2})
+    metadata = result.metadata
+    assert metadata.total_duration >= 0
+    assert [name for name, _ in metadata.node_latencies] == [
+        "add_one",
+        "double",
+    ]
+    assert metadata.per_node_totals["add_one"] >= 0
+    assert metadata.per_node_totals["double"] >= 0
+    assert metadata.finished_at is not None
+
+
+def test_metadata_isolated_on_execution():
+    """Metadata is shared during chaining but copied on execution."""
+    ctx = run(lambda c: add_one(c), {"value": 1})
+    finished_at = ctx.metadata.finished_at
+    assert finished_at is not None
+    original_count = ctx.metadata.node_execution_count
+
+    # Chain a new node - metadata is shared until execution
+    ctx2 = add_one(ctx)
+    assert ctx2.is_pending  # not yet executed
+
+    # After execution, new ctx has its own metadata with updated timings
+    ctx2 = run(lambda c: c, ctx2)
+    assert ctx2.metadata.node_execution_count == original_count + 1
+    assert ctx2.metadata.finished_at is not None
