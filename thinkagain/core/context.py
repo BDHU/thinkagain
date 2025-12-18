@@ -177,6 +177,16 @@ class Context:
         await self._run_pending_async()
         self._data[key] = value
 
+    def delete(self, key: str) -> None:
+        """Delete a key from the context, materializing pending nodes first."""
+        self._run_pending_sync()
+        self._data.pop(key, None)
+
+    async def adelete(self, key: str) -> None:
+        """Async delete - materializes pending nodes first."""
+        await self._run_pending_async()
+        self._data.pop(key, None)
+
     def peek(self, key: str, default: Any = None) -> Any:
         """Get value without materializing pending nodes."""
         return self._data.get(key, default)
