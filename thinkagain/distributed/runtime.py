@@ -6,23 +6,32 @@ from typing import Any
 
 from .backend.base import Backend
 from .backend.local import LocalBackend
+from .backend.serialization import Serializer
 
 # Runtime configuration shared across replicas
 _runtime_config: dict[str, Any] = {
     "backend": "local",
     "address": None,
     "options": {},
+    "serializer": None,
 }
 
 # Singleton backend instance (created lazily)
 _backend: Backend | None = None
 
 
-def init(backend: str = "local", address: str | None = None, **options) -> None:
+def init(
+    backend: str = "local",
+    address: str | None = None,
+    *,
+    serializer: Serializer | None = None,
+    **options,
+) -> None:
     """Initialize the distributed runtime."""
     _runtime_config["backend"] = backend
     _runtime_config["address"] = address
     _runtime_config["options"] = options
+    _runtime_config["serializer"] = serializer
 
 
 def get_runtime_config() -> dict[str, Any]:
@@ -42,7 +51,11 @@ def get_backend() -> Backend:
     elif backend_type == "grpc":
         from .backend.grpc import GrpcBackend
 
-        _backend = GrpcBackend(_runtime_config["address"], _runtime_config["options"])
+        _backend = GrpcBackend(
+            _runtime_config["address"],
+            _runtime_config["options"],
+            serializer=_runtime_config["serializer"],
+        )
     else:
         raise ValueError(f"Unknown backend: {backend_type}")
     return _backend

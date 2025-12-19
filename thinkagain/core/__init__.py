@@ -2,11 +2,13 @@
 
 from .context import Context
 from .errors import NodeExecutionError, NodeSignatureError
+from .metadata import ExecutionMetadata
 from .node import Node, node
 from .runner import run, arun
 
 __all__ = [
     "Context",
+    "ExecutionMetadata",
     "NodeExecutionError",
     "NodeSignatureError",
     "Node",

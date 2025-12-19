@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import pickle
 from concurrent import futures
 from typing import Any
 
 import grpc
 
 from .proto import replica_pb2, replica_pb2_grpc
+from ..serialization import PickleSerializer, Serializer
 
 
 class ReplicaRegistry:
@@ -57,26 +57,27 @@ class ReplicaRegistry:
 class ReplicaServicer(replica_pb2_grpc.ReplicaServiceServicer):
     """gRPC servicer for replica operations."""
 
-    def __init__(self, registry: ReplicaRegistry):
+    def __init__(self, registry: ReplicaRegistry, serializer: Serializer):
         self._registry = registry
+        self._serializer = serializer
 
     def Call(self, request, context):
         """Call a method on a replica instance."""
         try:
             instance = self._registry.get_instance(request.replica_name)
             method = getattr(instance, request.method)
-            args = pickle.loads(request.args) if request.args else ()
-            kwargs = pickle.loads(request.kwargs) if request.kwargs else {}
+            args = self._serializer.loads(request.args) if request.args else ()
+            kwargs = self._serializer.loads(request.kwargs) if request.kwargs else {}
             result = method(*args, **kwargs)
-            return replica_pb2.CallResponse(result=pickle.dumps(result))
+            return replica_pb2.CallResponse(result=self._serializer.dumps(result))
         except Exception as e:
             return replica_pb2.CallResponse(error=str(e))
 
     def Deploy(self, request, context):
         """Deploy replica instances."""
         try:
-            args = pickle.loads(request.args) if request.args else ()
-            kwargs = pickle.loads(request.kwargs) if request.kwargs else {}
+            args = self._serializer.loads(request.args) if request.args else ()
+            kwargs = self._serializer.loads(request.kwargs) if request.kwargs else {}
             self._registry.deploy(request.replica_name, request.n, args, kwargs)
             return replica_pb2.DeployResponse(success=True)
         except Exception as e:
@@ -95,23 +96,29 @@ class ReplicaServicer(replica_pb2_grpc.ReplicaServiceServicer):
 
 
 def serve(
-    port: int = 50051, registry: ReplicaRegistry | None = None
+    port: int = 50051,
+    registry: ReplicaRegistry | None = None,
+    *,
+    serializer: Serializer | None = None,
 ) -> tuple[grpc.Server, int]:
     """Start the gRPC server.
 
     Args:
         port: Port to listen on.
         registry: Optional pre-configured registry. If None, creates empty one.
+        serializer: Optional serializer for request/response payloads.
 
     Returns:
         A tuple of (grpc.Server, bound_port).
     """
     if registry is None:
         registry = ReplicaRegistry()
+    if serializer is None:
+        serializer = PickleSerializer()
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     replica_pb2_grpc.add_ReplicaServiceServicer_to_server(
-        ReplicaServicer(registry), server
+        ReplicaServicer(registry, serializer), server
     )
     bound_port = server.add_insecure_port(f"0.0.0.0:{port}")
     if bound_port == 0:
@@ -120,13 +127,19 @@ def serve(
     return server, bound_port
 
 
-def run_server(port: int = 50051, registry: ReplicaRegistry | None = None) -> None:
+def run_server(
+    port: int = 50051,
+    registry: ReplicaRegistry | None = None,
+    *,
+    serializer: Serializer | None = None,
+) -> None:
     """Run the gRPC server (blocking).
 
     Args:
         port: Port to listen on.
         registry: Optional pre-configured registry.
+        serializer: Optional serializer for request/response payloads.
     """
-    server, bound_port = serve(port, registry)
+    server, bound_port = serve(port, registry, serializer=serializer)
     print(f"thinkagain gRPC server listening on port {bound_port}")
     server.wait_for_termination()
