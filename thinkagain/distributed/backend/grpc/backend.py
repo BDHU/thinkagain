@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import pickle
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from thinkagain.distributed.replica import ReplicaSpec
+
+from ..serialization import PickleSerializer, Serializer
 
 # Lazy imports for grpc to avoid dependency when not used
 grpc = None
@@ -30,9 +31,10 @@ def _ensure_grpc():
 class GrpcReplicaProxy:
     """Proxy that routes method calls to remote replica via gRPC."""
 
-    def __init__(self, stub, replica_name: str):
+    def __init__(self, stub, replica_name: str, serializer: Serializer):
         object.__setattr__(self, "_stub", stub)
         object.__setattr__(self, "_replica_name", replica_name)
+        object.__setattr__(self, "_serializer", serializer)
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
@@ -43,13 +45,13 @@ class GrpcReplicaProxy:
             request = replica_pb2.CallRequest(
                 replica_name=self._replica_name,
                 method=name,
-                args=pickle.dumps(args),
-                kwargs=pickle.dumps(kwargs),
+                args=self._serializer.dumps(args),
+                kwargs=self._serializer.dumps(kwargs),
             )
             response = self._stub.Call(request)
             if response.error:
                 raise RuntimeError(f"Remote call failed: {response.error}")
-            return pickle.loads(response.result)
+            return self._serializer.loads(response.result)
 
         return call
 
@@ -57,7 +59,13 @@ class GrpcReplicaProxy:
 class GrpcBackend:
     """gRPC backend for remote replica execution."""
 
-    def __init__(self, address: str | None, options: dict | None = None):
+    def __init__(
+        self,
+        address: str | None,
+        options: dict | None = None,
+        *,
+        serializer: Serializer | None = None,
+    ):
         if not address:
             raise ValueError(
                 "GrpcBackend requires an address (e.g., 'localhost:50051')"
@@ -67,6 +75,7 @@ class GrpcBackend:
         self._channel = None
         self._stub = None
         self._deployed: set[str] = set()
+        self._serializer = serializer or PickleSerializer()
 
     def _ensure_connected(self):
         """Lazily connect to the gRPC server."""
@@ -84,8 +93,8 @@ class GrpcBackend:
         request = replica_pb2.DeployRequest(
             replica_name=name,
             n=spec.n,
-            args=pickle.dumps(args),
-            kwargs=pickle.dumps(kwargs),
+            args=self._serializer.dumps(args),
+            kwargs=self._serializer.dumps(kwargs),
         )
         response = self._stub.Deploy(request)
         if not response.success:
@@ -107,7 +116,7 @@ class GrpcBackend:
     def get_instance(self, spec: "ReplicaSpec") -> GrpcReplicaProxy:
         """Return a proxy that routes calls to remote instances."""
         self._ensure_connected()
-        return GrpcReplicaProxy(self._stub, spec.cls.__name__)
+        return GrpcReplicaProxy(self._stub, spec.cls.__name__, self._serializer)
 
     def is_deployed(self, spec: "ReplicaSpec") -> bool:
         return spec.cls.__name__ in self._deployed

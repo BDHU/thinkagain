@@ -1,6 +1,9 @@
 """Distributed execution components."""
 
+from __future__ import annotations
+
 from contextlib import contextmanager
+from typing import TYPE_CHECKING
 
 from .replica import (
     ReplicaSpec,
@@ -13,9 +16,18 @@ from .replica import (
 )
 from .runtime import reset_backend, get_runtime_config, init
 
+if TYPE_CHECKING:
+    from .backend.serialization import Serializer
+
 
 @contextmanager
-def runtime(backend: str = "local", address: str | None = None, **options):
+def runtime(
+    backend: str = "local",
+    address: str | None = None,
+    *,
+    serializer: "Serializer" | None = None,
+    **options,
+):
     """Context manager for distributed replica lifecycle.
 
     Usage:
@@ -28,7 +40,7 @@ def runtime(backend: str = "local", address: str | None = None, **options):
         with distributed.runtime(backend="grpc", address="localhost:50051"):
             result = run(pipeline, data)
     """
-    init(backend=backend, address=address, **options)
+    init(backend=backend, address=address, serializer=serializer, **options)
     deploy()
     try:
         yield

@@ -2,63 +2,19 @@
 
 from __future__ import annotations
 
-import asyncio
-import time
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .node import Node
 
-from .errors import NodeExecutionError, NodeSignatureError
-
-
-@dataclass
-class ExecutionMetadata:
-    """Execution metadata tracking for a Context."""
-
-    created_at: float = field(default_factory=time.time)
-    finished_at: float | None = None
-    node_latencies: list[tuple[str, float]] = field(default_factory=list)
-    per_node_totals: dict[str, float] = field(default_factory=dict)
-    node_execution_count: int = 0
-
-    @property
-    def total_duration(self) -> float | None:
-        """Total duration from creation to finish, or None if still running."""
-        if self.finished_at is None:
-            return None
-        return self.finished_at - self.created_at
-
-    def copy(self) -> "ExecutionMetadata":
-        """Create a deep copy of this metadata."""
-        return ExecutionMetadata(
-            created_at=self.created_at,
-            finished_at=self.finished_at,
-            node_latencies=list(self.node_latencies),
-            per_node_totals=dict(self.per_node_totals),
-            node_execution_count=self.node_execution_count,
-        )
-
-    def record_node(self, name: str, duration: float) -> None:
-        """Record timing for a node execution."""
-        self.node_latencies.append((name, duration))
-        self.per_node_totals[name] = self.per_node_totals.get(name, 0.0) + duration
-        self.node_execution_count += 1
-
-    def reset(self) -> None:
-        """Clear timing data for fresh execution."""
-        self.created_at = time.time()
-        self.finished_at = None
-        self.node_latencies = []
-        self.per_node_totals = {}
-        self.node_execution_count = 0
+from .executor import PendingExecutor
+from .metadata import ExecutionMetadata
 
 
 class Context:
     """Stateful execution context with lazy node execution."""
 
-    __slots__ = ("_data", "_pending", "_metadata")
+    __slots__ = ("_data", "_pending", "_metadata", "_executor")
 
     def __init__(
         self,
@@ -71,6 +27,7 @@ class Context:
             object.__setattr__(self, "_data", dict(data._data))
             object.__setattr__(self, "_pending", list(data._pending))
             object.__setattr__(self, "_metadata", data._metadata.copy())
+            object.__setattr__(self, "_executor", None)
         else:
             object.__setattr__(self, "_data", data if data is not None else {})
             object.__setattr__(self, "_pending", [])
@@ -79,6 +36,7 @@ class Context:
                 "_metadata",
                 metadata if metadata is not None else ExecutionMetadata(),
             )
+            object.__setattr__(self, "_executor", None)
 
     def _chain(self, node: "Node") -> "Context":
         """Return a new Context that shares data/metadata but has this node pending.
@@ -90,58 +48,25 @@ class Context:
         object.__setattr__(ctx, "_data", self._data)
         object.__setattr__(ctx, "_metadata", self._metadata)  # shared, not copied
         object.__setattr__(ctx, "_pending", self._pending + [node])
+        object.__setattr__(ctx, "_executor", None)
         return ctx
+
+    def _get_executor(self) -> PendingExecutor:
+        executor = self._executor
+        if executor is None:
+            executor = PendingExecutor(self)
+            object.__setattr__(self, "_executor", executor)
+        return executor
 
     def copy(self) -> "Context":
         """Create a copy with isolated data (no shared mutations)."""
         return Context(self)
 
     async def _run_pending_async(self) -> None:
-        if not self._pending:
-            return
-
-        executed: list[str] = []
-        # Copy metadata once at execution start (avoids copy overhead during chaining)
-        metadata = self._metadata.copy()
-        ctx = Context(self._data, metadata=metadata)
-
-        for node in self._pending:
-            try:
-                start = time.perf_counter()
-                ctx = await node.execute(ctx)
-                duration = time.perf_counter() - start
-                # Record on our tracked metadata, not ctx._metadata (node may have replaced it)
-                metadata.record_node(node.name, duration)
-                executed.append(node.name)
-                # Check if node returned ctx with unawaited pending nodes
-                if ctx._pending:
-                    pending_names = [n.name for n in ctx._pending]
-                    raise RuntimeError(
-                        f"Node '{node.name}' returned context with unawaited pending nodes: {pending_names}. "
-                        f"Use 'await ctx' before returning from a node that calls other nodes."
-                    )
-            except (NodeExecutionError, NodeSignatureError):
-                raise
-            except Exception as e:
-                raise NodeExecutionError(node.name, executed, e) from e
-
-        metadata.finished_at = time.time()
-        object.__setattr__(self, "_data", ctx._data)
-        object.__setattr__(self, "_pending", [])
-        object.__setattr__(self, "_metadata", metadata)
+        await self._get_executor().run_async()
 
     def _run_pending_sync(self) -> None:
-        if not self._pending:
-            return
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            asyncio.run(self._run_pending_async())
-        else:
-            raise RuntimeError(
-                "Cannot materialize synchronously from async context. "
-                "Use 'await ctx' or 'await arun(pipeline)' instead."
-            )
+        self._get_executor().run_sync()
 
     def materialize(self) -> "Context":
         """Synchronously execute all pending nodes and return this context."""
