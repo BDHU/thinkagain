@@ -1,17 +1,20 @@
 """Core components."""
 
 from .context import Context
-from .errors import NodeExecutionError, NodeSignatureError
+from .errors import NodeDataclassError, NodeExecutionError, NodeSignatureError
 from .metadata import ExecutionMetadata
-from .node import Node, node
+from .node import FunctionNode, Node, NodeBase, node
 from .runner import run, arun
 
 __all__ = [
     "Context",
     "ExecutionMetadata",
+    "FunctionNode",
+    "Node",
+    "NodeBase",
+    "NodeDataclassError",
     "NodeExecutionError",
     "NodeSignatureError",
-    "Node",
     "node",
     "run",
     "arun",

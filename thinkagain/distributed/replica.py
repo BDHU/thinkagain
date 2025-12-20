@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -36,8 +37,15 @@ class ReplicaSpec:
         return backend.get_instance(self)
 
 
-# Global registry of replica classes
+# Global registry of replica classes (thread-safe)
 _replica_registry: dict[str, ReplicaSpec] = {}
+_registry_lock = threading.RLock()
+
+
+def _list_specs() -> list[ReplicaSpec]:
+    """Snapshot replica specs under lock."""
+    with _registry_lock:
+        return list(_replica_registry.values())
 
 
 def replica(_cls: type | None = None, *, n: int = 1):
@@ -70,7 +78,8 @@ def replica(_cls: type | None = None, *, n: int = 1):
 
     def decorator(cls: type) -> type:
         spec = ReplicaSpec(cls=cls, n=n)
-        _replica_registry[cls.__name__] = spec
+        with _registry_lock:
+            _replica_registry[cls.__name__] = spec
 
         @classmethod
         def deploy(cls, *args, **kwargs):
@@ -100,31 +109,34 @@ def replica(_cls: type | None = None, *, n: int = 1):
 
 
 def get_replica_spec(name: str) -> ReplicaSpec | None:
-    """Get replica spec by class name."""
-    return _replica_registry.get(name)
+    """Get replica spec by class name (thread-safe)."""
+    with _registry_lock:
+        return _replica_registry.get(name)
 
 
 def get_all_replicas() -> dict[str, ReplicaSpec]:
-    """Get all registered replicas."""
-    return dict(_replica_registry)
+    """Get all registered replicas (thread-safe)."""
+    with _registry_lock:
+        return dict(_replica_registry)
 
 
 def clear_replica_registry() -> None:
-    """Clear the replica registry. Useful for testing."""
-    _replica_registry.clear()
+    """Clear the replica registry (thread-safe). Useful for testing."""
+    with _registry_lock:
+        _replica_registry.clear()
 
 
 def deploy() -> None:
-    """Deploy all registered replicas with default constructor.
+    """Deploy all registered replicas with default constructor (thread-safe).
 
     Idempotent: only deploys replicas that haven't been deployed yet.
     Use ReplicaClass.deploy(...) for custom constructor arguments.
     """
-    for spec in _replica_registry.values():
+    for spec in _list_specs():
         spec.deploy_instances()
 
 
 def shutdown() -> None:
-    """Shutdown all replica instances."""
-    for spec in _replica_registry.values():
+    """Shutdown all replica instances (thread-safe)."""
+    for spec in _list_specs():
         spec.shutdown_instances()

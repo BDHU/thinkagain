@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -13,19 +14,28 @@ from ..serialization import PickleSerializer, Serializer
 grpc = None
 replica_pb2 = None
 replica_pb2_grpc = None
+_grpc_lock = threading.Lock()
 
 
 def _ensure_grpc():
-    """Lazily import grpc and generated stubs."""
+    """Lazily import grpc and generated stubs (thread-safe)."""
     global grpc, replica_pb2, replica_pb2_grpc
-    if grpc is None:
-        import grpc as _grpc
-        from .proto import replica_pb2 as _replica_pb2
-        from .proto import replica_pb2_grpc as _replica_pb2_grpc
 
-        grpc = _grpc
-        replica_pb2 = _replica_pb2
-        replica_pb2_grpc = _replica_pb2_grpc
+    # Fast path - no lock if already imported
+    if grpc is not None:
+        return
+
+    # Slow path - acquire lock for import
+    with _grpc_lock:
+        # Double-check pattern - another thread may have imported
+        if grpc is None:
+            import grpc as _grpc
+            from .proto import replica_pb2 as _replica_pb2
+            from .proto import replica_pb2_grpc as _replica_pb2_grpc
+
+            grpc = _grpc
+            replica_pb2 = _replica_pb2
+            replica_pb2_grpc = _replica_pb2_grpc
 
 
 class GrpcReplicaProxy:

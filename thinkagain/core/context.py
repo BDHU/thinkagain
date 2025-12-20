@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .node import Node
+    from .node import NodeBase
 
 from .executor import PendingExecutor
 from .metadata import ExecutionMetadata
@@ -13,8 +13,6 @@ from .metadata import ExecutionMetadata
 
 class Context:
     """Stateful execution context with lazy node execution."""
-
-    __slots__ = ("_data", "_pending", "_metadata", "_executor")
 
     def __init__(
         self,
@@ -24,39 +22,33 @@ class Context:
     ):
         if isinstance(data, Context):
             # Copy from another Context (always copies data for isolation)
-            object.__setattr__(self, "_data", dict(data._data))
-            object.__setattr__(self, "_pending", list(data._pending))
-            object.__setattr__(self, "_metadata", data._metadata.copy())
-            object.__setattr__(self, "_executor", None)
+            self._data = dict(data._data)
+            self._pending = list(data._pending)
+            self._metadata = data._metadata.copy()
+            self._executor = None
         else:
-            object.__setattr__(self, "_data", data if data is not None else {})
-            object.__setattr__(self, "_pending", [])
-            object.__setattr__(
-                self,
-                "_metadata",
-                metadata if metadata is not None else ExecutionMetadata(),
-            )
-            object.__setattr__(self, "_executor", None)
+            self._data = data if data is not None else {}
+            self._pending = []
+            self._metadata = metadata if metadata is not None else ExecutionMetadata()
+            self._executor = None
 
-    def _chain(self, node: "Node") -> "Context":
+    def _chain(self, node: "NodeBase") -> "Context":
         """Return a new Context that shares data/metadata but has this node pending.
 
         Metadata is shared (not copied) during chaining to avoid overhead.
         Copy happens only at execution time in _run_pending_async.
         """
         ctx = Context.__new__(Context)
-        object.__setattr__(ctx, "_data", self._data)
-        object.__setattr__(ctx, "_metadata", self._metadata)  # shared, not copied
-        object.__setattr__(ctx, "_pending", self._pending + [node])
-        object.__setattr__(ctx, "_executor", None)
+        ctx._data = self._data
+        ctx._metadata = self._metadata  # shared, not copied
+        ctx._pending = self._pending + [node]
+        ctx._executor = None
         return ctx
 
     def _get_executor(self) -> PendingExecutor:
-        executor = self._executor
-        if executor is None:
-            executor = PendingExecutor(self)
-            object.__setattr__(self, "_executor", executor)
-        return executor
+        if self._executor is None:
+            self._executor = PendingExecutor(self)
+        return self._executor
 
     def copy(self) -> "Context":
         """Create a copy with isolated data (no shared mutations)."""

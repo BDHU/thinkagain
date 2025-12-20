@@ -9,6 +9,7 @@ import grpc
 
 from .proto import replica_pb2, replica_pb2_grpc
 from ..serialization import PickleSerializer, Serializer
+from ..utils import RoundRobinPool
 
 
 class ReplicaRegistry:
@@ -16,8 +17,7 @@ class ReplicaRegistry:
 
     def __init__(self):
         self._classes: dict[str, type] = {}
-        self._instances: dict[str, list] = {}
-        self._round_robin_idx: dict[str, int] = {}
+        self._pool = RoundRobinPool()
 
     def register(self, cls: type) -> None:
         """Register a replica class."""
@@ -30,28 +30,20 @@ class ReplicaRegistry:
         cls = self._classes[name]
 
         initializer = getattr(cls, "__local_init__", cls)
-        self._instances[name] = [initializer(*args, **kwargs) for _ in range(n)]
-        self._round_robin_idx[name] = 0
+        instances = [initializer(*args, **kwargs) for _ in range(n)]
+        self._pool.create_pool(name, instances)
 
     def shutdown(self, name: str) -> None:
         """Shutdown instances of a class."""
-        if name in self._instances:
-            del self._instances[name]
-            del self._round_robin_idx[name]
+        self._pool.remove_pool(name)
 
     def shutdown_all(self) -> None:
         """Shutdown all instances."""
-        self._instances.clear()
-        self._round_robin_idx.clear()
+        self._pool.clear()
 
     def get_instance(self, name: str) -> Any:
         """Get next instance using round-robin."""
-        if name not in self._instances or not self._instances[name]:
-            raise RuntimeError(f"No instances for replica '{name}'")
-        instances = self._instances[name]
-        idx = self._round_robin_idx[name]
-        self._round_robin_idx[name] = (idx + 1) % len(instances)
-        return instances[idx]
+        return self._pool.get_next(name)
 
 
 class ReplicaServicer(replica_pb2_grpc.ReplicaServiceServicer):
