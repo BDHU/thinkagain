@@ -13,6 +13,13 @@ class NodeSignatureError(TypeError):
         )
 
 
+class NodeDataclassError(TypeError):
+    """Raised when a class-based node is not a frozen dataclass."""
+
+    def __init__(self, node_name: str, reason: str):
+        super().__init__(f"Node '{node_name}' must be a frozen dataclass. {reason}")
+
+
 class NodeExecutionError(Exception):
     """Raised when a node in a pipeline fails during execution.
 
