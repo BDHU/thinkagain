@@ -1,28 +1,26 @@
-<svg width="320" height="96" viewBox="10 12 320 96" xmlns="http://www.w3.org/2000/svg">
-  <!-- Background circle with refresh arrow -->
+<svg width="225" height="40" viewBox="6 15 225 40" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#667eea;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#764ba2;stop-opacity:1" />
-    </linearGradient>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@700&amp;display=swap');
+    </style>
   </defs>
+  <!-- Icon: connected nodes in equilateral triangle, scaled to match text cap-height -->
+  <g transform="translate(25, 32.5) scale (1.0)">
+    <!-- Top left node -->
+    <circle cx="-10" cy="-8.66" r="5" fill="#7c3aed"/>
+    <!-- Top right node -->
+    <circle cx="10" cy="-8.66" r="5" fill="#7c3aed"/>
+    <!-- Bottom center node -->
+    <circle cx="0" cy="8.66" r="5" fill="#7c3aed"/>
 
-  <!-- Circular refresh arrow representing iteration -->
-  <g transform="translate(50, 60)">
-    <!-- Circle base -->
-    <circle cx="0" cy="0" r="35" fill="none" stroke="url(#gradient)" stroke-width="4" stroke-dasharray="180 220" stroke-linecap="round"/>
-
-    <!-- Arrow head -->
-    <path d="M 24.7 -24.7 L 32 -18 L 18 -18 Z" fill="url(#gradient)"/>
-
-    <!-- Brain dots pattern -->
-    <circle cx="-8" cy="-8" r="3" fill="#667eea"/>
-    <circle cx="8" cy="-8" r="3" fill="#764ba2"/>
-    <circle cx="0" cy="5" r="3" fill="#667eea"/>
-    <circle cx="-12" cy="8" r="2.5" fill="#764ba2"/>
-    <circle cx="12" cy="8" r="2.5" fill="#667eea"/>
+    <!-- Connecting lines -->
+    <line x1="-5" y1="-8.66" x2="5" y2="-8.66" stroke="#7c3aed" stroke-width="2" stroke-linecap="round"/>
+    <line x1="-7.5" y1="-4.33" x2="-2.5" y2="4.33" stroke="#7c3aed" stroke-width="2" stroke-linecap="round"/>
+    <line x1="7.5" y1="-4.33" x2="2.5" y2="4.33" stroke="#7c3aed" stroke-width="2" stroke-linecap="round"/>
   </g>
 
-  <!-- Text -->
-  <text x="95" y="75" font-family="'Arial', 'Helvetica', sans-serif" font-size="42" font-weight="700" fill="#2d3748">Think<tspan fill="url(#gradient)">Again</tspan></text>
+  <!-- Text: baseline at y=44, cap-height reaches y=21.6, centered at ~32.5 -->
+  <text x="50" y="44" font-family="Inter, sans-serif" font-size="32" font-weight="700">
+    <tspan fill="#1f2937">Think</tspan><tspan fill="#7c3aed">Again</tspan>
+  </text>
 </svg>
