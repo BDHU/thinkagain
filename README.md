@@ -1,14 +1,10 @@
-<div align="center" id="sglangtop">
-<img src="https://raw.githubusercontent.com/BDHU/thinkagain/main/assets/logo.svg" alt="logo" width="400" margin="10px"></img>
+# ThinkAgain
 
 [![PyPI version](https://img.shields.io/pypi/v/thinkagain.svg)](https://pypi.org/project/thinkagain/)
 [![License](https://img.shields.io/pypi/l/thinkagain.svg)](https://github.com/BDHU/thinkagain/blob/main/LICENSE)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/BDHU/thinkagain)
 [![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/BDHU/thinkagain/test.yml?branch=main)](https://github.com/BDHU/thinkagain/actions/workflows/test.yml)
 [![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/BDHU/thinkagain)
-</div>
-
----
 
 A minimal, debuggable framework for async-first AI pipelines. Write small async
 functions, wrap them in `Node` objects, and chain them through a lazy `Context`
