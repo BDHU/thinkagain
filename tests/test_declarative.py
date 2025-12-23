@@ -1,6 +1,6 @@
 """Tests for declarative API."""
 
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 
 import pytest
 
@@ -462,12 +462,8 @@ def test_pipeline_with_structured_data():
     @dataclass
     class PipelineState:
         query: str
-        docs: list = None
+        docs: list = field(default_factory=list)
         answer: str = None
-
-        def __post_init__(self):
-            if self.docs is None:
-                self.docs = []
 
     @node
     async def retrieve(s: PipelineState) -> PipelineState:
