@@ -3,16 +3,6 @@
 from __future__ import annotations
 
 
-class NodeSignatureError(TypeError):
-    """Raised when a node function has an invalid signature."""
-
-    def __init__(self, node_name: str, cause: TypeError):
-        super().__init__(
-            f"Node '{node_name}' has invalid signature. "
-            f"Nodes must take exactly one parameter (ctx). Cause: {cause}"
-        )
-
-
 class NodeDataclassError(TypeError):
     """Raised when a class-based node is not a frozen dataclass."""
 
