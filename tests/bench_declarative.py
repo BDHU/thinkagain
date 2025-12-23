@@ -12,8 +12,8 @@ def test_bench_linear_pipeline(benchmark):
         ctx = double(ctx)
         return ctx
 
-    result = benchmark(lambda: run(pipeline, {"value": 5}))
-    assert result.get("value") == 12
+    result = benchmark(lambda: run(pipeline, 5))
+    assert result.data == 12
 
 
 def test_bench_nested_pipeline(benchmark):
@@ -29,26 +29,25 @@ def test_bench_nested_pipeline(benchmark):
         ctx = double(ctx)
         return ctx
 
-    result = benchmark(lambda: run(pipeline, {"value": 5}))
-    assert result.get("value") == 14
+    result = benchmark(lambda: run(pipeline, 5))
+    assert result.data == 14
 
 
 def test_bench_conditional_pipeline(benchmark):
     """Benchmark pipeline with conditional branching."""
 
     @node
-    async def log_high(ctx):
-        ctx.set("logs", ["high"])
-        return ctx
+    async def add_ten(value: int) -> int:
+        return value + 10
 
     def pipeline(ctx):
         ctx = add_one(ctx)
-        if ctx.get("value") > 5:
-            ctx = log_high(ctx)
+        if ctx.data > 5:
+            ctx = add_ten(ctx)
         return ctx
 
-    result = benchmark(lambda: run(pipeline, {"value": 10}))
-    assert result.get("logs") == ["high"]
+    result = benchmark(lambda: run(pipeline, 10))
+    assert result.data == 21
 
 
 def test_bench_loop_pipeline(benchmark):
@@ -59,20 +58,20 @@ def test_bench_loop_pipeline(benchmark):
             ctx = append_x(ctx)
         return ctx
 
-    result = benchmark(lambda: run(pipeline, {}))
-    assert len(result.get("logs")) == 10
+    result = benchmark(lambda: run(pipeline, []))
+    assert len(result.data) == 10
 
 
 def test_bench_while_loop(benchmark):
     """Benchmark while loop with condition checking."""
 
     def pipeline(ctx):
-        while ctx.get("value") < 100:
+        while ctx.data < 100:
             ctx = add_one(ctx)
         return ctx
 
-    result = benchmark(lambda: run(pipeline, {"value": 0}))
-    assert result.get("value") == 100
+    result = benchmark(lambda: run(pipeline, 0))
+    assert result.data == 100
 
 
 def test_bench_deep_nesting(benchmark):
@@ -93,5 +92,5 @@ def test_bench_deep_nesting(benchmark):
         ctx = add_one(ctx)
         return ctx
 
-    result = benchmark(lambda: run(level1, {"value": 1}))
-    assert result.get("value") == 7  # (1+1+1)*2+1
+    result = benchmark(lambda: run(level1, 1))
+    assert result.data == 7  # (1+1+1)*2+1

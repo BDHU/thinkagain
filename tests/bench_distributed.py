@@ -80,19 +80,16 @@ def test_bench_pipeline_with_replica(benchmark):
             return x + self.delta
 
     @node
-    async def initial_value(ctx):
-        ctx.set("value", 10)
-        return ctx
+    async def initial_value(_: int) -> int:
+        return 10
 
     @node
-    async def apply_processor(ctx):
-        ctx.set("value", Processor.get().process(ctx.get("value")))
-        return ctx
+    async def apply_processor(value: int) -> int:
+        return Processor.get().process(value)
 
     @node
-    async def double_it(ctx):
-        ctx.set("value", ctx.get("value") * 2)
-        return ctx
+    async def double_it(value: int) -> int:
+        return value * 2
 
     def pipeline(ctx):
         ctx = initial_value(ctx)
@@ -103,10 +100,10 @@ def test_bench_pipeline_with_replica(benchmark):
     Processor.deploy(delta=5)
 
     def run_pipeline():
-        return run(pipeline, {})
+        return run(pipeline, 0)
 
     result = benchmark(run_pipeline)
-    assert result.get("value") == 30  # (10+5)*2
+    assert result.data == 30  # (10+5)*2
 
 
 def test_bench_runtime_context_manager(benchmark):
@@ -118,9 +115,8 @@ def test_bench_runtime_context_manager(benchmark):
             return True
 
     @node
-    async def call_service(ctx):
-        ctx.set("ok", Service.get().ping())
-        return ctx
+    async def call_service(_: int) -> bool:
+        return Service.get().ping()
 
     def pipeline(ctx):
         ctx = call_service(ctx)
@@ -128,10 +124,10 @@ def test_bench_runtime_context_manager(benchmark):
 
     def run_with_runtime():
         with runtime():
-            return run(pipeline, {})
+            return run(pipeline, 0)
 
     result = benchmark(run_with_runtime)
-    assert result.get("ok") is True
+    assert result.data is True
 
 
 def test_bench_round_robin_distribution(benchmark):
@@ -202,19 +198,16 @@ def test_bench_multiple_replica_services(benchmark):
             return x * self.factor
 
     @node
-    async def start_value(ctx):
-        ctx.set("value", 5)
-        return ctx
+    async def start_value(_: int) -> int:
+        return 5
 
     @node
-    async def add_step(ctx):
-        ctx.set("value", Adder.get().add(ctx.get("value")))
-        return ctx
+    async def add_step(value: int) -> int:
+        return Adder.get().add(value)
 
     @node
-    async def multiply_step(ctx):
-        ctx.set("value", Multiplier.get().multiply(ctx.get("value")))
-        return ctx
+    async def multiply_step(value: int) -> int:
+        return Multiplier.get().multiply(value)
 
     def pipeline(ctx):
         ctx = start_value(ctx)
@@ -226,7 +219,7 @@ def test_bench_multiple_replica_services(benchmark):
     Multiplier.deploy(factor=4)
 
     def run_pipeline():
-        return run(pipeline, {})
+        return run(pipeline, 0)
 
     result = benchmark(run_pipeline)
-    assert result.get("value") == 32  # (5+3)*4
+    assert result.data == 32  # (5+3)*4

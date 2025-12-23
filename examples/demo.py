@@ -1,6 +1,7 @@
 """Declarative ThinkAgain Demo."""
 
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -8,51 +9,83 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from thinkagain import node, run
 
 
-# Plain async functions with @node decorator
+# User-defined state - framework doesn't impose structure
+@dataclass
+class RAGState:
+    query: str
+    documents: list[str] = field(default_factory=list)
+    answer: str = ""
+    quality: float = 0.0
+    retrieval_attempt: int = 0
+    refinements: int = 0
+    top_n: int = 2
+
+
+# Pure functions with @node decorator - no Context awareness needed
 @node
-async def retrieve_docs(ctx):
-    attempt = ctx.get("retrieval_attempt", 0) + 1
-    ctx.set("retrieval_attempt", attempt)
-    query = ctx.get("query")
-    ctx.set(
-        "documents",
-        [f"{query} fact #{i}" for i in range(1, min(4, 1 + attempt))],
+async def retrieve_docs(s: RAGState) -> RAGState:
+    attempt = s.retrieval_attempt + 1
+    docs = [f"{s.query} fact #{i}" for i in range(1, min(4, 1 + attempt))]
+    return RAGState(
+        query=s.query,
+        documents=docs,
+        retrieval_attempt=attempt,
+        refinements=s.refinements,
+        top_n=s.top_n,
     )
-    return ctx
 
 
 @node
-async def rerank_docs(ctx):
-    docs = ctx.get("documents", [])
-    top_n = ctx.get("top_n", 2)
-    ctx.set("documents", docs[:top_n])
-    return ctx
+async def rerank_docs(s: RAGState) -> RAGState:
+    return RAGState(
+        query=s.query,
+        documents=s.documents[: s.top_n],
+        retrieval_attempt=s.retrieval_attempt,
+        refinements=s.refinements,
+        top_n=s.top_n,
+    )
 
 
 @node
-async def generate_answer(ctx):
-    docs_list = ctx.get("documents", [])
-    docs = ", ".join(docs_list) if docs_list else "no docs"
-    query = ctx.get("query")
-    ctx.set("answer", f"Answer about '{query}' using {docs}")
-    return ctx
+async def generate_answer(s: RAGState) -> RAGState:
+    docs = ", ".join(s.documents) if s.documents else "no docs"
+    answer = f"Answer about '{s.query}' using {docs}"
+    return RAGState(
+        query=s.query,
+        documents=s.documents,
+        answer=answer,
+        retrieval_attempt=s.retrieval_attempt,
+        refinements=s.refinements,
+        top_n=s.top_n,
+    )
 
 
 @node
-async def critique_answer(ctx):
-    docs = ctx.get("documents", [])
-    quality = 0.9 if len(docs) >= 3 else 0.7 if len(docs) == 2 else 0.4
-    ctx.set("quality", quality)
-    return ctx
+async def critique_answer(s: RAGState) -> RAGState:
+    quality = 0.9 if len(s.documents) >= 3 else 0.7 if len(s.documents) == 2 else 0.4
+    return RAGState(
+        query=s.query,
+        documents=s.documents,
+        answer=s.answer,
+        quality=quality,
+        retrieval_attempt=s.retrieval_attempt,
+        refinements=s.refinements,
+        top_n=s.top_n,
+    )
 
 
 @node
-async def refine_query(ctx):
-    r = ctx.get("refinements", 0) + 1
-    ctx.set("refinements", r)
-    query = ctx.get("query")
-    ctx.set("query", f"{query} (refined {r})")
-    return ctx
+async def refine_query(s: RAGState) -> RAGState:
+    r = s.refinements + 1
+    return RAGState(
+        query=f"{s.query} (refined {r})",
+        documents=s.documents,
+        answer=s.answer,
+        quality=s.quality,
+        retrieval_attempt=s.retrieval_attempt,
+        refinements=r,
+        top_n=s.top_n,
+    )
 
 
 # Demo 1: Simple pipeline - no async, no await!
@@ -63,10 +96,10 @@ def simple_rag(ctx):
     return ctx
 
 
-# Demo 2: Conditional - auto-materializes when accessing ctx.documents
+# Demo 2: Conditional - auto-materializes when accessing ctx.data
 def conditional_pipeline(ctx):
     ctx = retrieve_docs(ctx)
-    if len(ctx.get("documents", [])) > 2:
+    if len(ctx.data.documents) > 2:  # Accessing .data triggers materialization
         ctx = rerank_docs(ctx)
     ctx = generate_answer(ctx)
     return ctx
@@ -78,7 +111,7 @@ def self_correcting_rag(ctx):
     ctx = generate_answer(ctx)
     ctx = critique_answer(ctx)
 
-    while ctx.get("quality") < 0.8 and ctx.get("retrieval_attempt") < 3:
+    while ctx.data.quality < 0.8 and ctx.data.retrieval_attempt < 3:
         ctx = refine_query(ctx)
         ctx = retrieve_docs(ctx)
         ctx = generate_answer(ctx)
@@ -89,17 +122,16 @@ def self_correcting_rag(ctx):
 
 if __name__ == "__main__":
     print("1) Simple pipeline")
-    result = run(simple_rag, {"query": "test", "top_n": 2})
-    print(f"   {result.get('answer')}\n")
+    result = run(simple_rag, RAGState(query="test", top_n=2))
+    print(f"   {result.data.answer}\n")
 
     print("2) Conditional")
-    result = run(conditional_pipeline, {"query": "test", "retrieval_attempt": 2})
-    print(f"   {result.get('answer')}\n")
+    result = run(conditional_pipeline, RAGState(query="test", retrieval_attempt=2))
+    print(f"   {result.data.answer}\n")
 
     print("3) Self-correcting loop")
-    result = run(self_correcting_rag, {"query": "test"})
-    print(f"   {result.get('answer')}")
+    result = run(self_correcting_rag, RAGState(query="test"))
+    print(f"   {result.data.answer}")
     print(
-        f"   quality={result.get('quality')}, "
-        f"attempts={result.get('retrieval_attempt')}",
+        f"   quality={result.data.quality}, attempts={result.data.retrieval_attempt}",
     )

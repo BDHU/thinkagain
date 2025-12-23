@@ -97,14 +97,12 @@ def test_pipeline_runs_with_replica():
             return x + self.delta
 
     @node
-    async def increment(ctx):
-        ctx.set("value", ctx.get("value", 0) + 1)
-        return ctx
+    async def increment(x: int) -> int:
+        return x + 1
 
     @node
-    async def apply_replica(ctx):
-        ctx.set("value", Adder.get().apply(ctx.get("value", 0)))
-        return ctx
+    async def apply_replica(x: int) -> int:
+        return Adder.get().apply(x)
 
     def pipeline(ctx):
         ctx = increment(ctx)
@@ -112,8 +110,8 @@ def test_pipeline_runs_with_replica():
         return ctx
 
     Adder.deploy(delta=5)
-    result = run(pipeline, {"value": 3})
-    assert result.get("value") == 9
+    result = run(pipeline, 3)
+    assert result.data == 9
 
     Adder.shutdown()
     # After shutdown, get() lazily re-deploys with stored args (delta=5)
@@ -127,17 +125,16 @@ def test_runtime_context_manager():
             return True
 
     @node
-    async def call_service(ctx):
-        ctx.set("ok", Service.get().ping())
-        return ctx
+    async def call_service(_) -> bool:
+        return Service.get().ping()
 
     def pipeline(ctx):
         ctx = call_service(ctx)
         return ctx
 
     with runtime():
-        result = run(pipeline, {})
-        assert result.get("ok") is True
+        result = run(pipeline, None)
+        assert result.data is True
 
 
 def test_local_init_customizes_initialization():

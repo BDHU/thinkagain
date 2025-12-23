@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import TYPE_CHECKING
 
 from .errors import NodeExecutionError
@@ -11,6 +12,9 @@ from .node import _ParentRef
 
 if TYPE_CHECKING:
     from .context import Context
+
+# Thread-local event loop cache for run_sync()
+_thread_local = threading.local()
 
 
 class DAGExecutor:
@@ -23,19 +27,18 @@ class DAGExecutor:
     Note:
         Concurrent materialization of contexts that share ancestors is not
         supported. Do not use ``asyncio.gather()`` on related contexts.
-        Instead, materialize them sequentially::
-
-            # Wrong - undefined behavior:
-            await asyncio.gather(ctx2.amaterialize(), ctx3.amaterialize())
-
-            # Correct:
-            await ctx2.amaterialize()
-            await ctx3.amaterialize()
+        Instead, materialize them sequentially.
     """
 
     def __init__(self, ctx: "Context"):
         self._target = ctx
-        self._results: dict[int, dict] = {}  # id(ctx) -> result data
+        self._results: dict[int, "Context"] = {}  # id(ctx) -> executed context
+
+    def _resolve_parent(self, ctx: "Context", value):
+        if isinstance(value, _ParentRef):
+            parent = ctx._parents[value.index]
+            return self._results.get(id(parent), parent)
+        return value
 
     async def run_async(self) -> None:
         if self._target._executed:
@@ -44,59 +47,42 @@ class DAGExecutor:
         # Collect all contexts by walking back-pointers (returns in topological order)
         execution_order = traverse_pending(self._target)
         if not execution_order:
-            self._target._executed = True
+            object.__setattr__(self._target, "_executed", True)
             return
 
         executed_names: list[str] = []
 
-        from .context import Context
-
         for ctx in execution_order:
             if ctx._executed:
                 # Already executed (shared ancestor from another branch)
-                self._results[id(ctx)] = ctx._data
+                self._results[id(ctx)] = ctx
                 continue
 
             if ctx._node is None:
                 # Root context (no node to execute)
-                self._results[id(ctx)] = ctx._data
+                self._results[id(ctx)] = ctx
                 object.__setattr__(ctx, "_executed", True)
                 continue
 
             # Build execution args/kwargs by replacing ParentRef with materialized contexts
-            def resolve_parent(value):
-                if isinstance(value, _ParentRef):
-                    parent = ctx._parents[value.index]
-                    parent_data = self._results.get(id(parent), parent._data)
-                    return Context(dict(parent_data))
-                return value
-
-            exec_args = [resolve_parent(arg) for arg in ctx._call_args]
+            exec_args = [self._resolve_parent(ctx, arg) for arg in ctx._call_args]
             exec_kwargs = {
-                key: resolve_parent(value) for key, value in ctx._call_kwargs.items()
+                key: self._resolve_parent(ctx, value)
+                for key, value in ctx._call_kwargs.items()
             }
 
             try:
                 result_ctx = await ctx._node.execute(*exec_args, **exec_kwargs)
-
-                # Check if node returned context with unawaited pending nodes
-                if result_ctx._node is not None and not result_ctx._executed:
-                    pending = result_ctx.pending_names
-                    raise RuntimeError(
-                        f"Node '{ctx._node.name}' returned context with unawaited pending nodes: {pending}. "
-                        f"Use 'await ctx' before returning from a node that calls other nodes."
-                    )
-
                 executed_names.append(ctx._node.name)
 
-                # Cache result and update context
-                self._results[id(ctx)] = result_ctx._data
+                # Store result data and mark as executed
                 object.__setattr__(ctx, "_data", result_ctx._data)
                 object.__setattr__(ctx, "_executed", True)
+                self._results[id(ctx)] = ctx
 
-            except NodeExecutionError:
-                raise
             except Exception as e:
+                if isinstance(e, NodeExecutionError):
+                    raise
                 raise NodeExecutionError(ctx._node.name, executed_names, e) from e
 
     def run_sync(self) -> None:
@@ -105,9 +91,14 @@ class DAGExecutor:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            asyncio.run(self.run_async())
+            # Reuse cached event loop to avoid asyncio.run() overhead
+            loop = getattr(_thread_local, "loop", None)
+            if loop is None or loop.is_closed():
+                loop = asyncio.new_event_loop()
+                _thread_local.loop = loop
+            loop.run_until_complete(self.run_async())
         else:
             raise RuntimeError(
                 "Cannot materialize synchronously from async context. "
-                "Use 'await ctx' or 'await arun(pipeline)' instead."
+                "Use 'await ctx' or 'await ctx.adata()' instead."
             )

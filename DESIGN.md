@@ -13,11 +13,11 @@ workflow engine.
    executes when results are needed. This enables conditional logic that depends
    on partial results and makes debugging easier.
 3. **Async-First but Sync-Friendly** – Nodes are async functions, yet the entry
-   points (`run`, `Context.get`, etc.) work from both sync and async code.
-4. **Observable Execution** – Every run records timing metadata and surfaces
-   errors with context.
+   points (`run`, `ctx.data`, etc.) work from both sync and async code.
+4. **DAG Execution** – Contexts track dependencies via back-pointers, enabling
+   fanout patterns where shared ancestors execute only once.
 5. **Composable State** – Pipelines pass around a single `Context` object that
-   holds both state and metadata.
+   wraps user data (dataclasses, dicts, etc.).
 6. **Optional Distribution** – Heavyweight services can be wrapped as replicas
    and deployed to local or remote backends without touching pipeline code.
 
@@ -25,16 +25,23 @@ workflow engine.
 
 ### Nodes and Pipelines
 
-- Nodes are `async def` functions that accept and return a `Context`.
-- `@node` returns a callable that simply appends itself to the context.
-- `ctx = my_node(ctx)` records pending state; nothing runs yet.
+- Nodes are `async def` functions that accept and return plain Python values.
+- `@node` wraps the function so it creates a new `Context` with back-pointers.
+- `ctx = my_node(ctx)` records a pending node with dependency tracking; nothing runs yet.
+- Multi-input nodes are supported: each `Context` argument becomes a tracked parent.
 - Pipelines are just Python functions that thread through contexts.
 
 ```python
+from dataclasses import dataclass
+
+@dataclass
+class State:
+    query: str
+    documents: list[str] | None = None
+
 @node
-async def retrieve(ctx):
-    ctx.set("documents", [...])
-    return ctx
+async def retrieve(s: State) -> State:
+    return State(query=s.query, documents=["doc1", "doc2"])
 
 def pipeline(ctx):
     ctx = retrieve(ctx)       # pending
@@ -45,16 +52,15 @@ def pipeline(ctx):
 ### Materialization Triggers
 
 Pending nodes run when you call `run`, `arun`, `Context.materialize`,
-`Context.amaterialize`, `ctx.get`, `ctx.set`, iterate, take `len`, or `await ctx`.
-`peek` and `pending_names` are the two safe inspection helpers that never
-materialize.
+`Context.amaterialize`, access `ctx.data`, or `await ctx`. The `DAGExecutor`
+walks back-pointers to build topological order, deduplicating shared ancestors.
 
 ### Control Flow
 
 Pipelines rely on plain Python flow:
 
-- `if ctx.get("score") > 0.8:` materializes pending work before comparison.
-- `while ctx.get("quality") < 0.9:` materializes once per iteration.
+- `if ctx.data.score > 0.8:` materializes pending work before comparison.
+- `while ctx.data.quality < 0.9:` materializes once per iteration.
 - Helper functions or recursion work naturally because everything passes through
   the same context object.
 
@@ -69,12 +75,29 @@ async def orchestrate(ctx):
     return ctx
 ```
 
-### Metadata & Error Handling
+### Fanout and Multi-Input Nodes
 
-- Each run copies `ExecutionMetadata`, executes nodes sequentially, and records latency.
-- Failures are wrapped in `NodeExecutionError` with the failing node name plus the completed ones.
-- Invalid signatures trigger `NodeSignatureError` before execution.
+Nodes can accept multiple context arguments. Shared ancestors execute only once:
+
+```python
+@node
+async def combine(a: int, b: int) -> int:
+    return a + b
+
+# Both branches share `base`; it runs only once
+base = some_node(ctx)
+left = process_a(base)
+right = process_b(base)
+result = combine(left, right)
+```
+
+### Error Handling
+
+- Failures are wrapped in `NodeExecutionError` with the failing node name.
 - Returning a context with pending nodes raises `RuntimeError` so authors remember to `await ctx`.
+
+**Concurrency constraint:** Concurrent materialization of contexts that share
+ancestors (e.g., via `asyncio.gather()`) is not supported. Materialize sequentially.
 
 ## Distributed Replica Design
 
@@ -112,7 +135,7 @@ def rag(ctx):
 ```python
 def maybe_rerank(ctx):
     ctx = retrieve(ctx)
-    if ctx.get("result_count", 0) > 3:
+    if len(ctx.data.documents) > 3:
         ctx = rerank(ctx)
     return generate(ctx)
 ```
@@ -122,13 +145,27 @@ def maybe_rerank(ctx):
 ```python
 def refine_until_good(ctx):
     ctx = initial(ctx)
-    while ctx.get("quality", 0) < 0.85:
+    while ctx.data.quality < 0.85:
         ctx = refine(ctx)
         ctx = evaluate(ctx)
     return ctx
 ```
 
-4. **Replica-backed node**
+4. **Fanout with shared ancestor**
+
+```python
+@node
+async def merge(a: State, b: State) -> State:
+    return State(results=a.results + b.results)
+
+def fanout_pipeline(ctx):
+    base = fetch_data(ctx)
+    left = process_a(base)   # shares base
+    right = process_b(base)  # shares base
+    return merge(left, right)  # base runs once
+```
+
+5. **Replica-backed node**
 
 ```python
 @replica(n=2)
@@ -137,10 +174,9 @@ class Tooling:
         ...
 
 @node
-async def call_tool(ctx):
+async def call_tool(s: State) -> State:
     tool = Tooling.get()
-    ctx.set("reply", tool.invoke(ctx.get("prompt")))
-    return ctx
+    return State(reply=tool.invoke(s.prompt))
 ```
 
 These patterns work identically in sync or async contexts because the only state
@@ -150,7 +186,7 @@ that matters is the `Context` object that flows through the pipeline.
 
 - Additional backends (Ray, asyncio pools, etc.) can slot into the same backend
   protocol without touching the core runtime.
-- ExecutionMetadata could be extended with custom hooks (e.g., tracing spans) by
-  subclassing `Context` or post-processing `ctx.metadata`.
+- Observability hooks (tracing, metrics) could be added via node wrappers or
+  custom execution callbacks.
 - Higher-level helpers (e.g., loop utilities) can be built as regular nodes
   while keeping the core surface minimal.
