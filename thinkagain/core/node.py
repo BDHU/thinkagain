@@ -10,7 +10,23 @@ from typing import TYPE_CHECKING, Any, Callable
 if TYPE_CHECKING:
     from .context import Context
 
-from .errors import NodeDataclassError, NodeSignatureError
+from .errors import NodeDataclassError
+
+
+class _ParentRef:
+    """Sentinel marking a parent Context position in call_args.
+
+    Each instance corresponds to a Context argument that will be resolved
+    at execution time. The index indicates which parent in _parents to use.
+    """
+
+    __slots__ = ("index",)
+
+    def __init__(self, index: int):
+        self.index = index
+
+    def __repr__(self) -> str:
+        return f"ParentRef({self.index})"
 
 
 class NodeBase(ABC):
@@ -22,19 +38,44 @@ class NodeBase(ABC):
         """Return the node name."""
         ...
 
-    def __call__(self, ctx: "Context | dict | None" = None) -> "Context":
-        """Chain this node to a context."""
+    def __call__(self, *args, **kwargs) -> "Context":
+        """Chain this node with given inputs.
+
+        Context/dict arguments are tracked as parents in the computation graph,
+        including those provided via kwargs. Other arguments are passed through
+        to the node at execution time.
+        """
         from .context import Context
 
-        if ctx is None:
-            ctx = Context()
-        elif isinstance(ctx, dict):
-            ctx = Context(ctx)
-        return ctx._chain(self)
+        parents: list[Context] = []
+        call_args: list = []
+        call_kwargs: dict = {}
+
+        def record_parent(value: Any):
+            if isinstance(value, Context):
+                parents.append(value)
+                return _ParentRef(len(parents) - 1)
+            if isinstance(value, dict):
+                parents.append(Context(value))
+                return _ParentRef(len(parents) - 1)
+            return value
+
+        for arg in args:
+            call_args.append(record_parent(arg))
+
+        for key, value in kwargs.items():
+            call_kwargs[key] = record_parent(value)
+
+        # Ensure at least one parent context
+        if not parents:
+            parents.append(Context())
+            call_args.insert(0, _ParentRef(0))
+
+        return parents[0]._chain(self, tuple(parents), tuple(call_args), call_kwargs)
 
     @abstractmethod
-    async def execute(self, ctx: "Context") -> "Context":
-        """Execute this node."""
+    async def execute(self, *args, **kwargs) -> "Context":
+        """Execute this node with the given arguments."""
         ...
 
 
@@ -63,7 +104,7 @@ class Node(NodeBase):
     """
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
-        """Ensure subclasses are frozen dataclasses and validate run() signature."""
+        """Ensure subclasses are frozen dataclasses."""
         super().__init_subclass__(**kwargs)
 
         if inspect.isabstract(cls):
@@ -86,45 +127,29 @@ class Node(NodeBase):
 
             dataclass(frozen=True)(cls)
 
-        # Validate run() signature at definition time
-        if "run" in cls.__dict__:
-            try:
-                sig = inspect.signature(cls.run)
-            except (ValueError, TypeError):
-                return  # Can't inspect, skip validation
-
-            required = [
-                p
-                for p in sig.parameters.values()
-                if p.default is inspect.Parameter.empty
-                and p.kind
-                in (
-                    inspect.Parameter.POSITIONAL_ONLY,
-                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                )
-            ]
-            # Expect 2 params: self and ctx
-            if len(required) != 2:
-                raise NodeSignatureError(
-                    cls.__name__,
-                    TypeError(
-                        f"expected 1 required parameter (ctx), got {len(required) - 1}"
-                    ),
-                )
-
     @property
     def name(self) -> str:
         """Return the class name as the node name."""
         return self.__class__.__name__
 
     @abstractmethod
-    async def run(self, ctx: "Context") -> "Context":
-        """Execute the node logic. Override this in subclasses."""
+    async def run(self, *args, **kwargs) -> "Context":
+        """Execute the node logic. Override this in subclasses.
+
+        Receives materialized Context arguments and any additional arguments
+        passed when the node was called. For single-input nodes, typically:
+
+            async def run(self, ctx: Context) -> Context: ...
+
+        For multi-input nodes:
+
+            async def run(self, ctx1: Context, ctx2: Context) -> Context: ...
+        """
         ...
 
-    async def execute(self, ctx: "Context") -> "Context":
+    async def execute(self, *args, **kwargs) -> "Context":
         """Execute this node by calling run()."""
-        return await self.run(ctx)
+        return await self.run(*args, **kwargs)
 
     def serialize(self) -> dict[str, Any]:
         """Serialize this node for distribution."""
@@ -139,11 +164,8 @@ class Node(NodeBase):
 class FunctionNode(NodeBase):
     """Wraps an async function for lazy execution.
 
-    This is the original Node implementation, renamed to FunctionNode.
-    Nodes are always stateless functions: async def node(ctx) -> ctx.
-
-    Signature validation happens eagerly at decoration time for consistent
-    behavior with class-based Node validation.
+    Nodes can accept any number of arguments. Context arguments are tracked
+    in the computation graph and materialized before execution.
     """
 
     __slots__ = ("fn", "_name")
@@ -151,69 +173,37 @@ class FunctionNode(NodeBase):
     def __init__(self, fn: Callable, name: str | None = None):
         self.fn = fn
         self._name = name or getattr(fn, "__name__", "node")
-        # Eager validation at construction time (fail fast)
-        self._validate_signature()
 
     @property
     def name(self) -> str:
         return self._name
 
-    def _validate_signature(self) -> None:
-        """Validate signature (called once at construction)."""
-        try:
-            sig = inspect.signature(self.fn)
-        except (ValueError, TypeError):
-            # Can't inspect (builtin, etc.) - defer to runtime
-            return
-
-        required = [
-            p
-            for p in sig.parameters.values()
-            if p.default is inspect.Parameter.empty
-            and p.kind
-            in (
-                inspect.Parameter.POSITIONAL_ONLY,
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            )
-        ]
-        if len(required) != 1:
-            raise NodeSignatureError(
-                self._name,
-                TypeError(f"expected 1 required parameter (ctx), got {len(required)}"),
-            )
-
-    async def execute(self, ctx: "Context") -> "Context":
-        """Execute this node."""
-        try:
-            return await self.fn(ctx)
-        except TypeError as e:
-            # Fallback for cases inspect couldn't catch
-            if "argument" in str(e) or "positional" in str(e):
-                raise NodeSignatureError(self._name, e) from e
-            raise
+    async def execute(self, *args, **kwargs) -> "Context":
+        """Execute this node with the given arguments."""
+        return await self.fn(*args, **kwargs)
 
 
 def node(_fn: Callable | None = None, *, name: str | None = None):
     """Decorator that wraps an async function in a FunctionNode.
 
-    Nodes are always stateless functions that take a Context and return a Context.
-
     Supports both @node and @node(name="custom") styles.
 
-    Example:
+    Example (single input):
         @node
         async def process(ctx):
             value = ctx.get("input")
             ctx.set("output", transform(value))
             return ctx
 
-    For stateful nodes with configuration, use the Node base class instead:
+    Example (multi-input):
+        @node
+        async def merge(ctx1, ctx2):
+            ctx1.set("combined", ctx1.get("a") + ctx2.get("b"))
+            return ctx1
 
-        class Process(Node):
-            config: str = "default"
+        result = merge(branch_a, branch_b)
 
-            async def run(self, ctx):
-                return ctx.set("output", self.config)
+    For stateful nodes with configuration, use the Node base class instead.
     """
 
     if _fn is None:

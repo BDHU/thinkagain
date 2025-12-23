@@ -7,47 +7,73 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .node import NodeBase
 
-from .executor import PendingExecutor
-from .metadata import ExecutionMetadata
+from .executor import DAGExecutor
+from .graph import traverse_pending
 
 
 class Context:
-    """Stateful execution context with lazy node execution."""
+    """Stateful execution context with lazy node execution.
+
+    Uses PyTorch-style back-pointers for graph capture. Each Context stores
+    references to its parent Contexts and the node that produced it, enabling
+    proper fanout handling where shared ancestors execute only once.
+
+    Note:
+        Concurrent materialization of contexts that share ancestors is not
+        supported (e.g., via ``asyncio.gather()``). Materialize sequentially.
+    """
 
     def __init__(
         self,
         data: Context | dict | None = None,
-        *,
-        metadata: ExecutionMetadata | None = None,
     ):
         if isinstance(data, Context):
-            # Copy from another Context (always copies data for isolation)
+            # Copy from another Context - materialize first if pending
+            if not data._executed:
+                data._run_pending_sync()
+            # Now create an isolated copy
             self._data = dict(data._data)
-            self._pending = list(data._pending)
-            self._metadata = data._metadata.copy()
+            self._parents: tuple[Context, ...] = ()
+            self._call_args: tuple = ()
+            self._call_kwargs: dict = {}
+            self._node: NodeBase | None = None
+            self._executed = True
             self._executor = None
         else:
-            self._data = data if data is not None else {}
-            self._pending = []
-            self._metadata = metadata if metadata is not None else ExecutionMetadata()
+            self._data = dict(data) if data is not None else {}
+            self._parents = ()
+            self._call_args = ()
+            self._call_kwargs = {}
+            self._node = None
+            self._executed = True  # Root contexts with no node are executed
             self._executor = None
 
-    def _chain(self, node: "NodeBase") -> "Context":
-        """Return a new Context that shares data/metadata but has this node pending.
+    def _chain(
+        self,
+        node: "NodeBase",
+        parents: "tuple[Context, ...]",
+        call_args: tuple,
+        call_kwargs: dict,
+    ) -> "Context":
+        """Return a new Context with node and multiple parent inputs.
 
-        Metadata is shared (not copied) during chaining to avoid overhead.
-        Copy happens only at execution time in _run_pending_async.
+        Uses PyTorch-style back-pointers: the new context points to its parents
+        and the node that will produce it. At execution time, we walk
+        back-pointers to build the graph and execute in topological order.
         """
         ctx = Context.__new__(Context)
-        ctx._data = self._data
-        ctx._metadata = self._metadata  # shared, not copied
-        ctx._pending = self._pending + [node]
+        ctx._data = {}  # Will be populated at execution
+        ctx._parents = parents
+        ctx._call_args = call_args
+        ctx._call_kwargs = call_kwargs
+        ctx._node = node
+        ctx._executed = False
         ctx._executor = None
         return ctx
 
-    def _get_executor(self) -> PendingExecutor:
+    def _get_executor(self) -> DAGExecutor:
         if self._executor is None:
-            self._executor = PendingExecutor(self)
+            self._executor = DAGExecutor(self)
         return self._executor
 
     def copy(self) -> "Context":
@@ -110,15 +136,27 @@ class Context:
 
     @property
     def is_pending(self) -> bool:
-        return bool(self._pending)
+        """True if this context has unexecuted nodes."""
+        return not self._executed
 
     @property
     def pending_count(self) -> int:
-        return len(self._pending)
+        """Count of unexecuted nodes in the graph leading to this context."""
+        count = 0
+
+        def increment(ctx: Context) -> None:
+            nonlocal count
+            count += 1
+
+        traverse_pending(self, increment)
+        return count
 
     @property
     def pending_names(self) -> list[str]:
-        return [n.name for n in self._pending]
+        """Names of unexecuted nodes in execution order (ancestors first)."""
+        names: list[str] = []
+        traverse_pending(self, lambda ctx: names.append(ctx._node.name))
+        return names
 
     def keys(self) -> list[str]:
         self._run_pending_sync()
@@ -148,8 +186,3 @@ class Context:
     def __len__(self) -> int:
         self._run_pending_sync()
         return len(self._data)
-
-    @property
-    def metadata(self) -> ExecutionMetadata:
-        """Return the execution metadata."""
-        return self._metadata

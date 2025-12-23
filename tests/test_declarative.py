@@ -1,65 +1,39 @@
 """Tests for declarative API."""
 
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, is_dataclass
+
 import pytest
 
 from thinkagain import Context, FunctionNode, Node, NodeDataclassError, run, node
+from conftest import add_one, double
 
 
-# Test functions
-@node
-async def add_one(ctx):
-    ctx.set("value", ctx.get("value", 0) + 1)
-    return ctx
+# =============================================================================
+# Basic pipeline tests
+# =============================================================================
 
 
-@node
-async def double(ctx):
-    ctx.set("value", ctx.get("value") * 2)
-    return ctx
-
-
-def test_linear_pipeline():
+@pytest.mark.parametrize(
+    ("initial", "pipeline_fn", "expected"),
+    [
+        ({"value": 5}, lambda ctx, n: n["double"](n["add_one"](ctx)), 12),
+        ({"value": 42}, lambda ctx, n: ctx, 42),  # empty pipeline
+        ({"value": 10}, lambda ctx, n: n["add_one"](ctx), 11),
+        ({}, lambda ctx, n: n["add_one"](ctx), 1),  # default value
+    ],
+)
+def test_basic_pipelines(initial, pipeline_fn, expected, nodes):
     def pipeline(ctx):
-        ctx = add_one(ctx)
-        ctx = double(ctx)
-        return ctx
+        return pipeline_fn(ctx, nodes)
 
-    result = run(pipeline, {"value": 5})
-    assert result.get("value") == 12  # (5+1)*2
-
-
-def test_empty_pipeline():
-    def pipeline(ctx):
-        return ctx
-
-    result = run(pipeline, {"value": 42})
-    assert result.get("value") == 42
-
-
-def test_dict_input():
-    def pipeline(ctx):
-        ctx = add_one(ctx)
-        return ctx
-
-    result = run(pipeline, {"value": 10})
-    assert result.get("value") == 11
-
-
-def test_none_input():
-    def pipeline(ctx):
-        ctx = add_one(ctx)
-        return ctx
-
-    result = run(pipeline)
-    assert result.get("value") == 1
+    result = run(pipeline, initial)
+    assert result.get("value") == expected
 
 
 def test_auto_materialization():
     def pipeline(ctx):
         ctx = add_one(ctx)
-        # Reading value materializes
-        assert ctx.get("value") == 6
+        assert ctx.get("value") == 6  # materializes
         ctx = double(ctx)
         return ctx
 
@@ -67,7 +41,16 @@ def test_auto_materialization():
     assert result.get("value") == 12
 
 
-def test_if_else_branching():
+# =============================================================================
+# Branching tests
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    ("use_high", "expected"),
+    [(True, 0.9), (False, 0.3)],
+)
+def test_if_else_branching(use_high, expected):
     @node
     async def high(ctx):
         ctx.set("score", 0.9)
@@ -79,17 +62,16 @@ def test_if_else_branching():
         return ctx
 
     def pipeline(ctx):
-        if ctx.get("use_high"):  # materializes to check
-            ctx = high(ctx)
-        else:
-            ctx = low(ctx)
-        return ctx
+        return high(ctx) if ctx.get("use_high") else low(ctx)
 
-    assert run(pipeline, {"use_high": True}).get("score") == 0.9
-    assert run(pipeline, {"use_high": False}).get("score") == 0.3
+    assert run(pipeline, {"use_high": use_high}).get("score") == expected
 
 
-def test_conditional_after_node():
+@pytest.mark.parametrize(
+    ("value", "expected_log"),
+    [(10, ["high"]), (2, ["low"])],
+)
+def test_conditional_after_node(value, expected_log):
     @node
     async def log_high(ctx):
         ctx.set("logs", ["high"])
@@ -102,15 +84,14 @@ def test_conditional_after_node():
 
     def pipeline(ctx):
         ctx = add_one(ctx)
-        # Reading ctx value materializes
-        if ctx.get("value") > 5:
-            ctx = log_high(ctx)
-        else:
-            ctx = log_low(ctx)
-        return ctx
+        return log_high(ctx) if ctx.get("value") > 5 else log_low(ctx)
 
-    assert run(pipeline, {"value": 10}).get("logs") == ["high"]
-    assert run(pipeline, {"value": 2}).get("logs") == ["low"]
+    assert run(pipeline, {"value": value}).get("logs") == expected_log
+
+
+# =============================================================================
+# Loop tests
+# =============================================================================
 
 
 def test_while_loop():
@@ -119,8 +100,7 @@ def test_while_loop():
             ctx = add_one(ctx)
         return ctx
 
-    result = run(pipeline, {"value": 0})
-    assert result.get("value") == 5
+    assert run(pipeline, {"value": 0}).get("value") == 5
 
 
 def test_for_loop():
@@ -134,52 +114,50 @@ def test_for_loop():
             ctx = append_x(ctx)
         return ctx
 
-    result = run(pipeline, {})
-    assert result.get("logs") == ["x", "x", "x"]
+    assert run(pipeline, {}).get("logs") == ["x", "x", "x"]
 
 
-def test_node_name():
+# =============================================================================
+# Node naming tests
+# =============================================================================
+
+
+def test_node_names():
     assert add_one.name == "add_one"
 
-
-def test_node_explicit_name():
     @node
     async def foo(ctx):
         return ctx
 
-    n = FunctionNode(foo.fn, name="custom")
-    assert n.name == "custom"
+    assert FunctionNode(foo.fn, name="custom").name == "custom"
 
-
-def test_node_decorator_with_name():
     @node(name="custom_name")
-    async def foo(ctx):
+    async def bar(ctx):
         return ctx
 
-    assert isinstance(foo, FunctionNode)
-    assert foo.name == "custom_name"
+    assert bar.name == "custom_name"
+
+
+# =============================================================================
+# Context tests
+# =============================================================================
 
 
 def test_context_is_pending():
     ctx = Context({})
     assert not ctx.is_pending
-    ctx = add_one(ctx)  # chaining a node creates pending state
+    ctx = add_one(ctx)
     assert ctx.is_pending
 
 
 def test_nested_functions():
     def add_twice(ctx):
-        ctx = add_one(ctx)
-        ctx = add_one(ctx)
-        return ctx
+        return add_one(add_one(ctx))
 
     def pipeline(ctx):
-        ctx = add_twice(ctx)
-        ctx = double(ctx)
-        return ctx
+        return double(add_twice(ctx))
 
-    result = run(pipeline, {"value": 5})
-    assert result.get("value") == 14  # (5+1+1)*2
+    assert run(pipeline, {"value": 5}).get("value") == 14
 
 
 def test_early_return():
@@ -187,53 +165,65 @@ def test_early_return():
         ctx = add_one(ctx)
         if ctx.get("value") > 10:
             return ctx
-        ctx = double(ctx)
-        return ctx
+        return double(ctx)
 
     assert run(pipeline, {"value": 5}).get("value") == 12
     assert run(pipeline, {"value": 15}).get("value") == 16
 
 
 def test_direct_node_call():
-    # Can call nodes directly without run()
-    ctx = add_one({"value": 5})
-    ctx = double(ctx)
+    ctx = double(add_one({"value": 5}))
     assert ctx.get("value") == 12
 
 
-def test_context_metadata_records_timings():
-    def pipeline(ctx):
-        ctx = add_one(ctx)
-        ctx = double(ctx)
+# =============================================================================
+# Fanout and DAG tests
+# =============================================================================
+
+
+def test_fanout_deduplication():
+    """Shared ancestor nodes execute only once."""
+    call_count = {"n": 0}
+
+    @node
+    async def counting_node(ctx):
+        call_count["n"] += 1
+        ctx.set("value", ctx.get("value", 0) + 1)
         return ctx
 
-    result = run(pipeline, {"value": 2})
-    metadata = result.metadata
-    assert metadata.total_duration >= 0
-    assert [name for name, _ in metadata.node_latencies] == [
-        "add_one",
-        "double",
-    ]
-    assert metadata.per_node_totals["add_one"] >= 0
-    assert metadata.per_node_totals["double"] >= 0
-    assert metadata.finished_at is not None
+    ctx = counting_node(Context({"value": 0}))
+    ctx2, ctx3 = add_one(ctx), double(ctx)
+
+    assert ctx2.get("value") == 2
+    assert ctx3.get("value") == 2
+    assert call_count["n"] == 1
 
 
-def test_metadata_isolated_on_execution():
-    """Metadata is shared during chaining but copied on execution."""
-    ctx = run(lambda c: add_one(c), {"value": 1})
-    finished_at = ctx.metadata.finished_at
-    assert finished_at is not None
-    original_count = ctx.metadata.node_execution_count
+def test_branch_data_isolation():
+    """Branches get isolated copies of data."""
+    ctx1 = add_one(Context({"value": 10}))
+    ctx2, ctx3 = double(ctx1), add_one(ctx1)
 
-    # Chain a new node - metadata is shared until execution
-    ctx2 = add_one(ctx)
-    assert ctx2.is_pending  # not yet executed
+    assert ctx2.get("value") == 22
+    assert ctx3.get("value") == 12
 
-    # After execution, new ctx has its own metadata with updated timings
-    ctx2 = run(lambda c: c, ctx2)
-    assert ctx2.metadata.node_execution_count == original_count + 1
-    assert ctx2.metadata.finished_at is not None
+
+def test_deep_fanout():
+    """Fanout works with deeper graphs."""
+    ctx = Context({"value": 1})
+    ctx_b = double(add_one(ctx))
+    ctx_c, ctx_d = add_one(ctx_b), double(ctx_b)
+
+    ctx_c.materialize()
+    ctx_d.materialize()
+
+    assert ctx_c.get("value") == 5
+    assert ctx_d.get("value") == 8
+
+
+def test_pending_names_with_fanout():
+    ctx = double(add_one(Context({"value": 0})))
+    assert ctx.pending_names == ["add_one", "double"]
 
 
 # =============================================================================
@@ -242,8 +232,6 @@ def test_metadata_isolated_on_execution():
 
 
 class AddValue(Node):
-    """A class-based node that adds a value."""
-
     delta: int = 1
 
     async def run(self, ctx):
@@ -252,8 +240,6 @@ class AddValue(Node):
 
 
 class Multiply(Node):
-    """A class-based node that multiplies."""
-
     factor: int = 2
 
     async def run(self, ctx):
@@ -261,133 +247,65 @@ class Multiply(Node):
         return ctx
 
 
-def test_class_node_basic():
-    """Class-based nodes work in pipelines."""
-    adder = AddValue(delta=5)
-
-    def pipeline(ctx):
-        ctx = adder(ctx)
-        return ctx
-
-    result = run(pipeline, {"value": 10})
-    assert result.get("value") == 15
-
-
-def test_class_node_default_values():
-    """Class-based nodes use default values."""
-    adder = AddValue()  # delta defaults to 1
-
-    result = run(lambda ctx: adder(ctx), {"value": 10})
-    assert result.get("value") == 11
+@pytest.mark.parametrize(
+    ("delta", "initial", "expected"),
+    [(5, 10, 15), (1, 10, 11)],  # explicit delta  # default delta
+)
+def test_class_node_basic(delta, initial, expected):
+    adder = AddValue() if delta == 1 else AddValue(delta=delta)
+    assert run(lambda ctx: adder(ctx), {"value": initial}).get("value") == expected
 
 
 def test_class_node_chaining():
-    """Multiple class-based nodes can be chained."""
-    adder = AddValue(delta=3)
-    multiplier = Multiply(factor=2)
+    adder, multiplier = AddValue(delta=3), Multiply(factor=2)
 
     def pipeline(ctx):
-        ctx = adder(ctx)
-        ctx = multiplier(ctx)
-        return ctx
+        return multiplier(adder(ctx))
 
-    result = run(pipeline, {"value": 5})
-    assert result.get("value") == 16  # (5+3)*2
+    assert run(pipeline, {"value": 5}).get("value") == 16
 
 
 def test_class_node_with_function_node():
-    """Class-based nodes work with function-based nodes."""
     adder = AddValue(delta=10)
 
     def pipeline(ctx):
-        ctx = add_one(ctx)  # function node
-        ctx = adder(ctx)  # class node
-        ctx = double(ctx)  # function node
-        return ctx
+        return double(adder(add_one(ctx)))
 
-    result = run(pipeline, {"value": 5})
-    assert result.get("value") == 32  # ((5+1)+10)*2
+    assert run(pipeline, {"value": 5}).get("value") == 32
 
 
 def test_class_node_reusable():
-    """Same node instance can be used multiple times."""
     adder = AddValue(delta=1)
 
     def pipeline(ctx):
-        ctx = adder(ctx)
-        ctx = adder(ctx)
-        ctx = adder(ctx)
-        return ctx
+        return adder(adder(adder(ctx)))
 
-    result = run(pipeline, {"value": 0})
-    assert result.get("value") == 3
+    assert run(pipeline, {"value": 0}).get("value") == 3
 
 
-def test_class_node_different_configs():
-    """Different instances can have different configs."""
-    small_add = AddValue(delta=1)
-    big_add = AddValue(delta=100)
-
-    def pipeline(ctx):
-        ctx = small_add(ctx)
-        ctx = big_add(ctx)
-        return ctx
-
-    result = run(pipeline, {"value": 0})
-    assert result.get("value") == 101
-
-
-def test_class_node_is_frozen():
-    """Class-based nodes are immutable (frozen dataclass)."""
+def test_class_node_immutability():
     adder = AddValue(delta=5)
     with pytest.raises(AttributeError):
         adder.delta = 10  # type: ignore
 
 
-def test_class_node_name():
-    """Class-based nodes use class name as node name."""
-    adder = AddValue(delta=5)
-    assert adder.name == "AddValue"
-
-
-def test_class_node_equality():
-    """Class-based nodes with same config are equal."""
-    adder1 = AddValue(delta=5)
-    adder2 = AddValue(delta=5)
-    adder3 = AddValue(delta=10)
+def test_class_node_equality_and_hash():
+    adder1, adder2, adder3 = AddValue(delta=5), AddValue(delta=5), AddValue(delta=10)
 
     assert adder1 == adder2
     assert adder1 != adder3
-
-
-def test_class_node_hashable():
-    """Class-based nodes are hashable (can be used in sets/dicts)."""
-    adder1 = AddValue(delta=5)
-    adder2 = AddValue(delta=5)
-    adder3 = AddValue(delta=10)
-
-    node_set = {adder1, adder2, adder3}
-    assert len(node_set) == 2  # adder1 == adder2
+    assert len({adder1, adder2, adder3}) == 2
 
 
 def test_class_node_serialization():
-    """Class-based nodes can be serialized."""
     adder = AddValue(delta=5)
     serialized = adder.serialize()
-
     assert serialized["type"] == "AddValue"
     assert serialized["config"] == {"delta": 5}
-
-
-def test_class_node_asdict():
-    """Class-based nodes support dataclass asdict."""
-    adder = AddValue(delta=5)
     assert asdict(adder) == {"delta": 5}
 
 
 def test_class_node_auto_dataclass():
-    """Node subclasses are automatically frozen dataclasses."""
-
     class SimpleNode(Node):
         prefix: str = "hello"
 
@@ -398,13 +316,11 @@ def test_class_node_auto_dataclass():
     assert is_dataclass(SimpleNode)
     assert SimpleNode.__dataclass_params__.frozen
 
-    node_instance = SimpleNode(prefix="hi")
-    result = run(lambda ctx: node_instance(ctx), {})
+    result = run(lambda ctx: SimpleNode(prefix="hi")(ctx), {})
     assert result.get("message") == "hi world"
 
 
 def test_class_node_custom_init_rejected():
-    """Custom __init__ is rejected to avoid dataclass conflicts."""
     with pytest.raises(NodeDataclassError):
 
         class BadNode(Node):
@@ -412,12 +328,12 @@ def test_class_node_custom_init_rejected():
                 self.value = value
 
             async def run(self, ctx):
-                ctx.set("value", self.value)
                 return ctx
 
 
-def test_class_node_explicit_dataclass_is_rejected():
-    """Explicit @dataclass on Node subclasses is not supported."""
+def test_class_node_explicit_dataclass_rejected():
+    from dataclasses import dataclass
+
     with pytest.raises(TypeError):
 
         @dataclass(frozen=True)
@@ -425,32 +341,95 @@ def test_class_node_explicit_dataclass_is_rejected():
             prefix: str = "hello"
 
             async def run(self, ctx):
-                ctx.set("message", f"{self.prefix} world")
                 return ctx
 
 
-def test_class_node_metadata_recorded():
-    """Class-based nodes are recorded in metadata."""
-    adder = AddValue(delta=1)
-    multiplier = Multiply(factor=2)
+# =============================================================================
+# Multi-input node tests
+# =============================================================================
 
-    def pipeline(ctx):
-        ctx = adder(ctx)
-        ctx = multiplier(ctx)
+
+def test_multi_input_two_contexts():
+    @node
+    async def combine(ctx1, ctx2):
+        return Context({"result": ctx1.get("a") + ctx2.get("b")})
+
+    result = combine(Context({"a": 10}), Context({"b": 20}))
+    assert result.get("result") == 30
+
+
+def test_multi_input_with_value():
+    @node
+    async def scale(ctx, factor):
+        return Context({"result": ctx.get("value") * factor})
+
+    assert scale(Context({"value": 5}), 3).get("result") == 15
+
+
+@pytest.mark.parametrize(
+    ("threshold", "expected"),
+    [(0.5, True), (0.9, False)],
+)
+def test_multi_input_with_kwarg(threshold, expected):
+    @node
+    async def process(ctx, threshold=0.5):
+        return Context({"passed": ctx.get("value") > threshold})
+
+    result = process(Context({"value": 0.7}), threshold=threshold)
+    assert result.get("passed") is expected
+
+
+def test_multi_input_shared_ancestor():
+    call_count = {"n": 0}
+
+    @node
+    async def counting_node(ctx):
+        call_count["n"] += 1
+        ctx.set("value", ctx.get("value", 0) + 1)
         return ctx
 
-    result = run(pipeline, {"value": 5})
-    metadata = result.metadata
+    @node
+    async def branch_a(ctx):
+        ctx.set("a", ctx.get("value") * 2)
+        return ctx
 
-    assert [name for name, _ in metadata.node_latencies] == ["AddValue", "Multiply"]
+    @node
+    async def branch_b(ctx):
+        ctx.set("b", ctx.get("value") * 3)
+        return ctx
+
+    @node
+    async def merge(ctx1, ctx2):
+        return Context({"sum": ctx1.get("a") + ctx2.get("b")})
+
+    ctx = counting_node(Context({"value": 0}))
+    result = merge(branch_a(ctx), branch_b(ctx))
+
+    assert result.get("sum") == 5
+    assert call_count["n"] == 1
 
 
-def test_class_node_direct_call():
-    """Class-based nodes can be called directly without run()."""
-    adder = AddValue(delta=5)
-    multiplier = Multiply(factor=2)
+def test_multi_input_class_based_node():
+    class Merger(Node):
+        prefix: str = ""
 
-    ctx = adder({"value": 10})
-    ctx = multiplier(ctx)
+        async def run(self, ctx1, ctx2):
+            return Context(
+                {"result": f"{self.prefix}{ctx1.get('a', '')}{ctx2.get('b', '')}"}
+            )
 
-    assert ctx.get("value") == 30  # (10+5)*2
+    result = Merger(prefix="merged: ")(Context({"a": "hello"}), Context({"b": "world"}))
+    assert result.get("result") == "merged: helloworld"
+
+
+def test_multi_input_chained():
+    @node
+    async def add(ctx1, ctx2):
+        return Context({"value": ctx1.get("value") + ctx2.get("value")})
+
+    @node
+    async def double_val(ctx):
+        return Context({"value": ctx.get("value") * 2})
+
+    result = double_val(add(Context({"value": 3}), Context({"value": 7})))
+    assert result.get("value") == 20
