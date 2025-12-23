@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields, is_dataclass
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, NamedTuple
 
 if TYPE_CHECKING:
     from .context import Context
@@ -13,20 +13,28 @@ if TYPE_CHECKING:
 from .errors import NodeDataclassError
 
 
-class _ParentRef:
-    """Sentinel marking a parent Context position in call_args.
+class _ParentRef(NamedTuple):
+    """Sentinel marking a parent Context position in call_args."""
 
-    Each instance corresponds to a Context argument that will be resolved
-    at execution time. The index indicates which parent in _parents to use.
-    """
+    index: int
 
-    __slots__ = ("index",)
 
-    def __init__(self, index: int):
-        self.index = index
+def _unwrap_args(args: tuple, kwargs: dict) -> tuple[list, dict]:
+    """Unwrap Context args to their data values."""
+    from .context import Context
 
-    def __repr__(self) -> str:
-        return f"ParentRef({self.index})"
+    return (
+        [a._data if isinstance(a, Context) else a for a in args],
+        {k: v._data if isinstance(v, Context) else v for k, v in kwargs.items()},
+    )
+
+
+async def _execute_unwrapped(fn: Callable, args: tuple, kwargs: dict) -> "Context":
+    """Execute an async callable with unwrapped args/kwargs."""
+    from .context import Context
+
+    exec_args, exec_kwargs = _unwrap_args(args, kwargs)
+    return Context(await fn(*exec_args, **exec_kwargs))
 
 
 class NodeBase(ABC):
@@ -41,9 +49,8 @@ class NodeBase(ABC):
     def __call__(self, *args, **kwargs) -> "Context":
         """Chain this node with given inputs.
 
-        Context/dict arguments are tracked as parents in the computation graph,
-        including those provided via kwargs. Other arguments are passed through
-        to the node at execution time.
+        Context arguments are tracked as parents in the computation graph.
+        Other arguments are passed through to the node at execution time.
         """
         from .context import Context
 
@@ -54,9 +61,6 @@ class NodeBase(ABC):
         def record_parent(value: Any):
             if isinstance(value, Context):
                 parents.append(value)
-                return _ParentRef(len(parents) - 1)
-            if isinstance(value, dict):
-                parents.append(Context(value))
                 return _ParentRef(len(parents) - 1)
             return value
 
@@ -82,25 +86,22 @@ class NodeBase(ABC):
 class Node(NodeBase):
     """Base class for dataclass-based nodes.
 
-    Subclass this to create stateful nodes with configuration that can be
-    serialized. Subclasses are automatically made frozen dataclasses.
-
-    IMPORTANT: Do NOT apply @dataclass yourself - it is applied automatically.
+    Subclass this to create stateful nodes with configuration. The run()
+    method receives plain Python values (not Context) and returns a plain
+    Python value that gets wrapped in Context automatically.
 
     Example:
-        class Summarize(Node):
-            model: str = "gpt-4"
-            max_tokens: int = 100
+        class AddValue(Node):
+            delta: int = 1
 
-            async def run(self, ctx: Context) -> Context:
-                # Use self.model, self.max_tokens
-                return ctx.set("summary", result)
+            async def run(self, x: int) -> int:
+                return x + self.delta
 
         # Instantiate with config
-        summarizer = Summarize(model="claude", max_tokens=200)
+        add_five = AddValue(delta=5)
 
         # Use in pipeline
-        ctx = summarizer(ctx)
+        ctx = add_five(Context(10))  # Context(15) after materialization
     """
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -133,23 +134,21 @@ class Node(NodeBase):
         return self.__class__.__name__
 
     @abstractmethod
-    async def run(self, *args, **kwargs) -> "Context":
+    async def run(self, *args, **kwargs) -> Any:
         """Execute the node logic. Override this in subclasses.
 
-        Receives materialized Context arguments and any additional arguments
-        passed when the node was called. For single-input nodes, typically:
+        Receives plain Python values extracted from input Contexts.
+        Return a plain Python value (will be wrapped in Context).
 
-            async def run(self, ctx: Context) -> Context: ...
-
-        For multi-input nodes:
-
-            async def run(self, ctx1: Context, ctx2: Context) -> Context: ...
+        Example:
+            async def run(self, x: int) -> int:
+                return x + self.delta
         """
         ...
 
     async def execute(self, *args, **kwargs) -> "Context":
-        """Execute this node by calling run()."""
-        return await self.run(*args, **kwargs)
+        """Execute this node by calling run() with unwrapped values."""
+        return await _execute_unwrapped(self.run, args, kwargs)
 
     def serialize(self) -> dict[str, Any]:
         """Serialize this node for distribution."""
@@ -164,8 +163,15 @@ class Node(NodeBase):
 class FunctionNode(NodeBase):
     """Wraps an async function for lazy execution.
 
-    Nodes can accept any number of arguments. Context arguments are tracked
-    in the computation graph and materialized before execution.
+    The function receives plain Python values (not Context) and returns
+    a plain Python value that gets wrapped in Context automatically.
+
+    Example:
+        @node
+        async def add_one(x: int) -> int:
+            return x + 1
+
+        ctx = add_one(Context(5))  # Context(6) after materialization
     """
 
     __slots__ = ("fn", "_name")
@@ -179,31 +185,28 @@ class FunctionNode(NodeBase):
         return self._name
 
     async def execute(self, *args, **kwargs) -> "Context":
-        """Execute this node with the given arguments."""
-        return await self.fn(*args, **kwargs)
+        """Execute this node with unwrapped values."""
+        return await _execute_unwrapped(self.fn, args, kwargs)
 
 
 def node(_fn: Callable | None = None, *, name: str | None = None):
     """Decorator that wraps an async function in a FunctionNode.
 
-    Supports both @node and @node(name="custom") styles.
+    The decorated function receives plain Python values and returns
+    a plain Python value. The framework handles Context wrapping.
 
-    Example (single input):
+    Example:
         @node
-        async def process(ctx):
-            value = ctx.get("input")
-            ctx.set("output", transform(value))
-            return ctx
+        async def add_one(x: int) -> int:
+            return x + 1
 
-    Example (multi-input):
         @node
-        async def merge(ctx1, ctx2):
-            ctx1.set("combined", ctx1.get("a") + ctx2.get("b"))
-            return ctx1
+        async def combine(a: int, b: int) -> int:
+            return a + b
 
-        result = merge(branch_a, branch_b)
-
-    For stateful nodes with configuration, use the Node base class instead.
+        # Usage
+        ctx = add_one(Context(5))         # Single input
+        ctx = combine(Context(1), Context(2))  # Multi-input
     """
 
     if _fn is None:

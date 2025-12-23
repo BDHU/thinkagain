@@ -1,6 +1,6 @@
 """Tests for declarative API."""
 
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 
 import pytest
 
@@ -16,10 +16,10 @@ from conftest import add_one, double
 @pytest.mark.parametrize(
     ("initial", "pipeline_fn", "expected"),
     [
-        ({"value": 5}, lambda ctx, n: n["double"](n["add_one"](ctx)), 12),
-        ({"value": 42}, lambda ctx, n: ctx, 42),  # empty pipeline
-        ({"value": 10}, lambda ctx, n: n["add_one"](ctx), 11),
-        ({}, lambda ctx, n: n["add_one"](ctx), 1),  # default value
+        (5, lambda ctx, n: n["double"](n["add_one"](ctx)), 12),
+        (42, lambda ctx, n: ctx, 42),  # empty pipeline
+        (10, lambda ctx, n: n["add_one"](ctx), 11),
+        (0, lambda ctx, n: n["add_one"](ctx), 1),  # zero value
     ],
 )
 def test_basic_pipelines(initial, pipeline_fn, expected, nodes):
@@ -27,18 +27,18 @@ def test_basic_pipelines(initial, pipeline_fn, expected, nodes):
         return pipeline_fn(ctx, nodes)
 
     result = run(pipeline, initial)
-    assert result.get("value") == expected
+    assert result.data == expected
 
 
 def test_auto_materialization():
     def pipeline(ctx):
         ctx = add_one(ctx)
-        assert ctx.get("value") == 6  # materializes
+        assert ctx.data == 6  # materializes
         ctx = double(ctx)
         return ctx
 
-    result = run(pipeline, {"value": 5})
-    assert result.get("value") == 12
+    result = run(pipeline, 5)
+    assert result.data == 12
 
 
 # =============================================================================
@@ -52,19 +52,18 @@ def test_auto_materialization():
 )
 def test_if_else_branching(use_high, expected):
     @node
-    async def high(ctx):
-        ctx.set("score", 0.9)
-        return ctx
+    async def high(x) -> float:
+        return 0.9
 
     @node
-    async def low(ctx):
-        ctx.set("score", 0.3)
-        return ctx
+    async def low(x) -> float:
+        return 0.3
 
     def pipeline(ctx):
-        return high(ctx) if ctx.get("use_high") else low(ctx)
+        # ctx.data is a dict here with "use_high" key
+        return high(ctx) if ctx.data["use_high"] else low(ctx)
 
-    assert run(pipeline, {"use_high": use_high}).get("score") == expected
+    assert run(pipeline, {"use_high": use_high}).data == expected
 
 
 @pytest.mark.parametrize(
@@ -73,20 +72,18 @@ def test_if_else_branching(use_high, expected):
 )
 def test_conditional_after_node(value, expected_log):
     @node
-    async def log_high(ctx):
-        ctx.set("logs", ["high"])
-        return ctx
+    async def log_high(x) -> list:
+        return ["high"]
 
     @node
-    async def log_low(ctx):
-        ctx.set("logs", ["low"])
-        return ctx
+    async def log_low(x) -> list:
+        return ["low"]
 
     def pipeline(ctx):
         ctx = add_one(ctx)
-        return log_high(ctx) if ctx.get("value") > 5 else log_low(ctx)
+        return log_high(ctx) if ctx.data > 5 else log_low(ctx)
 
-    assert run(pipeline, {"value": value}).get("logs") == expected_log
+    assert run(pipeline, value).data == expected_log
 
 
 # =============================================================================
@@ -96,25 +93,24 @@ def test_conditional_after_node(value, expected_log):
 
 def test_while_loop():
     def pipeline(ctx):
-        while ctx.get("value") < 5:
+        while ctx.data < 5:
             ctx = add_one(ctx)
         return ctx
 
-    assert run(pipeline, {"value": 0}).get("value") == 5
+    assert run(pipeline, 0).data == 5
 
 
 def test_for_loop():
     @node
-    async def append_x(ctx):
-        ctx.set("logs", ctx.get("logs", []) + ["x"])
-        return ctx
+    async def append_x(logs: list) -> list:
+        return logs + ["x"]
 
     def pipeline(ctx):
         for _ in range(3):
             ctx = append_x(ctx)
         return ctx
 
-    assert run(pipeline, {}).get("logs") == ["x", "x", "x"]
+    assert run(pipeline, []).data == ["x", "x", "x"]
 
 
 # =============================================================================
@@ -126,14 +122,14 @@ def test_node_names():
     assert add_one.name == "add_one"
 
     @node
-    async def foo(ctx):
-        return ctx
+    async def foo(x):
+        return x
 
     assert FunctionNode(foo.fn, name="custom").name == "custom"
 
     @node(name="custom_name")
-    async def bar(ctx):
-        return ctx
+    async def bar(x):
+        return x
 
     assert bar.name == "custom_name"
 
@@ -144,7 +140,7 @@ def test_node_names():
 
 
 def test_context_is_pending():
-    ctx = Context({})
+    ctx = Context(5)
     assert not ctx.is_pending
     ctx = add_one(ctx)
     assert ctx.is_pending
@@ -157,23 +153,23 @@ def test_nested_functions():
     def pipeline(ctx):
         return double(add_twice(ctx))
 
-    assert run(pipeline, {"value": 5}).get("value") == 14
+    assert run(pipeline, 5).data == 14
 
 
 def test_early_return():
     def pipeline(ctx):
         ctx = add_one(ctx)
-        if ctx.get("value") > 10:
+        if ctx.data > 10:
             return ctx
         return double(ctx)
 
-    assert run(pipeline, {"value": 5}).get("value") == 12
-    assert run(pipeline, {"value": 15}).get("value") == 16
+    assert run(pipeline, 5).data == 12
+    assert run(pipeline, 15).data == 16
 
 
 def test_direct_node_call():
-    ctx = double(add_one({"value": 5}))
-    assert ctx.get("value") == 12
+    ctx = double(add_one(Context(5)))
+    assert ctx.data == 12
 
 
 # =============================================================================
@@ -186,43 +182,42 @@ def test_fanout_deduplication():
     call_count = {"n": 0}
 
     @node
-    async def counting_node(ctx):
+    async def counting_node(x: int) -> int:
         call_count["n"] += 1
-        ctx.set("value", ctx.get("value", 0) + 1)
-        return ctx
+        return x + 1
 
-    ctx = counting_node(Context({"value": 0}))
+    ctx = counting_node(Context(0))
     ctx2, ctx3 = add_one(ctx), double(ctx)
 
-    assert ctx2.get("value") == 2
-    assert ctx3.get("value") == 2
+    assert ctx2.data == 2
+    assert ctx3.data == 2
     assert call_count["n"] == 1
 
 
 def test_branch_data_isolation():
     """Branches get isolated copies of data."""
-    ctx1 = add_one(Context({"value": 10}))
+    ctx1 = add_one(Context(10))
     ctx2, ctx3 = double(ctx1), add_one(ctx1)
 
-    assert ctx2.get("value") == 22
-    assert ctx3.get("value") == 12
+    assert ctx2.data == 22
+    assert ctx3.data == 12
 
 
 def test_deep_fanout():
     """Fanout works with deeper graphs."""
-    ctx = Context({"value": 1})
+    ctx = Context(1)
     ctx_b = double(add_one(ctx))
     ctx_c, ctx_d = add_one(ctx_b), double(ctx_b)
 
     ctx_c.materialize()
     ctx_d.materialize()
 
-    assert ctx_c.get("value") == 5
-    assert ctx_d.get("value") == 8
+    assert ctx_c.data == 5
+    assert ctx_d.data == 8
 
 
 def test_pending_names_with_fanout():
-    ctx = double(add_one(Context({"value": 0})))
+    ctx = double(add_one(Context(0)))
     assert ctx.pending_names == ["add_one", "double"]
 
 
@@ -234,17 +229,15 @@ def test_pending_names_with_fanout():
 class AddValue(Node):
     delta: int = 1
 
-    async def run(self, ctx):
-        ctx.set("value", ctx.get("value", 0) + self.delta)
-        return ctx
+    async def run(self, x: int) -> int:
+        return x + self.delta
 
 
 class Multiply(Node):
     factor: int = 2
 
-    async def run(self, ctx):
-        ctx.set("value", ctx.get("value", 0) * self.factor)
-        return ctx
+    async def run(self, x: int) -> int:
+        return x * self.factor
 
 
 @pytest.mark.parametrize(
@@ -253,7 +246,7 @@ class Multiply(Node):
 )
 def test_class_node_basic(delta, initial, expected):
     adder = AddValue() if delta == 1 else AddValue(delta=delta)
-    assert run(lambda ctx: adder(ctx), {"value": initial}).get("value") == expected
+    assert run(lambda ctx: adder(ctx), initial).data == expected
 
 
 def test_class_node_chaining():
@@ -262,7 +255,7 @@ def test_class_node_chaining():
     def pipeline(ctx):
         return multiplier(adder(ctx))
 
-    assert run(pipeline, {"value": 5}).get("value") == 16
+    assert run(pipeline, 5).data == 16
 
 
 def test_class_node_with_function_node():
@@ -271,7 +264,7 @@ def test_class_node_with_function_node():
     def pipeline(ctx):
         return double(adder(add_one(ctx)))
 
-    assert run(pipeline, {"value": 5}).get("value") == 32
+    assert run(pipeline, 5).data == 32
 
 
 def test_class_node_reusable():
@@ -280,7 +273,7 @@ def test_class_node_reusable():
     def pipeline(ctx):
         return adder(adder(adder(ctx)))
 
-    assert run(pipeline, {"value": 0}).get("value") == 3
+    assert run(pipeline, 0).data == 3
 
 
 def test_class_node_immutability():
@@ -309,15 +302,14 @@ def test_class_node_auto_dataclass():
     class SimpleNode(Node):
         prefix: str = "hello"
 
-        async def run(self, ctx):
-            ctx.set("message", f"{self.prefix} world")
-            return ctx
+        async def run(self, x) -> str:
+            return f"{self.prefix} world"
 
     assert is_dataclass(SimpleNode)
     assert SimpleNode.__dataclass_params__.frozen
 
-    result = run(lambda ctx: SimpleNode(prefix="hi")(ctx), {})
-    assert result.get("message") == "hi world"
+    result = run(lambda ctx: SimpleNode(prefix="hi")(ctx), None)
+    assert result.data == "hi world"
 
 
 def test_class_node_custom_init_rejected():
@@ -327,8 +319,8 @@ def test_class_node_custom_init_rejected():
             def __init__(self, value: int) -> None:
                 self.value = value
 
-            async def run(self, ctx):
-                return ctx
+            async def run(self, x):
+                return x
 
 
 def test_class_node_explicit_dataclass_rejected():
@@ -340,8 +332,8 @@ def test_class_node_explicit_dataclass_rejected():
         class SimpleNode(Node):
             prefix: str = "hello"
 
-            async def run(self, ctx):
-                return ctx
+            async def run(self, x):
+                return x
 
 
 # =============================================================================
@@ -351,19 +343,19 @@ def test_class_node_explicit_dataclass_rejected():
 
 def test_multi_input_two_contexts():
     @node
-    async def combine(ctx1, ctx2):
-        return Context({"result": ctx1.get("a") + ctx2.get("b")})
+    async def combine(a: int, b: int) -> int:
+        return a + b
 
-    result = combine(Context({"a": 10}), Context({"b": 20}))
-    assert result.get("result") == 30
+    result = combine(Context(10), Context(20))
+    assert result.data == 30
 
 
 def test_multi_input_with_value():
     @node
-    async def scale(ctx, factor):
-        return Context({"result": ctx.get("value") * factor})
+    async def scale(value: int, factor: int) -> int:
+        return value * factor
 
-    assert scale(Context({"value": 5}), 3).get("result") == 15
+    assert scale(Context(5), 3).data == 15
 
 
 @pytest.mark.parametrize(
@@ -372,40 +364,37 @@ def test_multi_input_with_value():
 )
 def test_multi_input_with_kwarg(threshold, expected):
     @node
-    async def process(ctx, threshold=0.5):
-        return Context({"passed": ctx.get("value") > threshold})
+    async def process(value: float, threshold: float = 0.5) -> bool:
+        return value > threshold
 
-    result = process(Context({"value": 0.7}), threshold=threshold)
-    assert result.get("passed") is expected
+    result = process(Context(0.7), threshold=threshold)
+    assert result.data is expected
 
 
 def test_multi_input_shared_ancestor():
     call_count = {"n": 0}
 
     @node
-    async def counting_node(ctx):
+    async def counting_node(x: int) -> int:
         call_count["n"] += 1
-        ctx.set("value", ctx.get("value", 0) + 1)
-        return ctx
+        return x + 1
 
     @node
-    async def branch_a(ctx):
-        ctx.set("a", ctx.get("value") * 2)
-        return ctx
+    async def branch_a(x: int) -> int:
+        return x * 2
 
     @node
-    async def branch_b(ctx):
-        ctx.set("b", ctx.get("value") * 3)
-        return ctx
+    async def branch_b(x: int) -> int:
+        return x * 3
 
     @node
-    async def merge(ctx1, ctx2):
-        return Context({"sum": ctx1.get("a") + ctx2.get("b")})
+    async def merge(a: int, b: int) -> int:
+        return a + b
 
-    ctx = counting_node(Context({"value": 0}))
+    ctx = counting_node(Context(0))
     result = merge(branch_a(ctx), branch_b(ctx))
 
-    assert result.get("sum") == 5
+    assert result.data == 5
     assert call_count["n"] == 1
 
 
@@ -413,23 +402,87 @@ def test_multi_input_class_based_node():
     class Merger(Node):
         prefix: str = ""
 
-        async def run(self, ctx1, ctx2):
-            return Context(
-                {"result": f"{self.prefix}{ctx1.get('a', '')}{ctx2.get('b', '')}"}
-            )
+        async def run(self, a: str, b: str) -> str:
+            return f"{self.prefix}{a}{b}"
 
-    result = Merger(prefix="merged: ")(Context({"a": "hello"}), Context({"b": "world"}))
-    assert result.get("result") == "merged: helloworld"
+    result = Merger(prefix="merged: ")(Context("hello"), Context("world"))
+    assert result.data == "merged: helloworld"
 
 
 def test_multi_input_chained():
     @node
-    async def add(ctx1, ctx2):
-        return Context({"value": ctx1.get("value") + ctx2.get("value")})
+    async def add(a: int, b: int) -> int:
+        return a + b
 
     @node
-    async def double_val(ctx):
-        return Context({"value": ctx.get("value") * 2})
+    async def double_val(x: int) -> int:
+        return x * 2
 
-    result = double_val(add(Context({"value": 3}), Context({"value": 7})))
-    assert result.get("value") == 20
+    result = double_val(add(Context(3), Context(7)))
+    assert result.data == 20
+
+
+# =============================================================================
+# Structured data tests (user manages structure)
+# =============================================================================
+
+
+def test_dict_as_data():
+    """User can use dict as the data type."""
+
+    @node
+    async def add_field(data: dict) -> dict:
+        return {**data, "added": True}
+
+    ctx = Context({"existing": "value"})
+    result = add_field(ctx)
+    assert result.data == {"existing": "value", "added": True}
+
+
+def test_dataclass_as_data():
+    """User can use dataclass as the data type."""
+
+    @dataclass
+    class State:
+        value: int
+        processed: bool = False
+
+    @node
+    async def process_state(s: State) -> State:
+        return State(value=s.value * 2, processed=True)
+
+    ctx = Context(State(value=5))
+    result = process_state(ctx)
+    assert result.data == State(value=10, processed=True)
+
+
+def test_pipeline_with_structured_data():
+    """Full pipeline with structured data."""
+
+    @dataclass
+    class PipelineState:
+        query: str
+        docs: list = None
+        answer: str = None
+
+        def __post_init__(self):
+            if self.docs is None:
+                self.docs = []
+
+    @node
+    async def retrieve(s: PipelineState) -> PipelineState:
+        return PipelineState(query=s.query, docs=["doc1", "doc2"])
+
+    @node
+    async def generate(s: PipelineState) -> PipelineState:
+        return PipelineState(query=s.query, docs=s.docs, answer=f"Answer for {s.query}")
+
+    def pipeline(ctx):
+        ctx = retrieve(ctx)
+        ctx = generate(ctx)
+        return ctx
+
+    result = run(pipeline, PipelineState(query="What is X?"))
+    assert result.data.query == "What is X?"
+    assert result.data.docs == ["doc1", "doc2"]
+    assert result.data.answer == "Answer for What is X?"

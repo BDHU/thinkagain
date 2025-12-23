@@ -5,23 +5,20 @@ import pytest
 from thinkagain import node
 
 
-# Shared node definitions
+# Shared node definitions - now pure functions
 @node
-async def add_one(ctx):
-    ctx.set("value", ctx.get("value", 0) + 1)
-    return ctx
-
-
-@node
-async def double(ctx):
-    ctx.set("value", ctx.get("value") * 2)
-    return ctx
+async def add_one(x: int) -> int:
+    return x + 1
 
 
 @node
-async def append_x(ctx):
-    ctx.set("logs", ctx.get("logs", []) + ["x"])
-    return ctx
+async def double(x: int) -> int:
+    return x * 2
+
+
+@node
+async def append_x(logs: list) -> list:
+    return logs + ["x"]
 
 
 @pytest.fixture

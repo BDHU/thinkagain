@@ -9,24 +9,26 @@
 
 A minimal, debuggable framework for async-first AI pipelines. Write small async
 functions, wrap them in `Node` objects, and chain them through a lazy `Context`
-that only runs when you need results. When pipelines need stateful helpers
-(LLMs, retrievers, tools) you can deploy them as replica pools that run locally
-or behind a gRPC server.
+that only runs when you need results. Contexts track dependencies via
+back-pointers, enabling DAG execution with automatic deduplication for fanout
+patterns. When pipelines need stateful helpers (LLMs, retrievers, tools) you
+can deploy them as replica pools that run locally or behind a gRPC server.
 
 ## Why ThinkAgain?
 
 - **Declarative** – Build pipelines by chaining `Node` objects in plain Python
 - **Lazy** – `Context` collects pending nodes and executes them on demand
-- **Observable** – `ctx.metadata` records timing for each node
+- **DAG Execution** – Back-pointer tracking enables fanout with automatic deduplication
+- **Multi-Input Nodes** – Nodes can accept multiple context arguments
 - **Minimal** – Small surface area, no DSLs or schedulers
 - **Async-first** – Async nodes with sync and async entrypoints (`run` / `arun`)
 - **Replica-aware** – Optional distributed runtime for stateful service pools
 
 ## Core Concepts
 
-- **`Context`** – Dict-like state that records pending nodes and metadata.
-- **`Node` / `@node`** – Wrap an `async def` so it can be lazily chained.
-- **`run` / `arun`** – Helpers that normalize inputs and materialize pending nodes.
+- **`Context`** – Wrapper around user data that tracks parent contexts via back-pointers.
+- **`Node` / `@node`** – Wrap an `async def` so it can be lazily chained. Nodes can accept multiple inputs.
+- **`run` / `arun`** – Helpers that normalize inputs and materialize pending nodes via DAG traversal.
 - **`replica`** – Decorator that turns a class into a managed pool of workers.
 - **`distributed.runtime`** – Context manager that deploys replicas on local or gRPC backends.
 
@@ -41,32 +43,37 @@ uv add thinkagain
 ## Quick Start
 
 ```python
-from thinkagain import Context, node, run
+from dataclasses import dataclass
+from thinkagain import node, run
+
+@dataclass
+class State:
+    query: str
+    documents: list[str] | None = None
+    answer: str = ""
 
 @node
-async def retrieve(ctx: Context) -> Context:
-    ctx.set("documents", ["doc1", "doc2"])
-    return ctx
+async def retrieve(s: State) -> State:
+    return State(query=s.query, documents=["doc1", "doc2"])
 
 @node
-async def generate(ctx: Context) -> Context:
-    docs = ctx.get("documents", [])
-    ctx.set("answer", f"Answer based on {docs}")
-    return ctx
+async def generate(s: State) -> State:
+    docs = s.documents or []
+    return State(query=s.query, documents=docs, answer=f"Answer based on {docs}")
 
-def pipeline(ctx: Context) -> Context:
+def pipeline(ctx):
     ctx = retrieve(ctx)
     ctx = generate(ctx)
     return ctx
 
-result = run(pipeline, {"query": "What is ML?"})
-print(result.get("answer"))
-print(result.metadata.node_latencies)
+result = run(pipeline, State(query="What is ML?"))
+print(result.data.answer)
 ```
 
-`Context` materializes pending nodes whenever you call `run`, `arun`, `ctx.get`,
-`await ctx`, or otherwise read/write actual values, so normal Python control
-flow (`if`, `while`, recursion) just works.
+Nodes receive and return plain Python values (dataclasses, dicts, etc.) which
+are automatically wrapped in `Context`. The context materializes pending nodes
+whenever you access `ctx.data`, call `run`, `arun`, or `await ctx`, so normal
+Python control flow (`if`, `while`, recursion) just works.
 
 ## Distributed Replica Pools
 
@@ -74,7 +81,13 @@ Need a stateful helper (LLM, vector store, tool adapter)? Decorate the class
 with `@replica` and let ThinkAgain manage the pool.
 
 ```python
-from thinkagain import node, replica, distributed
+from dataclasses import dataclass
+from thinkagain import node, replica, distributed, run
+
+@dataclass
+class ChatState:
+    prompt: str
+    reply: str = ""
 
 @replica(n=2)
 class FakeLLM:
@@ -85,17 +98,16 @@ class FakeLLM:
         return f"{self.prefix}: {prompt}"
 
 @node
-async def call_llm(ctx):
+async def call_llm(s: ChatState) -> ChatState:
     llm = FakeLLM.get()
-    ctx.set("reply", llm.invoke(ctx.get("prompt")))
-    return ctx
+    return ChatState(prompt=s.prompt, reply=llm.invoke(s.prompt))
 
 def pipeline(ctx):
     return call_llm(ctx)
 
 with distributed.runtime():
-    result = run(pipeline, {"prompt": "Hello"})
-    print(result.get("reply"))
+    result = run(pipeline, ChatState(prompt="Hello"))
+    print(result.data.reply)
 ```
 
 For remote deployments run the bundled gRPC server next to your replica classes

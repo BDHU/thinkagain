@@ -5,14 +5,14 @@ lazy `Context`, a thin `Node` wrapper, and a lightweight distributed runtime
 for stateful services. This document explains how those pieces fit together.
 
 ```
-┌────────────┐       ┌──────────┐       ┌────────────────────────┐
-│  Node fn   │  @node│  Node    │  >>   │ Context (pending state)│
-└────────────┘       └──────────┘       └────────────────────────┘
+┌────────────┐       ┌──────────┐       ┌─────────────────────────┐
+│  Node fn   │  @node│  Node    │  >>   │ Context (back-pointers) │
+└────────────┘       └──────────┘       └─────────────────────────┘
         │                          │
         │ run/arun                 │
         ▼                          ▼
 ┌────────────────────────────────────────────────────────────────┐
-│ Lazy materialization + ExecutionMetadata + error handling      │
+│ DAG traversal + deduplication + error handling                  │
 └────────────────────────────────────────────────────────────────┘
         │                          │
         │ needs stateful worker    │
@@ -27,30 +27,38 @@ for stateful services. This document explains how those pieces fit together.
 
 ### Context
 
-`thinkagain.core.context.Context` is a dict-like state container with three
-slots: `_data` (mutable state), `_pending` (nodes queued for execution), and
-`_metadata` (`ExecutionMetadata`). Methods such as `get`, `set`, `items`,
-iteration, and `len` materialize pending nodes before touching `_data`, while
-`peek` lets you inspect values without running anything. Metadata holds
-timestamps, per-node latency totals, and execution counts; it is copied once
-when a run starts so chaining stays cheap.
+`thinkagain.core.context.Context` wraps user data and tracks execution
+dependencies via back-pointers. Key slots:
+
+- `_data` – The user's state (dataclass, dict, or any Python value).
+- `_parents` – Tuple of parent `Context` objects this context depends on.
+- `_call_args` / `_call_kwargs` – Arguments passed when the node was called.
+- `_node` – The node that will produce this context's value.
+- `_executed` – Flag indicating whether the node has run.
+
+This design enables DAG execution: when multiple branches share a common
+ancestor, that ancestor executes only once. Access `ctx.data` to get the
+underlying value (triggering materialization if pending).
 
 ### Node and `@node`
 
-`thinkagain.core.node.Node` wraps an `async def (ctx) -> ctx`. On first
-execution it validates the signature, then simply appends itself to the
-context's pending list when called. `execute()` awaits the user function and
-returns the resulting context. The `@node` decorator is only syntactic sugar.
+`thinkagain.core.node.Node` wraps an async function that accepts one or more
+arguments and returns a value. When called, it creates a new `Context` with
+back-pointers to all input contexts rather than executing immediately.
+Multi-input nodes are supported: each `Context` argument becomes a tracked
+parent. The `@node` decorator is syntactic sugar for `FunctionNode`.
 
 ### Materialization
 
 Nothing runs until you call `run`, `arun`, `Context.materialize`,
-`Context.amaterialize`, or a method that needs actual data (`get`, iteration,
-`len`, etc.). During `_run_pending_async` the metadata copy is made once, each
-node executes sequentially, and errors are wrapped in `NodeExecutionError`
-containing the failing node plus the ones that finished beforehand. Returning a
-context that still has pending nodes raises a `RuntimeError`, which nudges node
-authors to `await ctx` before returning.
+`Context.amaterialize`, or access `ctx.data`. The `DAGExecutor` walks the
+back-pointer graph via `traverse_pending()`, building a topological execution
+order. Each pending context executes once; shared ancestors are deduplicated
+automatically. Errors are wrapped in `NodeExecutionError` containing the
+failing node name.
+
+**Note:** Concurrent materialization of contexts that share ancestors (e.g.,
+via `asyncio.gather()`) is not supported. Materialize sequentially.
 
 ## 2. Distributed Replica Runtime
 
@@ -83,13 +91,13 @@ Two backends implement the shared protocol:
 ## 3. Putting It Together
 
 1. **Define nodes** with `@node` and write plain Python pipelines that receive
-   a `Context`. Pipelines can use any control flow (`if`, `while`, recursion)
-   because nodes only run when the context is materialized.
+   a `Context`. Nodes can accept multiple inputs for fanout patterns. Pipelines
+   can use any control flow (`if`, `while`, recursion) because nodes only run
+   when the context is materialized.
 2. **Optionally declare replicas** for heavy, stateful resources and wrap the
    code that runs nodes inside `distributed.runtime(...)`.
-3. **Execute** via `run`/`arun` and inspect `ctx.metadata` (latencies) or
-   `ctx.to_dict()` for the final state.
+3. **Execute** via `run`/`arun` and access `result.data` for the final state.
 
-Because there is only one execution path and one state container, the runtime
-stays predictable and easy to debug while still supporting scaling out stateful
-services when needed.
+Because contexts track dependencies via back-pointers and execute as a DAG, the
+runtime stays predictable and easy to debug while enabling fanout patterns
+where shared ancestors run only once.
