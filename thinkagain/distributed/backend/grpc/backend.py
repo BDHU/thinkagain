@@ -7,25 +7,19 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from thinkagain.distributed.replica import ReplicaSpec
 
+import functools
+
 from ..serialization import PickleSerializer, Serializer
 
-# Lazy imports for grpc to avoid dependency when not used
-grpc = None
-replica_pb2 = None
-replica_pb2_grpc = None
 
-
-def _ensure_grpc():
+@functools.cache
+def _get_grpc():
     """Lazily import grpc and generated stubs."""
-    global grpc, replica_pb2, replica_pb2_grpc
-    if grpc is None:
-        import grpc as _grpc
-        from .proto import replica_pb2 as _replica_pb2
-        from .proto import replica_pb2_grpc as _replica_pb2_grpc
+    import grpc
 
-        grpc = _grpc
-        replica_pb2 = _replica_pb2
-        replica_pb2_grpc = _replica_pb2_grpc
+    from .proto import replica_pb2, replica_pb2_grpc
+
+    return grpc, replica_pb2, replica_pb2_grpc
 
 
 class GrpcReplicaProxy:
@@ -41,7 +35,7 @@ class GrpcReplicaProxy:
             raise AttributeError(name)
 
         def call(*args, **kwargs):
-            _ensure_grpc()
+            _, replica_pb2, _ = _get_grpc()
             request = replica_pb2.CallRequest(
                 replica_name=self._replica_name,
                 method=name,
@@ -80,7 +74,7 @@ class GrpcBackend:
     def _ensure_connected(self):
         """Lazily connect to the gRPC server."""
         if self._channel is None:
-            _ensure_grpc()
+            grpc, _, replica_pb2_grpc = _get_grpc()
             self._channel = grpc.insecure_channel(self._address)
             self._stub = replica_pb2_grpc.ReplicaServiceStub(self._channel)
 
@@ -90,6 +84,7 @@ class GrpcBackend:
         if name in self._deployed:
             return
         self._ensure_connected()
+        _, replica_pb2, _ = _get_grpc()
         request = replica_pb2.DeployRequest(
             replica_name=name,
             n=spec.n,
@@ -107,6 +102,7 @@ class GrpcBackend:
         if name not in self._deployed:
             return
         self._ensure_connected()
+        _, replica_pb2, _ = _get_grpc()
         request = replica_pb2.ShutdownRequest(replica_name=name)
         response = self._stub.Shutdown(request)
         if not response.success:
