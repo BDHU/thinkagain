@@ -51,6 +51,7 @@ class NodeBase(ABC):
 
         Context arguments are tracked as parents in the computation graph.
         Other arguments are passed through to the node at execution time.
+        At least one argument must be a Context.
         """
         from .context import Context
 
@@ -70,10 +71,12 @@ class NodeBase(ABC):
         for key, value in kwargs.items():
             call_kwargs[key] = record_parent(value)
 
-        # Ensure at least one parent context
+        # Require at least one parent context for explicit graph roots
         if not parents:
-            parents.append(Context())
-            call_args.insert(0, _ParentRef(0))
+            raise TypeError(
+                "Node calls require at least one Context input. "
+                "Wrap values in Context(...) or use run(...) for pipelines."
+            )
 
         return parents[0]._chain(self, tuple(parents), tuple(call_args), call_kwargs)
 

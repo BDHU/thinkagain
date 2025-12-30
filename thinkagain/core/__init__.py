@@ -3,7 +3,7 @@
 from .context import Context
 from .errors import NodeDataclassError, NodeExecutionError
 from .node import FunctionNode, Node, NodeBase, node
-from .runner import run, arun
+from .runner import arun, chain, run
 
 __all__ = [
     "Context",
@@ -15,4 +15,5 @@ __all__ = [
     "node",
     "run",
     "arun",
+    "chain",
 ]

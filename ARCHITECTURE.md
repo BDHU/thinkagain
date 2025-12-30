@@ -50,9 +50,9 @@ parent. The `@node` decorator is syntactic sugar for `FunctionNode`.
 
 ### Materialization
 
-Nothing runs until you call `run`, `arun`, `Context.materialize`,
-`Context.amaterialize`, or access `ctx.data`. The `DAGExecutor` walks the
-back-pointer graph via `traverse_pending()`, building a topological execution
+Nothing runs until you call `run`, `arun`, access `ctx.data`, or `await ctx`.
+The `DAGExecutor` walks the back-pointer graph via `traverse_pending()`,
+building a topological execution
 order. Each pending context executes once; shared ancestors are deduplicated
 automatically. Errors are wrapped in `NodeExecutionError` containing the
 failing node name.
@@ -68,21 +68,24 @@ or tool adapters. ThinkAgain bundles a small replica runtime for those cases.
 ### ReplicaSpec and `@replica`
 
 Decorating a class with `@thinkagain.distributed.replica` registers a
-`ReplicaSpec` (class reference, pool size, cached constructor arguments). The
-decorator adds `deploy`, `shutdown`, and `get` classmethods. Specs live in a
-registry so the runtime can deploy or tear everything down at once.
+`ReplicaSpec` (class reference, pool size, cached constructor arguments) with
+the default `ReplicaManager` (or an explicit manager) and returns a
+`ReplicaHandle`. The handle exposes `deploy`, `shutdown`, and `get` methods, and
+the underlying class is available via `handle.cls`. Specs live in the manager
+so the runtime can deploy or tear everything down at once.
 
 ### Runtime Configuration
 
-`thinkagain.distributed.runtime` stores the backend choice (`local` or `grpc`),
-the server address, and options. `get_backend()` lazily instantiates that backend,
-`reset_backend()` clears it, and the `runtime(...)` context manager wraps
-`init → deploy → shutdown` around a code block. The pipeline runtime never needs
-to know where replicas live.
+`thinkagain.distributed.runtime` stores the backend choice (by name; defaults
+include `local` and `grpc`), the server address, and options. `get_backend()`
+lazily instantiates that backend, `reset_backend()` clears it, and the
+`runtime(...)` context manager wraps `init → deploy → shutdown` around a code
+block. The pipeline runtime never needs to know where replicas live. Custom
+backends can be registered via `register_backend`.
 
 ### Backends
 
-Two backends implement the shared protocol:
+Two backends implement the shared protocol by default:
 
 - **LocalBackend** – Keeps replicas in-process and rotates through them.
 - **GrpcBackend** – Connects to the bundled gRPC server, requests deploy/shutdown,

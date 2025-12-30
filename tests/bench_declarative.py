@@ -1,16 +1,13 @@
 """Benchmarks for declarative API."""
 
-from thinkagain import run, node
+from thinkagain import chain, run, node
 from conftest import add_one, double, append_x
 
 
 def test_bench_linear_pipeline(benchmark):
     """Benchmark a simple linear pipeline."""
 
-    def pipeline(ctx):
-        ctx = add_one(ctx)
-        ctx = double(ctx)
-        return ctx
+    pipeline = chain(add_one, double)
 
     result = benchmark(lambda: run(pipeline, 5))
     assert result.data == 12

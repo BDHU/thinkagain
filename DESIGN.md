@@ -51,9 +51,9 @@ def pipeline(ctx):
 
 ### Materialization Triggers
 
-Pending nodes run when you call `run`, `arun`, `Context.materialize`,
-`Context.amaterialize`, access `ctx.data`, or `await ctx`. The `DAGExecutor`
-walks back-pointers to build topological order, deduplicating shared ancestors.
+Pending nodes run when you call `run`, `arun`, access `ctx.data`, or `await ctx`.
+The `DAGExecutor` walks back-pointers to build topological order, deduplicating
+shared ancestors.
 
 ### Control Flow
 
@@ -71,8 +71,8 @@ Inside a node you can call other nodes and `await ctx` before returning:
 async def orchestrate(ctx):
     ctx = stage_one(ctx)
     ctx = stage_two(ctx)
-    ctx = await ctx  # make sure stage_one/two ran
-    return ctx
+    value = await ctx  # make sure stage_one/two ran
+    return value
 ```
 
 ### Fanout and Multi-Input Nodes
@@ -103,16 +103,17 @@ ancestors (e.g., via `asyncio.gather()`) is not supported. Materialize sequentia
 
 ### Replica Decorator
 
-`@replica(n=1)` turns a class into a pool of workers: it registers the spec,
-adds `deploy`/`shutdown`/`get` helpers, and defers instantiation until you call
-`get()` or run `distributed.deploy()`. Nodes can call replicas anywhere as long
-as a backend is configured.
+`@replica(n=1)` turns a class into a pool of workers: it registers the spec with
+the default `ReplicaManager` (or an explicit manager) and returns a
+`ReplicaHandle` that exposes `deploy`/`shutdown`/`get`. Instantiation is
+deferred until you call `get()` or run `manager.deploy_all()`. Nodes can call
+replicas anywhere as long as a backend is configured.
 
 ### Runtime Lifecycle
 
 `distributed.runtime(...):` wraps `init → deploy → shutdown` around a block,
 making sure every registered replica exists before your pipeline runs. Outside
-that block, calling `ReplicaClass.get()` triggers one-off deployment, which is
+that block, calling `ReplicaHandle.get()` triggers one-off deployment, which is
 handy for quick tests.
 
 ### Backends and Remote Execution
