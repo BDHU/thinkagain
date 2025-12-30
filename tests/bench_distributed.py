@@ -1,19 +1,7 @@
 """Benchmarks for distributed execution."""
 
-import pytest
-
-from thinkagain import node, replica, run
-from thinkagain.distributed import runtime, clear_replica_registry, reset_backend
-
-
-@pytest.fixture(autouse=True)
-def clean_registry():
-    """Ensure each test starts with an empty registry."""
-    clear_replica_registry()
-    reset_backend()
-    yield
-    clear_replica_registry()
-    reset_backend()
+from thinkagain import chain, node, replica, run
+from thinkagain.distributed import runtime
 
 
 def test_bench_replica_deployment(benchmark):
@@ -91,11 +79,7 @@ def test_bench_pipeline_with_replica(benchmark):
     async def double_it(value: int) -> int:
         return value * 2
 
-    def pipeline(ctx):
-        ctx = initial_value(ctx)
-        ctx = apply_processor(ctx)
-        ctx = double_it(ctx)
-        return ctx
+    pipeline = chain(initial_value, apply_processor, double_it)
 
     Processor.deploy(delta=5)
 
@@ -118,9 +102,7 @@ def test_bench_runtime_context_manager(benchmark):
     async def call_service(_: int) -> bool:
         return Service.get().ping()
 
-    def pipeline(ctx):
-        ctx = call_service(ctx)
-        return ctx
+    pipeline = chain(call_service)
 
     def run_with_runtime():
         with runtime():
@@ -209,11 +191,7 @@ def test_bench_multiple_replica_services(benchmark):
     async def multiply_step(value: int) -> int:
         return Multiplier.get().multiply(value)
 
-    def pipeline(ctx):
-        ctx = start_value(ctx)
-        ctx = add_step(ctx)
-        ctx = multiply_step(ctx)
-        return ctx
+    pipeline = chain(start_value, add_step, multiply_step)
 
     Adder.deploy(delta=3)
     Multiplier.deploy(factor=4)

@@ -5,16 +5,21 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
-from .replica import (
-    ReplicaSpec,
-    clear_replica_registry,
-    deploy,
-    get_all_replicas,
-    get_replica_spec,
+from .manager import (
+    ReplicaHandle,
+    ReplicaManager,
+    get_default_manager,
     replica,
-    shutdown,
+    set_default_manager,
 )
-from .runtime import reset_backend, get_runtime_config, init
+from .replica import ReplicaSpec
+from .runtime import (
+    get_runtime_config,
+    init,
+    list_backends,
+    register_backend,
+    reset_backend,
+)
 
 if TYPE_CHECKING:
     from .backend.serialization import Serializer
@@ -25,6 +30,7 @@ def runtime(
     backend: str = "local",
     address: str | None = None,
     *,
+    manager: ReplicaManager | None = None,
     serializer: "Serializer" | None = None,
     **options,
 ):
@@ -37,27 +43,32 @@ def runtime(
             result = run(pipeline, data)
 
         # Or with explicit backend:
-        with distributed.runtime(backend="grpc", address="localhost:50051"):
+        with distributed.runtime(
+            backend="grpc",
+            address="localhost:50051",
+        ):
             result = run(pipeline, data)
     """
+    active_manager = manager or get_default_manager()
     init(backend=backend, address=address, serializer=serializer, **options)
-    deploy()
+    active_manager.deploy_all()
     try:
         yield
     finally:
-        shutdown()
+        active_manager.shutdown_all()
 
 
 __all__ = [
+    "ReplicaManager",
+    "ReplicaHandle",
     "ReplicaSpec",
     "replica",
-    "get_replica_spec",
-    "get_all_replicas",
-    "clear_replica_registry",
-    "deploy",
-    "shutdown",
+    "get_default_manager",
+    "set_default_manager",
     "init",
     "get_runtime_config",
+    "list_backends",
+    "register_backend",
     "reset_backend",
     "runtime",
 ]

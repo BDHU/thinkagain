@@ -29,8 +29,8 @@ can deploy them as replica pools that run locally or behind a gRPC server.
 - **`Context`** – Wrapper around user data that tracks parent contexts via back-pointers.
 - **`Node` / `@node`** – Wrap an `async def` so it can be lazily chained. Nodes can accept multiple inputs.
 - **`run` / `arun`** – Helpers that normalize inputs and materialize pending nodes via DAG traversal.
-- **`replica`** – Decorator that turns a class into a managed pool of workers.
-- **`distributed.runtime`** – Context manager that deploys replicas on local or gRPC backends.
+- **`replica`** – Decorator that registers a class as a managed pool of workers.
+- **`distributed.runtime`** – Context manager that deploys registered replicas.
 
 ## Installation
 
@@ -78,7 +78,9 @@ Python control flow (`if`, `while`, recursion) just works.
 ## Distributed Replica Pools
 
 Need a stateful helper (LLM, vector store, tool adapter)? Decorate the class
-with `@replica` and let ThinkAgain manage the pool.
+with `@replica` and let ThinkAgain manage the pool. The decorator returns a
+`ReplicaHandle` with `deploy`/`shutdown`/`get` methods; the original class is
+available as `handle.cls` if needed.
 
 ```python
 from dataclasses import dataclass
@@ -109,6 +111,9 @@ with distributed.runtime():
     result = run(pipeline, ChatState(prompt="Hello"))
     print(result.data.reply)
 ```
+
+Need isolation between different replica registries? Create a `ReplicaManager`
+and pass it to `@replica(manager=...)` and `distributed.runtime(manager=...)`.
 
 For remote deployments run the bundled gRPC server next to your replica classes
 and call `distributed.runtime(backend="grpc", address="host:port")`.

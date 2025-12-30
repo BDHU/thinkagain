@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, ContextManager
 
 from .errors import NodeExecutionError
 from .graph import traverse_pending
@@ -30,9 +30,14 @@ class DAGExecutor:
         Instead, materialize them sequentially.
     """
 
-    def __init__(self, ctx: "Context"):
+    def __init__(
+        self,
+        ctx: "Context",
+        context_factory: Callable[[str], ContextManager[None]] | None = None,
+    ):
         self._target = ctx
         self._results: dict[int, "Context"] = {}  # id(ctx) -> executed context
+        self._context_factory = context_factory
 
     def _resolve_parent(self, ctx: "Context", value):
         if isinstance(value, _ParentRef):
@@ -72,7 +77,12 @@ class DAGExecutor:
             }
 
             try:
-                result_ctx = await ctx._node.execute(*exec_args, **exec_kwargs)
+                if self._context_factory is not None:
+                    with self._context_factory(ctx._node.name):
+                        result_ctx = await ctx._node.execute(*exec_args, **exec_kwargs)
+                else:
+                    result_ctx = await ctx._node.execute(*exec_args, **exec_kwargs)
+
                 executed_names.append(ctx._node.name)
 
                 # Store result data and mark as executed
@@ -100,5 +110,5 @@ class DAGExecutor:
         else:
             raise RuntimeError(
                 "Cannot materialize synchronously from async context. "
-                "Use 'await ctx' or 'await ctx.adata()' instead."
+                "Use 'await ctx' instead."
             )

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable, ContextManager
 
 if TYPE_CHECKING:
     from .node import NodeBase
@@ -35,9 +35,15 @@ class Context:
         "_node",
         "_executed",
         "_executor",
+        "_context_factory",
     )
 
-    def __init__(self, data: Any = None):
+    def __init__(
+        self,
+        data: Any = None,
+        *,
+        context_factory: Callable[[str], ContextManager[None]] | None = None,
+    ):
         self._data = data
         self._parents: tuple[Context, ...] = ()
         self._call_args: tuple = ()
@@ -45,6 +51,7 @@ class Context:
         self._node: NodeBase | None = None
         self._executed = True  # Root contexts are already "executed"
         self._executor: DAGExecutor | None = None
+        self._context_factory = context_factory
 
     def _chain(
         self,
@@ -62,11 +69,12 @@ class Context:
         ctx._node = node
         ctx._executed = False
         ctx._executor = None
+        ctx._context_factory = self._context_factory
         return ctx
 
     def _get_executor(self) -> DAGExecutor:
         if self._executor is None:
-            self._executor = DAGExecutor(self)
+            self._executor = DAGExecutor(self, context_factory=self._context_factory)
         return self._executor
 
     async def _run_pending_async(self) -> None:
@@ -85,24 +93,14 @@ class Context:
         self._run_pending_sync()
         return self._data
 
-    async def adata(self) -> Any:
+    async def _data_async(self) -> Any:
         """Async get - materializes pending nodes first."""
         await self._run_pending_async()
         return self._data
 
-    def materialize(self) -> "Context":
-        """Synchronously execute all pending nodes and return this context."""
-        self._run_pending_sync()
-        return self
-
-    async def amaterialize(self) -> "Context":
-        """Asynchronously execute all pending nodes and return this context."""
-        await self._run_pending_async()
-        return self
-
     def __await__(self):
-        """Awaiting a Context is equivalent to calling amaterialize()."""
-        return self.amaterialize().__await__()
+        """Awaiting a Context returns the materialized data."""
+        return self._data_async().__await__()
 
     @property
     def is_pending(self) -> bool:
@@ -127,6 +125,5 @@ class Context:
         return [ctx._node.name for ctx in self._pending_nodes]
 
     def __repr__(self) -> str:
-        if self._executed:
-            return f"Context({self._data!r})"
-        return f"Context(<pending: {self.pending_names}>)"
+        self._run_pending_sync()
+        return f"Context({self._data!r})"

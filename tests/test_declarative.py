@@ -172,6 +172,15 @@ def test_direct_node_call():
     assert ctx.data == 12
 
 
+def test_node_requires_context_input():
+    @node
+    async def add(x: int) -> int:
+        return x + 1
+
+    with pytest.raises(TypeError):
+        add(1)
+
+
 # =============================================================================
 # Fanout and DAG tests
 # =============================================================================
@@ -208,9 +217,6 @@ def test_deep_fanout():
     ctx = Context(1)
     ctx_b = double(add_one(ctx))
     ctx_c, ctx_d = add_one(ctx_b), double(ctx_b)
-
-    ctx_c.materialize()
-    ctx_d.materialize()
 
     assert ctx_c.data == 5
     assert ctx_d.data == 8
