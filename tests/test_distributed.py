@@ -2,18 +2,20 @@
 
 import pytest
 
-from thinkagain import Context, chain, node, replica, run
+from thinkagain import Context, arun, chain, node, replica
 from thinkagain.distributed import get_default_manager, runtime
 from thinkagain.distributed.profiling import (
     disable_profiling,
     enable_profiling,
     get_profiler,
     is_profiling_enabled,
-    profiling_enabled,
+    node_context,
+    profile,
 )
 
 
-def test_replica_registration_and_deploy():
+@pytest.mark.asyncio
+async def test_replica_registration_and_deploy():
     @replica(n=2)
     class Service:
         def __init__(self, value: int = 0):
@@ -23,19 +25,18 @@ def test_replica_registration_and_deploy():
     assert spec.cls is Service.cls
     assert spec.n == 2
 
-    Service.deploy(value=5)
+    await Service.deploy(value=5)
     # Get instances via backend
     inst1 = Service.get()
     inst2 = Service.get()
     assert inst1.value == 5
     assert inst2.value == 5
 
-    Service.shutdown()
-    # After shutdown, get() auto-deploys with stored args
-    assert Service.get().value == 5
+    await Service.shutdown()
 
 
-def test_replica_round_robin():
+@pytest.mark.asyncio
+async def test_replica_round_robin():
     @replica(n=2)
     class Multiplier:
         def __init__(self, factor: int = 1):
@@ -47,14 +48,15 @@ def test_replica_round_robin():
             return x * self.factor
 
     # Deploy two instances with different factors
-    Multiplier.deploy(factor=2)
+    await Multiplier.deploy(factor=2)
 
     # Round-robin should alternate between instances
     results = [Multiplier.get().apply(10) for _ in range(4)]
     assert results == [20, 20, 20, 20]  # Same factor, all 20
 
 
-def test_replica_round_robin_distribution():
+@pytest.mark.asyncio
+async def test_replica_round_robin_distribution():
     """Test that round-robin actually distributes calls across different instances."""
     call_log = []
 
@@ -66,7 +68,7 @@ def test_replica_round_robin_distribution():
         def log(self):
             call_log.append(id(self))
 
-    Logger.deploy()
+    await Logger.deploy()
 
     for _ in range(4):
         Logger.get().log()
@@ -79,7 +81,8 @@ def test_replica_round_robin_distribution():
     assert call_log[0] != call_log[1]
 
 
-def test_pipeline_runs_with_replica():
+@pytest.mark.asyncio
+async def test_pipeline_runs_with_replica():
     @replica
     class Adder:
         def __init__(self, delta: int = 1):
@@ -98,16 +101,15 @@ def test_pipeline_runs_with_replica():
 
     pipeline = chain(increment, apply_replica)
 
-    Adder.deploy(delta=5)
-    result = run(pipeline, 3)
+    await Adder.deploy(delta=5)
+    result = await arun(pipeline, 3)
     assert result.data == 9
 
-    Adder.shutdown()
-    # After shutdown, get() lazily re-deploys with stored args (delta=5)
-    assert Adder.get().apply(0) == 5
+    await Adder.shutdown()
 
 
-def test_runtime_context_manager():
+@pytest.mark.asyncio
+async def test_runtime_context_manager():
     @replica(n=2)
     class Service:
         def ping(self) -> bool:
@@ -120,11 +122,13 @@ def test_runtime_context_manager():
     pipeline = chain(call_service)
 
     with runtime():
-        result = run(pipeline, None)
+        await Service.deploy()
+        result = await arun(pipeline, None)
         assert result.data is True
 
 
-def test_local_init_customizes_initialization():
+@pytest.mark.asyncio
+async def test_local_init_customizes_initialization():
     """Test that __local_init__ is called to customize instance creation."""
     init_calls = []
 
@@ -144,7 +148,7 @@ def test_local_init_customizes_initialization():
         def get_value(self) -> int:
             return self.value
 
-    CustomInit.deploy(base_value=10)
+    await CustomInit.deploy(base_value=10)
 
     # __local_init__ should have been called twice (n=2)
     assert len(init_calls) == 2
@@ -157,7 +161,8 @@ def test_local_init_customizes_initialization():
     assert inst2.value == 20
 
 
-def test_local_init_fallback_to_regular_init():
+@pytest.mark.asyncio
+async def test_local_init_fallback_to_regular_init():
     """Test that classes without __local_init__ use regular __init__."""
 
     @replica(n=2)
@@ -165,7 +170,7 @@ def test_local_init_fallback_to_regular_init():
         def __init__(self, value: int):
             self.value = value
 
-    RegularInit.deploy(value=5)
+    await RegularInit.deploy(value=5)
 
     inst1 = RegularInit.get()
     inst2 = RegularInit.get()
@@ -173,7 +178,8 @@ def test_local_init_fallback_to_regular_init():
     assert inst2.value == 5
 
 
-def test_profiling_toggle_and_context_manager():
+@pytest.mark.asyncio
+async def test_profiling_toggle_and_context_manager():
     assert not is_profiling_enabled()
     assert get_profiler() is None
 
@@ -185,14 +191,15 @@ def test_profiling_toggle_and_context_manager():
     assert not is_profiling_enabled()
     assert get_profiler() is None
 
-    with profiling_enabled() as session:
+    with profile() as profiler:
         assert is_profiling_enabled()
-        assert get_profiler() is session.profiler
+        assert get_profiler() is profiler
 
     assert not is_profiling_enabled()
 
 
-def test_profiling_dependency_fanout_counts_external_calls(shutdown_on_exit):
+@pytest.mark.asyncio
+async def test_profiling_dependency_fanout_counts_external_calls(shutdown_on_exit):
     @replica(n=2)
     class VectorDB:
         def search(self, query: str) -> list:
@@ -230,47 +237,48 @@ def test_profiling_dependency_fanout_counts_external_calls(shutdown_on_exit):
 
     pipeline = chain(retrieve, generate, finalize)
 
-    VectorDB.deploy()
-    LLMPool.deploy()
-    Cache.deploy()
-    ExternalService.deploy()
+    await VectorDB.deploy()
+    await LLMPool.deploy()
+    await Cache.deploy()
+    await ExternalService.deploy()
 
     with shutdown_on_exit(VectorDB, LLMPool, Cache, ExternalService):
-        with profiling_enabled() as session:
-            result = run(
+        with profile() as profiler:
+            result = await arun(
                 pipeline,
                 "test_query",
-                context_factory=session.context_factory,
+                context_factory=node_context,
             )
             assert "finalize_response" in result.data
 
             ExternalService.get().ping()
 
-            deps = session.profiler.get_dependency_graph()
+            deps = profiler.get_dependency_graph()
             assert deps == {
                 "retrieve": {"VectorDB"},
                 "generate": {"Cache", "LLMPool"},
                 "finalize": {"LLMPool"},
             }
 
-            fanout = session.profiler.get_fanout_matrix()
+            fanout = profiler.get_fanout_matrix()
             assert fanout["retrieve"]["VectorDB"] == 1.0
             assert fanout["generate"]["Cache"] == 1.0
             assert fanout["generate"]["LLMPool"] == 1.0
             assert fanout["finalize"]["LLMPool"] == 1.0
 
-            counts = session.profiler.get_call_counts()
+            counts = profiler.get_call_counts()
             assert counts["VectorDB"] == 1
             assert counts["Cache"] == 1
             assert counts["LLMPool"] == 2
             assert counts["ExternalService"] == 1
 
-            external = session.profiler.get_external_call_counts()
+            external = profiler.get_external_call_counts()
             assert external["ExternalService"] == 1
             assert "ExternalService" not in deps
 
 
-def test_profiling_fanout_avg_in_loops(shutdown_on_exit):
+@pytest.mark.asyncio
+async def test_profiling_fanout_avg_in_loops(shutdown_on_exit):
     @replica(n=2)
     class BatchProcessor:
         def process(self, item: str) -> str:
@@ -280,32 +288,33 @@ def test_profiling_fanout_avg_in_loops(shutdown_on_exit):
     async def process_batch(items: list) -> list:
         return [BatchProcessor.get().process(item) for item in items]
 
-    BatchProcessor.deploy()
+    await BatchProcessor.deploy()
 
     with shutdown_on_exit(BatchProcessor):
-        with profiling_enabled() as session:
-            result = run(
+        with profile() as profiler:
+            result = await arun(
                 process_batch,
                 ["a", "b", "c"],
-                context_factory=session.context_factory,
+                context_factory=node_context,
             )
             assert len(result.data) == 3
 
-            result = run(
+            result = await arun(
                 process_batch,
                 ["1", "2", "3", "4", "5"],
-                context_factory=session.context_factory,
+                context_factory=node_context,
             )
             assert len(result.data) == 5
 
-            fanout = session.profiler.get_fanout_matrix()
+            fanout = profiler.get_fanout_matrix()
             assert fanout["process_batch"]["BatchProcessor"] == 4.0
 
-            counts = session.profiler.get_call_counts()
+            counts = profiler.get_call_counts()
             assert counts["BatchProcessor"] == 8
 
 
-def test_profiler_summary_and_reset_with_nested_nodes(shutdown_on_exit):
+@pytest.mark.asyncio
+async def test_profiler_summary_and_reset_with_nested_nodes(shutdown_on_exit):
     @replica
     class ServiceA:
         def work_a(self) -> str:
@@ -320,23 +329,20 @@ def test_profiler_summary_and_reset_with_nested_nodes(shutdown_on_exit):
     async def node_a(_) -> str:
         return ServiceA.get().work_a()
 
-    context_factory = None
-
     @node
     async def node_b(input_val: str) -> str:
-        intermediate = await node_a(Context(input_val, context_factory=context_factory))
+        intermediate = await node_a(Context(input_val, context_factory=node_context))
         return intermediate + ServiceB.get().work_b()
 
-    ServiceA.deploy()
-    ServiceB.deploy()
+    await ServiceA.deploy()
+    await ServiceB.deploy()
 
     with shutdown_on_exit(ServiceA, ServiceB):
-        with profiling_enabled() as session:
-            context_factory = session.context_factory
-            result = run(node_b, "x", context_factory=session.context_factory)
+        with profile() as profiler:
+            result = await arun(node_b, "x", context_factory=node_context)
             assert result.data == "ab"
 
-            summary = session.profiler.summary()
+            summary = profiler.summary()
             assert "dependency_graph" in summary
             assert "fanout_matrix" in summary
             assert "service_stats" in summary
@@ -357,13 +363,14 @@ def test_profiler_summary_and_reset_with_nested_nodes(shutdown_on_exit):
             assert summary["node_executions"] == {"node_a": 1, "node_b": 1}
             assert summary["elapsed_seconds"] > 0
 
-            session.profiler.reset()
-            assert session.profiler.get_call_counts() == {}
-            assert session.profiler.get_dependency_graph() == {}
-            assert session.profiler.get_node_executions() == {}
+            profiler.reset()
+            assert profiler.get_call_counts() == {}
+            assert profiler.get_dependency_graph() == {}
+            assert profiler.get_node_executions() == {}
 
 
-def test_grpc_backend_end_to_end():
+@pytest.mark.asyncio
+async def test_grpc_backend_end_to_end():
     """Test gRPC backend with server and client."""
     import socket
     import time
@@ -384,7 +391,7 @@ def test_grpc_backend_end_to_end():
     registry.register(Calculator)
 
     try:
-        server, port = serve(port=0, registry=registry)
+        server, port = await serve(port=0, registry=registry)
     except RuntimeError as exc:
         pytest.skip(f"gRPC server unavailable in test environment: {exc}")
 
@@ -410,15 +417,15 @@ def test_grpc_backend_end_to_end():
         spec = ReplicaSpec(cls=Calculator, n=2)
 
         # Deploy via gRPC
-        spec.deploy_instances(multiplier=3)
+        await spec.deploy(multiplier=3)
 
         # Call via gRPC proxy
-        proxy = spec.get_instance()
-        result = proxy.multiply(10)
+        proxy = spec.get()
+        result = await proxy.multiply(10)
         assert result == 30
 
         # Shutdown
-        spec.shutdown_instances()
+        await spec.shutdown()
 
     finally:
-        server.stop(grace=0)
+        await server.stop(grace=0)

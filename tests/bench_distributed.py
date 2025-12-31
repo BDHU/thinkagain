@@ -1,7 +1,8 @@
 """Benchmarks for distributed execution."""
 
+import asyncio
+
 from thinkagain import chain, node, replica, run
-from thinkagain.distributed import runtime
 
 
 def test_bench_replica_deployment(benchmark):
@@ -12,11 +13,11 @@ def test_bench_replica_deployment(benchmark):
         def __init__(self, value: int = 0):
             self.value = value
 
-    def deploy_and_shutdown():
-        Service.deploy(value=5)
-        Service.shutdown()
+    async def deploy_and_shutdown_async():
+        await Service.deploy(value=5)
+        await Service.shutdown()
 
-    benchmark(deploy_and_shutdown)
+    benchmark(lambda: asyncio.run(deploy_and_shutdown_async()))
 
 
 def test_bench_replica_get(benchmark):
@@ -27,13 +28,14 @@ def test_bench_replica_get(benchmark):
         def ping(self) -> bool:
             return True
 
-    FastService.deploy()
+    asyncio.run(FastService.deploy())
 
     def get_instance():
         return FastService.get()
 
     result = benchmark(get_instance)
     assert result.ping()
+    asyncio.run(FastService.shutdown())
 
 
 def test_bench_replica_method_call(benchmark):
@@ -47,13 +49,14 @@ def test_bench_replica_method_call(benchmark):
         def multiply(self, x: int) -> int:
             return x * self.factor
 
-    Calculator.deploy(factor=2)
+    asyncio.run(Calculator.deploy(factor=2))
 
     def call_method():
         return Calculator.get().multiply(100)
 
     result = benchmark(call_method)
     assert result == 200
+    asyncio.run(Calculator.shutdown())
 
 
 def test_bench_pipeline_with_replica(benchmark):
@@ -81,17 +84,18 @@ def test_bench_pipeline_with_replica(benchmark):
 
     pipeline = chain(initial_value, apply_processor, double_it)
 
-    Processor.deploy(delta=5)
+    asyncio.run(Processor.deploy(delta=5))
 
     def run_pipeline():
         return run(pipeline, 0)
 
     result = benchmark(run_pipeline)
     assert result.data == 30  # (10+5)*2
+    asyncio.run(Processor.shutdown())
 
 
 def test_bench_runtime_context_manager(benchmark):
-    """Benchmark runtime context manager overhead."""
+    """Benchmark pipeline execution with runtime context (replicas pre-deployed)."""
 
     @replica(n=2)
     class Service:
@@ -104,12 +108,18 @@ def test_bench_runtime_context_manager(benchmark):
 
     pipeline = chain(call_service)
 
-    def run_with_runtime():
-        with runtime():
-            return run(pipeline, 0)
+    # Deploy replicas once before benchmarking
+    asyncio.run(Service.deploy())
 
-    result = benchmark(run_with_runtime)
+    def run_pipeline():
+        # Just benchmark pipeline execution, not deploy/shutdown overhead
+        return run(pipeline, 0)
+
+    result = benchmark(run_pipeline)
     assert result.data is True
+
+    # Cleanup after all iterations
+    asyncio.run(Service.shutdown())
 
 
 def test_bench_round_robin_distribution(benchmark):
@@ -124,7 +134,7 @@ def test_bench_round_robin_distribution(benchmark):
             self.count += 1
             return self.count
 
-    Counter.deploy()
+    asyncio.run(Counter.deploy())
 
     def distribute_calls():
         results = []
@@ -135,6 +145,7 @@ def test_bench_round_robin_distribution(benchmark):
     results = benchmark(distribute_calls)
     # Should have distributed across 4 instances
     assert len(results) == 10
+    asyncio.run(Counter.shutdown())
 
 
 def test_bench_local_init_overhead(benchmark):
@@ -153,11 +164,11 @@ def test_bench_local_init_overhead(benchmark):
         def get_value(self) -> int:
             return self.value
 
-    def deploy_custom_init():
-        CustomInit.deploy(base_value=10)
-        CustomInit.shutdown()
+    async def deploy_custom_init_async():
+        await CustomInit.deploy(base_value=10)
+        await CustomInit.shutdown()
 
-    benchmark(deploy_custom_init)
+    benchmark(lambda: asyncio.run(deploy_custom_init_async()))
 
 
 def test_bench_multiple_replica_services(benchmark):
@@ -193,11 +204,16 @@ def test_bench_multiple_replica_services(benchmark):
 
     pipeline = chain(start_value, add_step, multiply_step)
 
-    Adder.deploy(delta=3)
-    Multiplier.deploy(factor=4)
+    async def deploy_services_async():
+        await Adder.deploy(delta=3)
+        await Multiplier.deploy(factor=4)
+
+    asyncio.run(deploy_services_async())
 
     def run_pipeline():
         return run(pipeline, 0)
 
     result = benchmark(run_pipeline)
     assert result.data == 32  # (5+3)*4
+    asyncio.run(Adder.shutdown())
+    asyncio.run(Multiplier.shutdown())

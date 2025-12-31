@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
-from .profiling import record_replica_call
 from .runtime import get_backend as _get_backend
 
 
@@ -15,27 +14,44 @@ class ReplicaSpec:
 
     cls: type
     n: int = 1
-    _deploy_args: tuple = field(default_factory=tuple)
-    _deploy_kwargs: dict = field(default_factory=dict)
 
-    def deploy_instances(self, *args, **kwargs) -> None:
-        """Deploy instances via the configured backend."""
-        if args or kwargs:
-            self._deploy_args = args
-            self._deploy_kwargs = kwargs
-        _get_backend().deploy(self, *args, **kwargs)
+    @property
+    def name(self) -> str:
+        return self.cls.__name__
 
-    def shutdown_instances(self) -> None:
-        """Shutdown instances via the configured backend."""
-        _get_backend().shutdown(self)
+    @property
+    def full_name(self) -> str:
+        return f"{self.cls.__module__}.{self.cls.__qualname__}"
 
-    def get_instance(self) -> Any:
-        """Get next instance, auto-deploying if needed."""
+    async def deploy(self, *args, **kwargs) -> None:
+        """Deploy instances via the configured backend (async)."""
+        await _get_backend().deploy(self, *args, **kwargs)
+
+    async def shutdown(self) -> None:
+        """Shutdown instances via the configured backend (async)."""
+        await _get_backend().shutdown(self)
+
+    def get(self) -> Any:
+        """Get next instance via round-robin (sync).
+
+        Raises:
+            RuntimeError: If replica is not deployed.
+        """
         backend = _get_backend()
         if not backend.is_deployed(self):
-            self.deploy_instances(*self._deploy_args, **self._deploy_kwargs)
+            raise RuntimeError(
+                f"Replica '{self.name}' not deployed. "
+                f"Call 'await {self.name}.deploy()' first."
+            )
 
-        # Record replica call for profiling (if enabled)
-        record_replica_call(self.cls.__name__)
+        instance = backend.get_instance(self)
 
-        return backend.get_instance(self)
+        # Optional profiling hook (decoupled - only imports if profiling is enabled)
+        try:
+            from .profiling import record_replica_call
+
+            record_replica_call(self.name)
+        except (ImportError, AttributeError):
+            pass
+
+        return instance

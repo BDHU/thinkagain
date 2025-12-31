@@ -441,12 +441,17 @@ class ReplicaOptimizer:
             )
 
 
-def _compute_entry_nodes(profiler) -> set[str]:
-    """Determine which nodes receive external traffic.
-
-    Entry nodes are those not called by other nodes (replicas).
-    """
-    return set(profiler.get_node_executions().keys()) or set()
+def _compute_arrival_rates(
+    fanout_matrix: dict[str, dict[str, float]],
+    external_arrivals: dict[str, float],
+) -> dict[str, float]:
+    """Compute arrival rate for each replica from fanout matrix."""
+    arrival_rates: dict[str, float] = defaultdict(float)
+    for node, replicas in fanout_matrix.items():
+        external_rate = external_arrivals.get(node, 0.0)
+        for replica, fanout in replicas.items():
+            arrival_rates[replica] += external_rate * fanout
+    return dict(arrival_rates)
 
 
 def compute_optimal_counts_from_profiler(
@@ -467,7 +472,7 @@ def compute_optimal_counts_from_profiler(
         OptimizationResult with recommended counts
 
     Example:
-        from thinkagain.distributed.profiling import profiling_enabled
+        from thinkagain.distributed.profiling import profile, node_context
         from thinkagain.distributed.optimizer import (
             compute_optimal_counts_from_profiler,
             ReplicaConfig,
@@ -476,10 +481,10 @@ def compute_optimal_counts_from_profiler(
             batched_throughput,
         )
 
-        with profiling_enabled() as session:
+        with profile() as profiler:
             # Run workload
             for _ in range(100):
-                run(pipeline, data, context_factory=session.context_factory)
+                run(pipeline, data, context_factory=node_context)
 
             # Define replica configs with different scaling behaviors
             configs = [
@@ -505,7 +510,7 @@ def compute_optimal_counts_from_profiler(
 
             # Compute optimal counts
             result = compute_optimal_counts_from_profiler(
-                session.profiler,
+                profiler,
                 external_rps=100.0,
                 replica_configs=configs,
                 constraints=Constraints(
@@ -521,22 +526,17 @@ def compute_optimal_counts_from_profiler(
     if not GUROBI_AVAILABLE:
         raise ImportError("gurobipy is required. Install with: pip install gurobipy")
 
-    # Get profiling data
     fanout_matrix = profiler.get_fanout_matrix()
-    entry_nodes = _compute_entry_nodes(profiler)
-
+    entry_nodes = set(profiler.get_node_executions().keys())
     external_arrivals = {
         node: external_rps / len(entry_nodes) if entry_nodes else 0.0
         for node in entry_nodes
     }
 
-    # Create workload profile
     workload = WorkloadProfile(
         external_arrivals=external_arrivals,
         fanout_matrix=fanout_matrix,
     )
-
-    # Optimize
     optimizer = ReplicaOptimizer(replica_configs, constraints=constraints)
     return optimizer.optimize(workload)
 
@@ -562,21 +562,14 @@ def compute_optimal_counts_heuristic(
         Dict mapping replica name to recommended count
     """
     fanout_matrix = profiler.get_fanout_matrix()
-    entry_nodes = _compute_entry_nodes(profiler)
-
+    entry_nodes = set(profiler.get_node_executions().keys())
     external_arrivals = {
         node: external_rps / len(entry_nodes) if entry_nodes else 0.0
         for node in entry_nodes
     }
 
-    # Compute arrival rates
-    arrival_rates = defaultdict(float)
-    for node, replicas in fanout_matrix.items():
-        external_rate = external_arrivals.get(node, 0.0)
-        for replica, fanout in replicas.items():
-            arrival_rates[replica] += external_rate * fanout
+    arrival_rates = _compute_arrival_rates(fanout_matrix, external_arrivals)
 
-    # Compute replica counts (linear scaling assumption)
     replica_counts = {}
     for replica, arrival_rate in arrival_rates.items():
         service_rate = service_rates.get(replica, 10.0)

@@ -1,7 +1,10 @@
 """Shared utilities for backends."""
 
 import threading
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    pass
 
 
 class RoundRobinPool:
@@ -75,3 +78,39 @@ class RoundRobinPool:
         with self._lock:
             self._instances.clear()
             self._indices.clear()
+
+
+def build_instances(cls: type, n: int, args: tuple, kwargs: dict) -> list[Any]:
+    """Create initialized instances for a replica class."""
+    initializer = getattr(cls, "__local_init__", cls)
+    return [initializer(*args, **kwargs) for _ in range(n)]
+
+
+class PoolBackendMixin:
+    """Mixin for backends that use RoundRobinPool for instance management.
+
+    Subclasses must initialize self._pool = RoundRobinPool() in __init__.
+    """
+
+    _pool: RoundRobinPool
+
+    def _deploy_to_pool(
+        self, name: str, cls: type, n: int, args: tuple, kwargs: dict
+    ) -> None:
+        """Deploy instances to the pool."""
+        if self._pool.has_pool(name):
+            return
+        instances = build_instances(cls, n, args, kwargs)
+        self._pool.create_pool(name, instances)
+
+    def _shutdown_from_pool(self, name: str) -> None:
+        """Remove instances from the pool."""
+        self._pool.remove_pool(name)
+
+    def _get_from_pool(self, name: str) -> Any:
+        """Get next instance from pool via round-robin."""
+        return self._pool.get_next(name)
+
+    def _is_deployed_in_pool(self, name: str) -> bool:
+        """Check if instances are deployed in the pool."""
+        return self._pool.has_pool(name)

@@ -12,7 +12,6 @@ import threading
 import time
 from collections import defaultdict, deque
 from contextlib import contextmanager
-from dataclasses import dataclass
 from typing import Any, Callable, ContextManager
 
 # Context-local storage for tracking execution context
@@ -218,14 +217,6 @@ class ReplicaProfiler:
         }
 
 
-@dataclass(frozen=True)
-class ProfilingSession:
-    """Active profiling session configuration."""
-
-    profiler: "ReplicaProfiler"
-    context_factory: Callable[[str], ContextManager[None]]
-
-
 # Context management for thread-local execution tracking
 
 
@@ -305,17 +296,17 @@ def get_node_context_factory() -> Callable[[str], ContextManager[None]]:
 
 
 @contextmanager
-def profiling_enabled(max_service_samples: int | None = 10_000):
+def profile(max_service_samples: int | None = 10_000):
     """Context manager for scoped profiling.
 
     Example:
-        with profiling_enabled() as session:
-            result = run(pipeline, data, context_factory=session.context_factory)
-            print(session.profiler.summary())
+        with profile() as profiler:
+            result = run(pipeline, data, context_factory=node_context)
+            print(profiler.summary())
     """
     profiler = enable_profiling(max_service_samples=max_service_samples)
     try:
-        yield ProfilingSession(profiler=profiler, context_factory=node_context)
+        yield profiler
     finally:
         disable_profiling()
 
