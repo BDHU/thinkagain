@@ -16,8 +16,18 @@ class LocalBackend(PoolBackendMixin):
     def __init__(self):
         self._pool = RoundRobinPool()
 
-    async def deploy(self, spec: "ReplicaSpec", *args, **kwargs) -> None:
-        self._deploy_to_pool(spec.name, spec.cls, spec.n, args, kwargs)
+    async def deploy(
+        self, spec: "ReplicaSpec", instances: int = 1, *args, **kwargs
+    ) -> None:
+        """Deploy replica instances locally.
+
+        Args:
+            spec: ReplicaSpec with resource requirements
+            instances: Number of instances to deploy
+            *args: Constructor arguments
+            **kwargs: Constructor keyword arguments
+        """
+        self._deploy_to_pool(spec.name, spec.cls, instances, args, kwargs)
 
     async def shutdown(self, spec: "ReplicaSpec") -> None:
         self._shutdown_from_pool(spec.name)

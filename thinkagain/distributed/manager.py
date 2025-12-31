@@ -35,18 +35,57 @@ class ReplicaManager:
             )
         return None
 
-    def register(self, cls: type, n: int = 1) -> ReplicaSpec:
-        """Register a replica class with desired instance count."""
-        spec = ReplicaSpec(cls=cls, n=n)
+    def register(self, cls: type, cpus: int = 0, gpus: int = 0) -> ReplicaSpec:
+        """Register a replica class with resource requirements.
+
+        Args:
+            cls: The replica class to register
+            cpus: CPUs per instance (0 for GPU-only workers)
+            gpus: GPUs per instance (0 for CPU-only workers)
+
+        At least one of cpus or gpus must be > 0.
+
+        Returns:
+            ReplicaSpec for the registered class
+        """
+        spec = ReplicaSpec(cls=cls, cpus=cpus, gpus=gpus)
         with self._lock:
             self._registry[spec.full_name] = spec
         return spec
 
-    def replica(self, _cls: type | None = None, *, n: int = 1):
-        """Decorator to register a class as a replica."""
+    def replica(
+        self,
+        _cls: type | None = None,
+        *,
+        cpus: int | None = None,
+        gpus: int | None = None,
+    ):
+        """Decorator to register a class as a replica.
+
+        Args:
+            cpus: CPUs per instance (None means 0, i.e., not used)
+            gpus: GPUs per instance (None means 0, i.e., not used)
+
+        At least one of cpus or gpus must be specified and > 0.
+
+        Examples:
+            @replica(cpus=2, gpus=1)  # Mixed: 2 CPUs + 1 GPU per instance
+            class HybridModel:
+                ...
+
+            @replica(gpus=1)  # GPU-only: 1 GPU, 0 CPUs per instance
+            class LLMPool:
+                ...
+
+            @replica(cpus=4)  # CPU-only: 4 CPUs, 0 GPUs per instance
+            class VectorDB:
+                ...
+        """
 
         def decorator(cls: type) -> ReplicaSpec:
-            return self.register(cls, n=n)
+            final_cpus = 0 if cpus is None else cpus
+            final_gpus = 0 if gpus is None else gpus
+            return self.register(cls, cpus=final_cpus, gpus=final_gpus)
 
         if _cls is None:
             return decorator
@@ -86,17 +125,36 @@ class ReplicaManager:
 def replica(
     _cls: type | None = None,
     *,
-    n: int = 1,
+    cpus: int | None = None,
+    gpus: int | None = None,
     manager: ReplicaManager | None = None,
 ) -> Callable[[type], ReplicaSpec] | ReplicaSpec:
     """Decorator that registers replicas with a manager.
 
-    Defaults to the global manager when none is provided.
+    Args:
+        cpus: CPUs per instance (None means 0)
+        gpus: GPUs per instance (None means 0)
+        manager: ReplicaManager to use (default: global manager)
+
+    At least one of cpus or gpus must be specified and > 0.
+
+    Examples:
+        @replica(cpus=4, gpus=1)  # Mixed: 4 CPUs + 1 GPU per instance
+        class HybridModel:
+            ...
+
+        @replica(gpus=2)  # GPU-only: 2 GPUs, 0 CPUs per instance
+        class vLLM:
+            ...
+
+        @replica(cpus=8)  # CPU-only: 8 CPUs, 0 GPUs per instance
+        class VectorDB:
+            ...
     """
     if manager is None:
         manager = get_default_manager()
 
-    return manager.replica(_cls, n=n)
+    return manager.replica(_cls, cpus=cpus, gpus=gpus)
 
 
 _default_manager = ReplicaManager()

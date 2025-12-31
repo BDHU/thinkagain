@@ -28,6 +28,14 @@ except ImportError:
 ThroughputFunc = Callable[[int, float], float]
 
 
+def _require_gurobi() -> None:
+    if not GUROBI_AVAILABLE:
+        raise ImportError(
+            "gurobipy is required for optimization. "
+            "Install it with: pip install gurobipy"
+        )
+
+
 def linear_throughput(service_rate: float) -> ThroughputFunc:
     """Linear scaling: throughput = n × service_rate.
 
@@ -150,7 +158,12 @@ class ReplicaConfig:
 
     name: str
     throughput_func: ThroughputFunc  # Function: (n_replicas, λ) → max_throughput
-    cost_per_instance: float = 1.0  # Relative cost
+
+    # Resource requirements per instance (from @replica decorator)
+    cpus_per_instance: int = 0  # CPUs per instance (0 for GPU-only)
+    gpus_per_instance: int = 0  # GPUs per instance (0 for CPU-only)
+
+    # Instance count bounds
     min_instances: int = 1
     max_instances: int = 100
 
@@ -175,11 +188,16 @@ class Constraints:
     """Optimization constraints."""
 
     max_utilization: float = 0.8  # Max utilization per replica (default 80%)
-    total_budget: float | None = None  # Total cost budget (optional)
+
+    # Cluster resource limits
+    max_total_cpus: int | None = None  # Total CPU budget (optional)
+    max_total_gpus: int | None = None  # Total GPU budget (optional)
     max_total_instances: int | None = None  # Max total instances (optional)
+
+    # Per-replica overrides
     per_replica_constraints: dict[str, dict] = field(
         default_factory=dict
-    )  # Per-replica overrides
+    )  # Per-replica overrides (e.g., max_utilization)
 
 
 @dataclass
@@ -190,8 +208,13 @@ class OptimizationResult:
     arrival_rates: dict[str, float]  # Computed arrival rate per replica
     capacities: dict[str, float]  # Computed capacity per replica (req/s)
     utilizations: dict[str, float]  # Expected utilization per replica
-    total_cost: float  # Total cost (sum of instance costs)
+
+    # Resource usage
+    total_cpus: int  # Total CPUs allocated
+    total_gpus: int  # Total GPUs allocated
     total_instances: int  # Total number of instances
+
+    # Optimization metadata
     metrics: dict[str, Any]  # Additional metrics
     solver_status: str  # Gurobi solver status
     objective_value: float  # Objective function value
@@ -214,11 +237,7 @@ class ReplicaOptimizer:
         Raises:
             ImportError: If gurobipy is not installed
         """
-        if not GUROBI_AVAILABLE:
-            raise ImportError(
-                "gurobipy is required for optimization. "
-                "Install it with: pip install gurobipy"
-            )
+        _require_gurobi()
 
         self.configs = {c.name: c for c in configs}
         self.constraints = constraints or Constraints()
@@ -235,18 +254,15 @@ class ReplicaOptimizer:
         Returns:
             Dict mapping replica name to arrival rate (req/s)
         """
-        arrival_rates = defaultdict(float)
-
-        for node, replicas in workload.fanout_matrix.items():
-            external_rate = workload.external_arrivals.get(node, 0.0)
-            for replica, fanout in replicas.items():
-                arrival_rates[replica] += external_rate * fanout
-
-        return dict(arrival_rates)
+        return _compute_arrival_rates(
+            workload.fanout_matrix,
+            workload.external_arrivals,
+        )
 
     def optimize(self, workload: WorkloadProfile) -> OptimizationResult:
         """Compute optimal replica counts using integer programming.
 
+        Maximizes throughput while minimizing resource usage.
         For batching and non-linear scaling, we use piecewise linear approximation.
 
         Formulation:
@@ -254,19 +270,21 @@ class ReplicaOptimizer:
                 n_i ∈ ℤ: number of replicas for service i
 
             Objective:
-                minimize: Σ_i (cost_i × n_i)
+                minimize: Σ_i n_i  (minimize total instances)
 
             Constraints:
                 1. Capacity: λ_i ≤ throughput_func_i(n_i, λ_i) × max_utilization
                 2. Min instances: n_i ≥ min_instances_i
                 3. Max instances: n_i ≤ max_instances_i
-                4. Budget: Σ_i (cost_i × n_i) ≤ budget (optional)
+                4. CPU budget: Σ_i (cpus_i × n_i) ≤ max_total_cpus (optional)
+                5. GPU budget: Σ_i (gpus_i × n_i) ≤ max_total_gpus (optional)
+                6. Max instances: Σ_i n_i ≤ max_total_instances (optional)
 
         Args:
             workload: Workload profile from profiling
 
         Returns:
-            OptimizationResult with optimal counts
+            OptimizationResult with optimal counts and resource allocation
         """
         # Step 1: Compute arrival rates
         arrival_rates = self.compute_arrival_rates(workload)
@@ -293,11 +311,8 @@ class ReplicaOptimizer:
                 name=f"n_{replica_name}",
             )
 
-        # Step 4: Set objective (minimize total cost)
-        objective = gp.quicksum(
-            self.configs[name].cost_per_instance * replica_vars[name]
-            for name in replica_vars
-        )
+        # Step 4: Set objective (minimize total instances to maximize efficiency)
+        objective = gp.quicksum(replica_vars[name] for name in replica_vars)
         model.setObjective(objective, GRB.MINIMIZE)
 
         # Step 5: Add capacity constraints using piecewise linear approximation
@@ -360,15 +375,26 @@ class ReplicaOptimizer:
                     name=f"capacity_{replica_name}_n{n}",
                 )
 
-        # Budget constraint (optional)
-        if self.constraints.total_budget is not None:
-            budget_expr = gp.quicksum(
-                self.configs[name].cost_per_instance * replica_vars[name]
+        # CPU resource constraint (optional)
+        if self.constraints.max_total_cpus is not None:
+            total_cpus = gp.quicksum(
+                self.configs[name].cpus_per_instance * replica_vars[name]
                 for name in replica_vars
             )
             model.addConstr(
-                budget_expr <= self.constraints.total_budget,
-                name="total_budget",
+                total_cpus <= self.constraints.max_total_cpus,
+                name="max_total_cpus",
+            )
+
+        # GPU resource constraint (optional)
+        if self.constraints.max_total_gpus is not None:
+            total_gpus = gp.quicksum(
+                self.configs[name].gpus_per_instance * replica_vars[name]
+                for name in replica_vars
+            )
+            model.addConstr(
+                total_gpus <= self.constraints.max_total_gpus,
+                name="max_total_gpus",
             )
 
         # Max total instances constraint (optional)
@@ -399,8 +425,13 @@ class ReplicaOptimizer:
                     arrival_rates[name] / max_throughput if max_throughput > 0 else 0.0
                 )
 
-            total_cost = sum(
-                replica_counts[name] * self.configs[name].cost_per_instance
+            # Compute resource totals
+            total_cpus = sum(
+                replica_counts[name] * self.configs[name].cpus_per_instance
+                for name in replica_counts
+            )
+            total_gpus = sum(
+                replica_counts[name] * self.configs[name].gpus_per_instance
                 for name in replica_counts
             )
             total_instances = sum(replica_counts.values())
@@ -420,7 +451,8 @@ class ReplicaOptimizer:
                 arrival_rates=arrival_rates,
                 capacities=capacities,
                 utilizations=utilizations,
-                total_cost=total_cost,
+                total_cpus=total_cpus,
+                total_gpus=total_gpus,
                 total_instances=total_instances,
                 metrics=metrics,
                 solver_status="OPTIMAL",
@@ -433,7 +465,8 @@ class ReplicaOptimizer:
                 arrival_rates=arrival_rates,
                 capacities={},
                 utilizations={},
-                total_cost=0.0,
+                total_cpus=0,
+                total_gpus=0,
                 total_instances=0,
                 metrics={},
                 solver_status=f"FAILED (status={model.status})",
@@ -452,6 +485,16 @@ def _compute_arrival_rates(
         for replica, fanout in replicas.items():
             arrival_rates[replica] += external_rate * fanout
     return dict(arrival_rates)
+
+
+def _compute_external_arrivals(
+    entry_nodes: set[str],
+    external_rps: float,
+) -> dict[str, float]:
+    if not entry_nodes:
+        return {}
+    per_node = external_rps / len(entry_nodes)
+    return {node: per_node for node in entry_nodes}
 
 
 def compute_optimal_counts_from_profiler(
@@ -523,15 +566,11 @@ def compute_optimal_counts_from_profiler(
             print(f"Utilizations: {result.utilizations}")
             print(f"Total cost: {result.total_cost}")
     """
-    if not GUROBI_AVAILABLE:
-        raise ImportError("gurobipy is required. Install with: pip install gurobipy")
+    _require_gurobi()
 
     fanout_matrix = profiler.get_fanout_matrix()
     entry_nodes = set(profiler.get_node_executions().keys())
-    external_arrivals = {
-        node: external_rps / len(entry_nodes) if entry_nodes else 0.0
-        for node in entry_nodes
-    }
+    external_arrivals = _compute_external_arrivals(entry_nodes, external_rps)
 
     workload = WorkloadProfile(
         external_arrivals=external_arrivals,
@@ -563,10 +602,7 @@ def compute_optimal_counts_heuristic(
     """
     fanout_matrix = profiler.get_fanout_matrix()
     entry_nodes = set(profiler.get_node_executions().keys())
-    external_arrivals = {
-        node: external_rps / len(entry_nodes) if entry_nodes else 0.0
-        for node in entry_nodes
-    }
+    external_arrivals = _compute_external_arrivals(entry_nodes, external_rps)
 
     arrival_rates = _compute_arrival_rates(fanout_matrix, external_arrivals)
 

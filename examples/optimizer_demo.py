@@ -8,7 +8,7 @@ This example demonstrates:
 
 from thinkagain import node, run
 from thinkagain.distributed import replica
-from thinkagain.distributed.profiling import profiling_enabled
+from thinkagain.distributed.profiling import profile
 
 try:
     from thinkagain.distributed.optimizer import (
@@ -25,26 +25,26 @@ except ImportError:
     print("Warning: gurobipy not installed. Install with: pip install gurobipy")
 
 
-# Define replica services with different characteristics
-@replica(n=2)
+# Define replica services with resource requirements
+@replica(cpus=2)
 class VectorDB:
-    """Vector database with linear scaling."""
+    """Vector database - CPU-only with linear scaling."""
 
     def search(self, query: str, top_k: int = 3) -> list[str]:
         return [f"doc_{i}" for i in range(top_k)]
 
 
-@replica(n=4)
+@replica(gpus=1)
 class LLMPool:
-    """LLM pool with batching effects."""
+    """LLM pool - GPU-only with batching effects."""
 
     def generate(self, prompt: str, context: list[str]) -> str:
         return f"Response based on: {', '.join(context[:2])}"
 
 
-@replica(n=1)
+@replica(cpus=1)
 class Cache:
-    """Cache with linear scaling."""
+    """Cache - Lightweight CPU worker."""
 
     def __init__(self):
         self.store = {}
@@ -85,11 +85,11 @@ def main():
     print("Replica Profiling + Optimization Demo")
     print("=" * 72)
 
-    # Deploy replicas
+    # Deploy replicas with initial counts (optimizer will suggest better allocation)
     print("\n1. Deploying replicas...")
-    VectorDB.deploy()
-    LLMPool.deploy()
-    Cache.deploy()
+    VectorDB.deploy(instances=2)  # Initial: 2 instances
+    LLMPool.deploy(instances=2)  # Initial: 2 instances
+    Cache.deploy(instances=1)  # Initial: 1 instance
 
     # Define pipeline
     def pipeline(ctx):
@@ -101,7 +101,7 @@ def main():
     print("\n2. Profiling workload...")
     print("-" * 72)
 
-    with profiling_enabled() as session:
+    with profile() as session:
         queries = [
             "What is machine learning?",
             "Explain neural networks",
@@ -149,7 +149,8 @@ def main():
                 ReplicaConfig(
                     name="VectorDB",
                     throughput_func=linear_throughput(200.0),
-                    cost_per_instance=1.0,
+                    cpus_per_instance=2,  # 2 CPUs per instance (from @replica)
+                    gpus_per_instance=0,
                     base_service_rate=200.0,
                 ),
                 ReplicaConfig(
@@ -158,46 +159,71 @@ def main():
                         base_rate=50.0,
                         batch_size=32,
                     ),
-                    cost_per_instance=10.0,
+                    cpus_per_instance=0,
+                    gpus_per_instance=1,  # 1 GPU per instance (from @replica)
                     base_service_rate=50.0,
                 ),
                 ReplicaConfig(
                     name="Cache",
                     throughput_func=linear_throughput(1000.0),
-                    cost_per_instance=0.1,
+                    cpus_per_instance=1,  # 1 CPU per instance (from @replica)
+                    gpus_per_instance=0,
                     base_service_rate=1000.0,
                 ),
             ]
 
             scenarios = [
-                ("Moderate traffic", 50.0),
-                ("Higher traffic", 200.0),
+                ("Moderate traffic (64 CPUs, 4 GPUs)", 50.0, 64, 4),
+                ("Higher traffic (128 CPUs, 8 GPUs)", 200.0, 128, 8),
+                ("CPU-constrained (32 CPUs, 8 GPUs)", 100.0, 32, 8),
+                ("GPU-constrained (64 CPUs, 2 GPUs)", 100.0, 64, 2),
             ]
 
-            for name, external_rps in scenarios:
+            for name, external_rps, max_cpus, max_gpus in scenarios:
                 print(f"\n  Scenario: {name} ({external_rps:.0f} req/s)")
                 result = compute_optimal_counts_from_profiler(
                     session.profiler,
                     external_rps=external_rps,
                     replica_configs=configs,
-                    constraints=Constraints(max_utilization=0.8),
+                    constraints=Constraints(
+                        max_utilization=0.8,
+                        max_total_cpus=max_cpus,
+                        max_total_gpus=max_gpus,
+                    ),
                 )
 
                 if result.solver_status != "OPTIMAL":
                     print(f"    Status: {result.solver_status}")
                     continue
 
-                print(f"    Total Cost: {result.total_cost:.2f}")
-                print(f"    Total Instances: {result.total_instances}")
+                print("    Resource Usage:")
+                print(
+                    f"      CPUs: {result.total_cpus}/{max_cpus} ({result.total_cpus / max_cpus:.1%})"
+                )
+                print(
+                    f"      GPUs: {result.total_gpus}/{max_gpus} ({result.total_gpus / max_gpus:.1%})"
+                )
+                print(f"      Instances: {result.total_instances}")
+                print("    Replica Allocation:")
                 for replica in sorted(result.replica_counts.keys()):
                     count = result.replica_counts[replica]
                     util = result.utilizations[replica]
                     capacity = result.capacities[replica]
-                    arrival = result.arrival_rates[replica]
+                    cpus = (
+                        count
+                        * configs[
+                            [c.name for c in configs].index(replica)
+                        ].cpus_per_instance
+                    )
+                    gpus = (
+                        count
+                        * configs[
+                            [c.name for c in configs].index(replica)
+                        ].gpus_per_instance
+                    )
                     print(
-                        f"    {replica:12} : {count:2} instances "
-                        f"(util: {util:5.1%}, capacity: {capacity:6.1f}, "
-                        f"arrival: {arrival:6.1f})"
+                        f"      {replica:12} : {count:2} inst × ({cpus:2} CPUs + {gpus:1} GPUs) "
+                        f"| util: {util:5.1%}, throughput: {capacity:6.1f} req/s"
                     )
         else:
             print("\n3. Optimizer skipped (gurobipy not installed).")
