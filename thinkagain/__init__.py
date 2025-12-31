@@ -4,7 +4,7 @@ from .core.context import Context
 from .core.errors import NodeDataclassError, NodeExecutionError
 from .core.node import FunctionNode, Node, NodeBase, node
 from .core.runner import arun, chain, run
-from .distributed import ReplicaHandle, ReplicaManager, replica
+from .distributed import ReplicaManager, ReplicaSpec, replica
 
 __version__ = "0.2.0"
 
@@ -22,6 +22,6 @@ __all__ = [
     "run",
     # Distributed
     "ReplicaManager",
-    "ReplicaHandle",
+    "ReplicaSpec",
     "replica",
 ]

@@ -7,29 +7,24 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from thinkagain.distributed.replica import ReplicaSpec
 
-from .utils import RoundRobinPool
+from .utils import RoundRobinPool, PoolBackendMixin
 
 
-class LocalBackend:
-    """Local backend keeps replica instances within the same process."""
+class LocalBackend(PoolBackendMixin):
+    """Local backend keeps replica instances within the same process (sync)."""
 
     def __init__(self):
         self._pool = RoundRobinPool()
 
-    def deploy(self, spec: "ReplicaSpec", *args, **kwargs) -> None:
-        name = spec.cls.__name__
-        if self._pool.has_pool(name):
-            return
+    async def deploy(self, spec: "ReplicaSpec", *args, **kwargs) -> None:
+        self._deploy_to_pool(spec.name, spec.cls, spec.n, args, kwargs)
 
-        initializer = getattr(spec.cls, "__local_init__", spec.cls)
-        instances = [initializer(*args, **kwargs) for _ in range(spec.n)]
-        self._pool.create_pool(name, instances)
-
-    def shutdown(self, spec: "ReplicaSpec") -> None:
-        self._pool.remove_pool(spec.cls.__name__)
+    async def shutdown(self, spec: "ReplicaSpec") -> None:
+        self._shutdown_from_pool(spec.name)
 
     def get_instance(self, spec: "ReplicaSpec") -> Any:
-        return self._pool.get_next(spec.cls.__name__)
+        """Get next instance in round-robin order."""
+        return self._get_from_pool(spec.name)
 
     def is_deployed(self, spec: "ReplicaSpec") -> bool:
-        return self._pool.has_pool(spec.cls.__name__)
+        return self._is_deployed_in_pool(spec.name)

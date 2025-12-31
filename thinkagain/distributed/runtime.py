@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from contextlib import contextmanager
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, TYPE_CHECKING
 
 from .backend.base import Backend
 from .backend.local import LocalBackend
 from .backend.serialization import Serializer
 
 _BACKEND_FACTORIES: dict[str, Callable[["RuntimeConfig"], Backend]] = {}
+
+if TYPE_CHECKING:
+    from .manager import ReplicaManager
 
 
 def register_backend(name: str, factory: Callable[["RuntimeConfig"], Backend]) -> None:
@@ -54,12 +57,7 @@ class RuntimeContext:
     def config(self) -> RuntimeConfig:
         """Get current configuration (copy for safety)."""
         with self._lock:
-            return RuntimeConfig(
-                backend=self._config.backend,
-                address=self._config.address,
-                options=dict(self._config.options),
-                serializer=self._config.serializer,
-            )
+            return replace(self._config, options=dict(self._config.options))
 
     def set_config(self, config: RuntimeConfig) -> None:
         """Set configuration and clear cached backend."""
@@ -178,41 +176,57 @@ def runtime(
     backend: str = "local",
     address: str | None = None,
     *,
+    manager: "ReplicaManager | None" = None,
     serializer: Serializer | None = None,
     **options,
 ) -> Iterator[None]:
-    """Context manager for scoped runtime configuration.
+    """Context manager for distributed replica lifecycle.
 
-    Useful for testing - automatically restores previous config on exit.
+    Usage:
+        from thinkagain import distributed
 
-    Example:
-        with runtime(backend="local"):
-            # ... test code with local backend ...
-            pass
-        # Previous config restored
+        with distributed.runtime():
+            result = run(pipeline, data)
+
+        # Or with explicit backend:
+        with distributed.runtime(
+            backend="grpc",
+            address="localhost:50051",
+        ):
+            result = run(pipeline, data)
     """
+    import asyncio
+    from .manager import get_default_manager
+
     old_config = _runtime.config
+    active_manager = manager or get_default_manager()
     try:
         _runtime.init(backend, address=address, serializer=serializer, **options)
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(active_manager.deploy_all())
+        except RuntimeError:
+            asyncio.run(active_manager.deploy_all())
         yield
     finally:
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(active_manager.shutdown_all())
+        except RuntimeError:
+            asyncio.run(active_manager.shutdown_all())
         _runtime.close_backend()
         _runtime.set_config(old_config)
 
 
-def _default_local_factory(config: RuntimeConfig) -> Backend:
-    return LocalBackend()
+register_backend("local", lambda _: LocalBackend())
 
 
-def _default_grpc_factory(config: RuntimeConfig) -> Backend:
-    from .backend.grpc import GrpcBackend
+def _grpc_factory(config: RuntimeConfig) -> Backend:
+    from .backend.grpc import AsyncGrpcBackend
 
-    return GrpcBackend(
-        config.address,
-        dict(config.options),
-        serializer=config.serializer,
+    return AsyncGrpcBackend(
+        config.address, dict(config.options), serializer=config.serializer
     )
 
 
-register_backend("local", _default_local_factory)
-register_backend("grpc", _default_grpc_factory)
+register_backend("grpc", _grpc_factory)

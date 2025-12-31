@@ -1,10 +1,11 @@
 """gRPC backend package."""
 
-from .backend import GrpcBackend, GrpcReplicaProxy
-from .server import ReplicaRegistry, run_server, serve
+from .backend import AsyncGrpcBackend, GrpcReplicaProxy
+from .server import AsyncReplicaServicer, ReplicaRegistry, run_server, serve
 
 __all__ = [
-    "GrpcBackend",
+    "AsyncGrpcBackend",
+    "AsyncReplicaServicer",
     "GrpcReplicaProxy",
     "ReplicaRegistry",
     "serve",
