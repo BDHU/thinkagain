@@ -24,12 +24,26 @@ class ReplicaRegistry(PoolBackendMixin):
         """Register a replica class."""
         self._classes[cls.__name__] = cls
 
-    def deploy(self, name: str, n: int, args: tuple, kwargs: dict) -> None:
-        """Deploy n instances of a registered class."""
+    def deploy(
+        self, name: str, instances: int, cpus: int, gpus: int, args: tuple, kwargs: dict
+    ) -> None:
+        """Deploy instances of a registered class.
+
+        Args:
+            name: Replica class name
+            instances: Number of instances to deploy
+            cpus: CPUs per instance (for resource tracking/scheduling)
+            gpus: GPUs per instance (for resource tracking/scheduling)
+            args: Constructor arguments
+            kwargs: Constructor keyword arguments
+        """
         if name not in self._classes:
             raise ValueError(f"Unknown replica class: {name}")
         cls = self._classes[name]
-        self._deploy_to_pool(name, cls, n, args, kwargs)
+        # TODO: Use cpus/gpus for resource accounting and scheduling
+        # For now, we simply deploy to pool
+        _ = (cpus, gpus)  # Acknowledge parameters
+        self._deploy_to_pool(name, cls, instances, args, kwargs)
 
     def shutdown(self, name: str) -> None:
         """Shutdown instances of a class."""
@@ -78,7 +92,13 @@ class AsyncReplicaServicer(replica_pb2_grpc.ReplicaServiceServicer):
             kwargs = self._serializer.loads(request.kwargs) if request.kwargs else {}
             # Deployment is typically sync, run in thread pool
             await asyncio.to_thread(
-                self._registry.deploy, request.replica_name, request.n, args, kwargs
+                self._registry.deploy,
+                request.replica_name,
+                request.instances,
+                request.cpus,
+                request.gpus,
+                args,
+                kwargs,
             )
             return replica_pb2.DeployResponse(success=True)
         except Exception as e:

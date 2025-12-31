@@ -16,16 +16,17 @@ from thinkagain.distributed.profiling import (
 
 @pytest.mark.asyncio
 async def test_replica_registration_and_deploy():
-    @replica(n=2)
+    @replica(cpus=1)
     class Service:
         def __init__(self, value: int = 0):
             self.value = value
 
     spec = get_default_manager().get_spec("Service")
     assert spec.cls is Service.cls
-    assert spec.n == 2
+    assert spec.cpus == 1
+    assert spec.gpus == 0
 
-    await Service.deploy(value=5)
+    await Service.deploy(instances=2, value=5)
     # Get instances via backend
     inst1 = Service.get()
     inst2 = Service.get()
@@ -37,7 +38,7 @@ async def test_replica_registration_and_deploy():
 
 @pytest.mark.asyncio
 async def test_replica_round_robin():
-    @replica(n=2)
+    @replica(cpus=1)
     class Multiplier:
         def __init__(self, factor: int = 1):
             self.factor = factor
@@ -47,8 +48,8 @@ async def test_replica_round_robin():
             self.call_count += 1
             return x * self.factor
 
-    # Deploy two instances with different factors
-    await Multiplier.deploy(factor=2)
+    # Deploy two instances with same factor
+    await Multiplier.deploy(instances=2, factor=2)
 
     # Round-robin should alternate between instances
     results = [Multiplier.get().apply(10) for _ in range(4)]
@@ -60,7 +61,7 @@ async def test_replica_round_robin_distribution():
     """Test that round-robin actually distributes calls across different instances."""
     call_log = []
 
-    @replica(n=2)
+    @replica(cpus=1)
     class Logger:
         def __init__(self):
             pass
@@ -68,7 +69,7 @@ async def test_replica_round_robin_distribution():
         def log(self):
             call_log.append(id(self))
 
-    await Logger.deploy()
+    await Logger.deploy(instances=2)
 
     for _ in range(4):
         Logger.get().log()
@@ -83,7 +84,7 @@ async def test_replica_round_robin_distribution():
 
 @pytest.mark.asyncio
 async def test_pipeline_runs_with_replica():
-    @replica
+    @replica(cpus=1)
     class Adder:
         def __init__(self, delta: int = 1):
             self.delta = delta
@@ -110,7 +111,7 @@ async def test_pipeline_runs_with_replica():
 
 @pytest.mark.asyncio
 async def test_runtime_context_manager():
-    @replica(n=2)
+    @replica(cpus=1)
     class Service:
         def ping(self) -> bool:
             return True
@@ -122,7 +123,7 @@ async def test_runtime_context_manager():
     pipeline = chain(call_service)
 
     with runtime():
-        await Service.deploy()
+        await Service.deploy(instances=2)
         result = await arun(pipeline, None)
         assert result.data is True
 
@@ -132,7 +133,7 @@ async def test_local_init_customizes_initialization():
     """Test that __local_init__ is called to customize instance creation."""
     init_calls = []
 
-    @replica(n=2)
+    @replica(cpus=1)
     class CustomInit:
         @classmethod
         def __local_init__(cls, base_value: int):
@@ -148,9 +149,9 @@ async def test_local_init_customizes_initialization():
         def get_value(self) -> int:
             return self.value
 
-    await CustomInit.deploy(base_value=10)
+    await CustomInit.deploy(instances=2, base_value=10)
 
-    # __local_init__ should have been called twice (n=2)
+    # __local_init__ should have been called twice (instances=2)
     assert len(init_calls) == 2
     assert init_calls == [10, 10]
 
@@ -165,7 +166,7 @@ async def test_local_init_customizes_initialization():
 async def test_local_init_fallback_to_regular_init():
     """Test that classes without __local_init__ use regular __init__."""
 
-    @replica(n=2)
+    @replica(cpus=1)
     class RegularInit:
         def __init__(self, value: int):
             self.value = value
@@ -200,22 +201,22 @@ async def test_profiling_toggle_and_context_manager():
 
 @pytest.mark.asyncio
 async def test_profiling_dependency_fanout_counts_external_calls(shutdown_on_exit):
-    @replica(n=2)
+    @replica(cpus=1)
     class VectorDB:
         def search(self, query: str) -> list:
             return [f"result_{query}"]
 
-    @replica(n=4)
+    @replica(cpus=1)
     class LLMPool:
         def generate(self, context: str) -> str:
             return f"response_{context}"
 
-    @replica(n=1)
+    @replica(cpus=1)
     class Cache:
         def lookup(self, key: str) -> str | None:
             return None
 
-    @replica
+    @replica(cpus=1)
     class ExternalService:
         def ping(self) -> bool:
             return True
@@ -237,10 +238,10 @@ async def test_profiling_dependency_fanout_counts_external_calls(shutdown_on_exi
 
     pipeline = chain(retrieve, generate, finalize)
 
-    await VectorDB.deploy()
-    await LLMPool.deploy()
-    await Cache.deploy()
-    await ExternalService.deploy()
+    await VectorDB.deploy(instances=2)
+    await LLMPool.deploy(instances=2)
+    await Cache.deploy(instances=2)
+    await ExternalService.deploy(instances=2)
 
     with shutdown_on_exit(VectorDB, LLMPool, Cache, ExternalService):
         with profile() as profiler:
@@ -279,7 +280,7 @@ async def test_profiling_dependency_fanout_counts_external_calls(shutdown_on_exi
 
 @pytest.mark.asyncio
 async def test_profiling_fanout_avg_in_loops(shutdown_on_exit):
-    @replica(n=2)
+    @replica(cpus=1)
     class BatchProcessor:
         def process(self, item: str) -> str:
             return f"processed_{item}"
@@ -288,7 +289,7 @@ async def test_profiling_fanout_avg_in_loops(shutdown_on_exit):
     async def process_batch(items: list) -> list:
         return [BatchProcessor.get().process(item) for item in items]
 
-    await BatchProcessor.deploy()
+    await BatchProcessor.deploy(instances=2)
 
     with shutdown_on_exit(BatchProcessor):
         with profile() as profiler:
@@ -315,12 +316,12 @@ async def test_profiling_fanout_avg_in_loops(shutdown_on_exit):
 
 @pytest.mark.asyncio
 async def test_profiler_summary_and_reset_with_nested_nodes(shutdown_on_exit):
-    @replica
+    @replica(cpus=1)
     class ServiceA:
         def work_a(self) -> str:
             return "a"
 
-    @replica
+    @replica(cpus=1)
     class ServiceB:
         def work_b(self) -> str:
             return "b"
@@ -334,8 +335,8 @@ async def test_profiler_summary_and_reset_with_nested_nodes(shutdown_on_exit):
         intermediate = await node_a(Context(input_val, context_factory=node_context))
         return intermediate + ServiceB.get().work_b()
 
-    await ServiceA.deploy()
-    await ServiceB.deploy()
+    await ServiceA.deploy(instances=2)
+    await ServiceB.deploy(instances=2)
 
     with shutdown_on_exit(ServiceA, ServiceB):
         with profile() as profiler:
@@ -414,10 +415,10 @@ async def test_grpc_backend_end_to_end():
 
         init(backend="grpc", address=f"localhost:{port}")
 
-        spec = ReplicaSpec(cls=Calculator, n=2)
+        spec = ReplicaSpec(cls=Calculator, cpus=1)
 
         # Deploy via gRPC
-        await spec.deploy(multiplier=3)
+        await spec.deploy(instances=2, multiplier=3)
 
         # Call via gRPC proxy
         proxy = spec.get()

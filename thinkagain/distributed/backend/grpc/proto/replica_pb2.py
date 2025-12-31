@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\rreplica.proto\x12\nthinkagain\"Q\n\x0b\x43\x61llRequest\x12\x14\n\x0creplica_name\x18\x01 \x01(\t\x12\x0e\n\x06method\x18\x02 \x01(\t\x12\x0c\n\x04\x61rgs\x18\x03 \x01(\x0c\x12\x0e\n\x06kwargs\x18\x04 \x01(\x0c\"-\n\x0c\x43\x61llResponse\x12\x0e\n\x06result\x18\x01 \x01(\x0c\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"N\n\rDeployRequest\x12\x14\n\x0creplica_name\x18\x01 \x01(\t\x12\t\n\x01n\x18\x02 \x01(\x05\x12\x0c\n\x04\x61rgs\x18\x03 \x01(\x0c\x12\x0e\n\x06kwargs\x18\x04 \x01(\x0c\"0\n\x0e\x44\x65ployResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"\'\n\x0fShutdownRequest\x12\x14\n\x0creplica_name\x18\x01 \x01(\t\"2\n\x10ShutdownResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t2\xd3\x01\n\x0eReplicaService\x12\x39\n\x04\x43\x61ll\x12\x17.thinkagain.CallRequest\x1a\x18.thinkagain.CallResponse\x12?\n\x06\x44\x65ploy\x12\x19.thinkagain.DeployRequest\x1a\x1a.thinkagain.DeployResponse\x12\x45\n\x08Shutdown\x12\x1b.thinkagain.ShutdownRequest\x1a\x1c.thinkagain.ShutdownResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\rreplica.proto\x12\nthinkagain\"Q\n\x0b\x43\x61llRequest\x12\x14\n\x0creplica_name\x18\x01 \x01(\t\x12\x0e\n\x06method\x18\x02 \x01(\t\x12\x0c\n\x04\x61rgs\x18\x03 \x01(\x0c\x12\x0e\n\x06kwargs\x18\x04 \x01(\x0c\"-\n\x0c\x43\x61llResponse\x12\x0e\n\x06result\x18\x01 \x01(\x0c\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"r\n\rDeployRequest\x12\x14\n\x0creplica_name\x18\x01 \x01(\t\x12\x11\n\tinstances\x18\x02 \x01(\x05\x12\x0c\n\x04\x63pus\x18\x03 \x01(\x05\x12\x0c\n\x04gpus\x18\x04 \x01(\x05\x12\x0c\n\x04\x61rgs\x18\x05 \x01(\x0c\x12\x0e\n\x06kwargs\x18\x06 \x01(\x0c\"0\n\x0e\x44\x65ployResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"\'\n\x0fShutdownRequest\x12\x14\n\x0creplica_name\x18\x01 \x01(\t\"2\n\x10ShutdownResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t2\xd3\x01\n\x0eReplicaService\x12\x39\n\x04\x43\x61ll\x12\x17.thinkagain.CallRequest\x1a\x18.thinkagain.CallResponse\x12?\n\x06\x44\x65ploy\x12\x19.thinkagain.DeployRequest\x1a\x1a.thinkagain.DeployResponse\x12\x45\n\x08Shutdown\x12\x1b.thinkagain.ShutdownRequest\x1a\x1c.thinkagain.ShutdownResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -36,13 +36,13 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_CALLRESPONSE']._serialized_start=112
   _globals['_CALLRESPONSE']._serialized_end=157
   _globals['_DEPLOYREQUEST']._serialized_start=159
-  _globals['_DEPLOYREQUEST']._serialized_end=237
-  _globals['_DEPLOYRESPONSE']._serialized_start=239
-  _globals['_DEPLOYRESPONSE']._serialized_end=287
-  _globals['_SHUTDOWNREQUEST']._serialized_start=289
-  _globals['_SHUTDOWNREQUEST']._serialized_end=328
-  _globals['_SHUTDOWNRESPONSE']._serialized_start=330
-  _globals['_SHUTDOWNRESPONSE']._serialized_end=380
-  _globals['_REPLICASERVICE']._serialized_start=383
-  _globals['_REPLICASERVICE']._serialized_end=594
+  _globals['_DEPLOYREQUEST']._serialized_end=273
+  _globals['_DEPLOYRESPONSE']._serialized_start=275
+  _globals['_DEPLOYRESPONSE']._serialized_end=323
+  _globals['_SHUTDOWNREQUEST']._serialized_start=325
+  _globals['_SHUTDOWNREQUEST']._serialized_end=364
+  _globals['_SHUTDOWNRESPONSE']._serialized_start=366
+  _globals['_SHUTDOWNRESPONSE']._serialized_end=416
+  _globals['_REPLICASERVICE']._serialized_start=419
+  _globals['_REPLICASERVICE']._serialized_end=630
 # @@protoc_insertion_point(module_scope)

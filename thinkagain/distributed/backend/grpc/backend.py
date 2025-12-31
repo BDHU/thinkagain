@@ -89,7 +89,9 @@ class AsyncGrpcBackend:
             self._channel = grpc_aio.insecure_channel(self._address)
             self._stub = replica_pb2_grpc.ReplicaServiceStub(self._channel)
 
-    async def deploy(self, spec: "ReplicaSpec", *args, **kwargs) -> None:
+    async def deploy(
+        self, spec: "ReplicaSpec", instances: int = 1, *args, **kwargs
+    ) -> None:
         """Request the server to deploy instances (async)."""
         name = spec.name
         if name in self._deployed:
@@ -97,7 +99,9 @@ class AsyncGrpcBackend:
         await self._ensure_connected()
         request = replica_pb2.DeployRequest(
             replica_name=name,
-            n=spec.n,
+            instances=instances,
+            cpus=spec.cpus,
+            gpus=spec.gpus,
             args=self._serializer.dumps(args),
             kwargs=self._serializer.dumps(kwargs),
         )

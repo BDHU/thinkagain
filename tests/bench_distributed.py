@@ -8,13 +8,13 @@ from thinkagain import chain, node, replica, run
 def test_bench_replica_deployment(benchmark):
     """Benchmark replica deployment overhead."""
 
-    @replica(n=2)
+    @replica(cpus=1)
     class Service:
         def __init__(self, value: int = 0):
             self.value = value
 
     async def deploy_and_shutdown_async():
-        await Service.deploy(value=5)
+        await Service.deploy(instances=2, value=5)
         await Service.shutdown()
 
     benchmark(lambda: asyncio.run(deploy_and_shutdown_async()))
@@ -23,12 +23,12 @@ def test_bench_replica_deployment(benchmark):
 def test_bench_replica_get(benchmark):
     """Benchmark getting replica instances (round-robin)."""
 
-    @replica(n=4)
+    @replica(cpus=1)
     class FastService:
         def ping(self) -> bool:
             return True
 
-    asyncio.run(FastService.deploy())
+    asyncio.run(FastService.deploy(instances=4))
 
     def get_instance():
         return FastService.get()
@@ -41,7 +41,7 @@ def test_bench_replica_get(benchmark):
 def test_bench_replica_method_call(benchmark):
     """Benchmark calling methods on replica instances."""
 
-    @replica(n=2)
+    @replica(cpus=1)
     class Calculator:
         def __init__(self, factor: int = 1):
             self.factor = factor
@@ -49,7 +49,7 @@ def test_bench_replica_method_call(benchmark):
         def multiply(self, x: int) -> int:
             return x * self.factor
 
-    asyncio.run(Calculator.deploy(factor=2))
+    asyncio.run(Calculator.deploy(instances=2, factor=2))
 
     def call_method():
         return Calculator.get().multiply(100)
@@ -62,7 +62,7 @@ def test_bench_replica_method_call(benchmark):
 def test_bench_pipeline_with_replica(benchmark):
     """Benchmark pipeline execution with replica service."""
 
-    @replica(n=2)
+    @replica(cpus=1)
     class Processor:
         def __init__(self, delta: int = 5):
             self.delta = delta
@@ -84,7 +84,7 @@ def test_bench_pipeline_with_replica(benchmark):
 
     pipeline = chain(initial_value, apply_processor, double_it)
 
-    asyncio.run(Processor.deploy(delta=5))
+    asyncio.run(Processor.deploy(instances=2, delta=5))
 
     def run_pipeline():
         return run(pipeline, 0)
@@ -97,7 +97,7 @@ def test_bench_pipeline_with_replica(benchmark):
 def test_bench_runtime_context_manager(benchmark):
     """Benchmark pipeline execution with runtime context (replicas pre-deployed)."""
 
-    @replica(n=2)
+    @replica(cpus=1)
     class Service:
         def ping(self) -> bool:
             return True
@@ -109,7 +109,7 @@ def test_bench_runtime_context_manager(benchmark):
     pipeline = chain(call_service)
 
     # Deploy replicas once before benchmarking
-    asyncio.run(Service.deploy())
+    asyncio.run(Service.deploy(instances=2))
 
     def run_pipeline():
         # Just benchmark pipeline execution, not deploy/shutdown overhead
@@ -125,7 +125,7 @@ def test_bench_runtime_context_manager(benchmark):
 def test_bench_round_robin_distribution(benchmark):
     """Benchmark round-robin distribution across multiple instances."""
 
-    @replica(n=4)
+    @replica(cpus=1)
     class Counter:
         def __init__(self):
             self.count = 0
@@ -134,7 +134,7 @@ def test_bench_round_robin_distribution(benchmark):
             self.count += 1
             return self.count
 
-    asyncio.run(Counter.deploy())
+    asyncio.run(Counter.deploy(instances=4))
 
     def distribute_calls():
         results = []
@@ -151,7 +151,7 @@ def test_bench_round_robin_distribution(benchmark):
 def test_bench_local_init_overhead(benchmark):
     """Benchmark overhead of __local_init__ customization."""
 
-    @replica(n=2)
+    @replica(cpus=1)
     class CustomInit:
         @classmethod
         def __local_init__(cls, base_value: int):
@@ -165,7 +165,7 @@ def test_bench_local_init_overhead(benchmark):
             return self.value
 
     async def deploy_custom_init_async():
-        await CustomInit.deploy(base_value=10)
+        await CustomInit.deploy(instances=2, base_value=10)
         await CustomInit.shutdown()
 
     benchmark(lambda: asyncio.run(deploy_custom_init_async()))
@@ -174,7 +174,7 @@ def test_bench_local_init_overhead(benchmark):
 def test_bench_multiple_replica_services(benchmark):
     """Benchmark pipeline with multiple different replica services."""
 
-    @replica(n=2)
+    @replica(cpus=1)
     class Adder:
         def __init__(self, delta: int = 1):
             self.delta = delta
@@ -182,7 +182,7 @@ def test_bench_multiple_replica_services(benchmark):
         def add(self, x: int) -> int:
             return x + self.delta
 
-    @replica(n=2)
+    @replica(cpus=1)
     class Multiplier:
         def __init__(self, factor: int = 2):
             self.factor = factor
@@ -205,8 +205,8 @@ def test_bench_multiple_replica_services(benchmark):
     pipeline = chain(start_value, add_step, multiply_step)
 
     async def deploy_services_async():
-        await Adder.deploy(delta=3)
-        await Multiplier.deploy(factor=4)
+        await Adder.deploy(instances=2, delta=3)
+        await Multiplier.deploy(instances=2, factor=4)
 
     asyncio.run(deploy_services_async())
 
