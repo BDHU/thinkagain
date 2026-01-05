@@ -15,6 +15,7 @@ Architecture:
 
 from __future__ import annotations
 
+import os
 import asyncio
 import subprocess
 import sys
@@ -28,6 +29,9 @@ if TYPE_CHECKING:
 
 from ..backend.serialization import PickleSerializer, Serializer
 from ..backend.utils import RoundRobinPool
+from ..nodes import NodeConfig, NodeState
+from ..scheduler import PlacementScheduler
+from ..spawner import SpawnedProcess, create_spawner
 
 # Lazy imports for grpc
 grpc_aio = None
@@ -57,7 +61,8 @@ def _ensure_grpc():
 class ServerNode:
     """Represents a running gRPC server process."""
 
-    process: subprocess.Popen
+    process: SpawnedProcess
+    host: str  # hostname/IP where server is running
     port: int
     replica_name: str
     cpus: int
@@ -84,6 +89,30 @@ class MultiNodeGrpcBackend:
     ):
         self._options = options or {}
         self._serializer = serializer or PickleSerializer()
+
+        # Parse node configuration from options
+        node_configs = self._options.get("nodes")
+        if node_configs is None:
+            # Default: localhost with actual CPU count
+            cpu_count = os.cpu_count() or 1
+            node_configs = [NodeConfig(host="localhost", cpus=cpu_count, gpus=0)]
+        elif isinstance(node_configs, list) and node_configs:
+            # Ensure we have NodeConfig objects
+            node_configs = [
+                nc if isinstance(nc, NodeConfig) else NodeConfig(**nc)
+                for nc in node_configs
+            ]
+
+        # Initialize node registry
+        self.nodes = {nc.host: NodeState.from_config(nc) for nc in node_configs}
+        self._node_configs = {nc.host: nc for nc in node_configs}
+
+        # Initialize placement scheduler
+        self.scheduler = PlacementScheduler(self.nodes)
+
+        # Initialize process spawner
+        self.spawner = create_spawner(self._node_configs)
+
         # replica_name -> list of ServerNode
         self._servers: dict[str, list[ServerNode]] = {}
         self._pool = RoundRobinPool()
@@ -131,36 +160,48 @@ class MultiNodeGrpcBackend:
     ) -> None:
         """Scale up by spawning additional servers."""
         name = spec.name
+        instances_to_add = desired_count - current_count
 
         # Get or create server list
         if name not in self._servers:
             self._servers[name] = []
 
-        servers = self._servers[name]
+        # Ask scheduler where to place new instances
+        try:
+            target_hosts = self.scheduler.select_nodes(
+                replica_name=name,
+                count=instances_to_add,
+                cpus_per_instance=spec.cpus,
+                gpus_per_instance=spec.gpus,
+            )
+        except RuntimeError as e:
+            raise RuntimeError(f"Placement failed: {e}") from e
 
         # Create server payload
         server_payload = self._create_server_payload(spec, args, kwargs)
 
-        # Spawn additional servers
+        # Spawn servers on selected nodes
         new_servers = []
-        instances_to_add = desired_count - current_count
-
-        for i in range(instances_to_add):
-            instance_id = current_count + i
+        for target_host in target_hosts:
             try:
-                server_node = await self._spawn_server(server_payload, spec)
+                server_node = await self._spawn_server(
+                    server_payload, spec, target_host
+                )
                 new_servers.append(server_node)
             except Exception as e:
                 # Cleanup newly spawned servers on failure
                 for s in new_servers:
                     s.process.terminate()
+                # Release reserved resources for all placements
+                for placed_host in target_hosts:
+                    self.nodes[placed_host].release(spec.cpus, spec.gpus)
                 raise RuntimeError(
-                    f"Failed to spawn server {instance_id} during scale-up: {e}"
+                    f"Failed to spawn server on {target_host}: {e}"
                 ) from e
 
         # Add new servers to the pool
-        servers.extend(new_servers)
-        self._pool.set_pool(name, servers, keep_index=True)
+        self._servers[name].extend(new_servers)
+        self._pool.set_pool(name, self._servers[name], keep_index=True)
 
     async def _scale_down(self, spec: "ReplicaSpec", desired_count: int) -> None:
         """Scale down by shutting down excess servers."""
@@ -176,6 +217,8 @@ class MultiNodeGrpcBackend:
 
         for server in servers_to_shutdown:
             await self._shutdown_server(server, name)
+            # Release resources back to node
+            self.nodes[server.host].release(spec.cpus, spec.gpus)
 
         if servers_to_keep:
             self._servers[name] = servers_to_keep
@@ -200,9 +243,15 @@ class MultiNodeGrpcBackend:
         return cloudpickle.dumps(payload)
 
     async def _spawn_server(
-        self, server_payload: bytes, spec: "ReplicaSpec"
+        self, server_payload: bytes, spec: "ReplicaSpec", target_host: str
     ) -> ServerNode:
-        """Spawn a single server process and wait for it to be ready."""
+        """Spawn a single server process and wait for it to be ready.
+
+        Args:
+            server_payload: Serialized server configuration
+            spec: Replica specification
+            target_host: Hostname where server should be spawned
+        """
         import socket
         import time
 
@@ -212,58 +261,50 @@ class MultiNodeGrpcBackend:
             payload_path = f.name
 
         try:
-            # Start server process on random port
-            process = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-m",
-                    "thinkagain.distributed.backend.grpc.server_main",
-                    payload_path,
-                    "0",
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,
+            # Build command
+            command = [
+                sys.executable,
+                "-m",
+                "thinkagain.distributed.backend.grpc.server_main",
+                payload_path,
+                "0",  # port 0 = random port
+            ]
+
+            # Get node config
+            node_config = self._node_configs[target_host]
+
+            # Spawn server process (local or remote)
+            spawned = await self.spawner.spawn(
+                node=node_config,
+                command=command,
+                payload_path=payload_path,
             )
-
-            # Wait for READY signal
-            port = None
-            deadline = time.monotonic() + 10.0
-            while time.monotonic() < deadline:
-                line = process.stdout.readline()
-                if line.startswith("READY:"):
-                    port = int(line.split(":")[1].strip())
-                    break
-                if process.poll() is not None:
-                    stderr = process.stderr.read()
-                    raise RuntimeError(f"Server died during startup: {stderr}")
-                await asyncio.sleep(0.05)
-
-            if port is None:
-                process.terminate()
-                raise RuntimeError("Server failed to start within timeout")
 
             # Verify server is listening
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
                 try:
-                    with socket.create_connection(("localhost", port), timeout=0.1):
+                    with socket.create_connection(
+                        (spawned.host, spawned.port), timeout=0.1
+                    ):
                         break
                 except OSError:
                     await asyncio.sleep(0.05)
             else:
-                process.terminate()
-                raise RuntimeError(f"Cannot connect to server on port {port}")
+                spawned.terminate()
+                raise RuntimeError(
+                    f"Cannot connect to server on {spawned.host}:{spawned.port}"
+                )
 
             # Create gRPC channel
             _ensure_grpc()
-            channel = grpc_aio.insecure_channel(f"localhost:{port}")
+            channel = grpc_aio.insecure_channel(f"{spawned.host}:{spawned.port}")
             stub = replica_pb2_grpc.ReplicaServiceStub(channel)
 
             return ServerNode(
-                process=process,
-                port=port,
+                process=spawned,
+                host=spawned.host,
+                port=spawned.port,
                 replica_name=spec.name,
                 cpus=spec.cpus,
                 gpus=spec.gpus,
@@ -323,6 +364,14 @@ class MultiNodeGrpcBackend:
         """Check if replica is deployed."""
         return self._pool.has_pool(spec.name)
 
+    def get_cluster_state(self) -> dict[str, dict]:
+        """Get current cluster resource state.
+
+        Returns:
+            Mapping of hostname -> resource info with utilization
+        """
+        return self.scheduler.get_cluster_state()
+
     async def close(self):
         """Close all server processes and connections."""
         for name in list(self._servers.keys()):
@@ -331,6 +380,9 @@ class MultiNodeGrpcBackend:
 
             temp_spec = ReplicaSpec(cls=type(name, (), {}), cpus=1)
             await self.shutdown(temp_spec)
+
+        # Cleanup spawner resources (SSH connections, etc.)
+        await self.spawner.cleanup()
 
 
 class _SingleServerProxy:

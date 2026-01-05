@@ -9,6 +9,7 @@ from typing import Any, Callable, Iterator, TYPE_CHECKING
 from .backend.base import Backend
 from .backend.local import LocalBackend
 from .backend.serialization import Serializer
+from .nodes import NodeConfig
 
 _BACKEND_FACTORIES: dict[str, Callable[["RuntimeConfig"], Backend]] = {}
 
@@ -128,8 +129,8 @@ _runtime = RuntimeContext()
 
 def init(
     backend: str = "local",
-    address: str | None = None,
     *,
+    nodes: list[NodeConfig] | None = None,
     serializer: Serializer | None = None,
     **options,
 ) -> None:
@@ -137,11 +138,27 @@ def init(
 
     Args:
         backend: Backend type ("local" or "grpc")
-        address: Deprecated (grpc backend now spawns servers automatically)
+        nodes: List of compute nodes (default: localhost with auto-detected CPUs)
         serializer: Custom serializer for gRPC
         **options: Additional backend options
+
+    Examples:
+        # Local with defaults
+        init(backend="grpc")
+
+        # Multi-node cluster
+        init(
+            backend="grpc",
+            nodes=[
+                NodeConfig(host="localhost", cpus=8, gpus=0),
+                NodeConfig(host="worker1.local", cpus=16, gpus=2),
+                NodeConfig(host="worker2.local", cpus=16, gpus=2),
+            ],
+        )
     """
-    _runtime.init(backend, address=address, serializer=serializer, **options)
+    if nodes is not None:
+        options["nodes"] = nodes
+    _runtime.init(backend, address=None, serializer=serializer, **options)
 
 
 def get_runtime_config() -> RuntimeConfig:
