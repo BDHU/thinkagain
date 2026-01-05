@@ -371,62 +371,74 @@ async def test_profiler_summary_and_reset_with_nested_nodes(shutdown_on_exit):
 
 
 @pytest.mark.asyncio
-async def test_grpc_backend_end_to_end():
-    """Test gRPC backend with server and client."""
-    import socket
-    import time
+async def test_multinode_incremental_scaling():
+    """Test multi-node backend with incremental scaling.
 
+    Demonstrates:
+    - @replica(cpus=1) DemoClass
+    - deploy(instances=2) spawns 2 servers
+    - deploy(instances=3) spawns 1 more (scale up)
+    - deploy(instances=1) shuts down 2 (scale down)
+    """
     pytest.importorskip("grpc", reason="gRPC backend requires the grpc package")
-    from thinkagain.distributed.backend.grpc import ReplicaRegistry, serve
+    pytest.importorskip("cloudpickle", reason="Multi-node backend requires cloudpickle")
 
-    # Define a replica class
-    class Calculator:
-        def __init__(self, multiplier: int = 1):
-            self.multiplier = multiplier
+    from thinkagain.distributed.backend.multinode_grpc import MultiNodeGrpcBackend
+    from thinkagain.distributed.replica import ReplicaSpec
 
-        def multiply(self, x: int) -> int:
-            return x * self.multiplier
+    class DemoClass:
+        def __init__(self, prefix: str = "demo"):
+            self.prefix = prefix
+            self.call_count = 0
 
-    # Set up server with the class registered
-    registry = ReplicaRegistry()
-    registry.register(Calculator)
+        def process(self, data: str) -> str:
+            self.call_count += 1
+            return f"{self.prefix}:{data}:count={self.call_count}"
 
-    try:
-        server, port = await serve(port=0, registry=registry)
-    except RuntimeError as exc:
-        pytest.skip(f"gRPC server unavailable in test environment: {exc}")
-
-    # Wait for server to be ready with retry loop
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection(("localhost", port), timeout=0.1):
-                break
-        except OSError:
-            time.sleep(0.05)
-    else:
-        server.stop(grace=0)
-        pytest.fail("gRPC server failed to start within timeout")
+    backend = MultiNodeGrpcBackend()
+    spec = ReplicaSpec(cls=DemoClass, cpus=1)
 
     try:
-        # Client side: use gRPC backend
-        from thinkagain.distributed import init
-        from thinkagain.distributed.replica import ReplicaSpec
+        # Initial deployment: 2 instances
+        await backend.deploy(spec, instances=2, prefix="node")
+        assert len(backend._servers["DemoClass"]) == 2
 
-        init(backend="grpc", address=f"localhost:{port}")
+        # Test round-robin
+        p1 = backend.get_instance(spec)
+        r1 = await p1.process("a")
+        assert r1 == "node:a:count=1"  # Server 1
 
-        spec = ReplicaSpec(cls=Calculator, cpus=1)
+        p2 = backend.get_instance(spec)
+        r2 = await p2.process("b")
+        assert r2 == "node:b:count=1"  # Server 2
 
-        # Deploy via gRPC
-        await spec.deploy(instances=2, multiplier=3)
+        p3 = backend.get_instance(spec)
+        r3 = await p3.process("c")
+        assert r3 == "node:c:count=2"  # Server 1 again
 
-        # Call via gRPC proxy
-        proxy = spec.get()
-        result = await proxy.multiply(10)
-        assert result == 30
+        # Scale up to 3
+        await backend.deploy(spec, instances=3, prefix="node")
+        assert len(backend._servers["DemoClass"]) == 3
 
-        # Shutdown
-        await spec.shutdown()
+        # New server should be in rotation
+        p4 = backend.get_instance(spec)
+        r4 = await p4.process("d")
+        assert r4 == "node:d:count=2"  # Server 2
+
+        p5 = backend.get_instance(spec)
+        r5 = await p5.process("e")
+        assert r5 == "node:e:count=1"  # Server 3 (new)
+
+        # Scale down to 1
+        await backend.deploy(spec, instances=1, prefix="node")
+        assert len(backend._servers["DemoClass"]) == 1
+
+        # Only one server left
+        p6 = backend.get_instance(spec)
+        r6 = await p6.process("f")
+        assert r6 == "node:f:count=3"  # Server 1 (the one that remained)
 
     finally:
-        await server.stop(grace=0)
+        await backend.close()
+
+

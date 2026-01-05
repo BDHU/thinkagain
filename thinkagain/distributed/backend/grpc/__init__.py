@@ -1,12 +1,9 @@
-"""gRPC backend package."""
+"""gRPC server components for distributed replica execution."""
 
-from .backend import AsyncGrpcBackend, GrpcReplicaProxy
 from .server import AsyncReplicaServicer, ReplicaRegistry, run_server, serve
 
 __all__ = [
-    "AsyncGrpcBackend",
     "AsyncReplicaServicer",
-    "GrpcReplicaProxy",
     "ReplicaRegistry",
     "serve",
     "run_server",
