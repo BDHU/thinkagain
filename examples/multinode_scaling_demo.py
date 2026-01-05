@@ -37,7 +37,7 @@ async def main():
 
     try:
         # Initialize multi-node gRPC backend
-        init(backend="multinode-grpc")
+        init(backend="grpc")
 
         # Step 1: Initial deployment with 2 instances
         print("\n[Step 1] Initial deployment: 2 instances")

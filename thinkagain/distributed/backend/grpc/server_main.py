@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 
 
@@ -42,7 +43,7 @@ async def main() -> None:
             kwargs=kwargs,
         )
 
-        print(f"READY:{bound_port}", flush=True)
+        print(f"READY:{bound_port}:{os.getpid()}", flush=True)
         await server.wait_for_termination()
     except Exception as exc:
         print(f"ERROR:{exc}", file=sys.stderr, flush=True)

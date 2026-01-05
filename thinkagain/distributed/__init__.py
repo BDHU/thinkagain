@@ -8,6 +8,7 @@ from .manager import (
     replica,
     set_default_manager,
 )
+from .nodes import NodeConfig
 from .replica import ReplicaSpec
 from .runtime import (
     get_runtime_config,
@@ -20,6 +21,7 @@ from .runtime import (
 
 
 __all__ = [
+    "NodeConfig",
     "ReplicaManager",
     "ReplicaSpec",
     "replica",
