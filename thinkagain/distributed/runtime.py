@@ -142,7 +142,7 @@ def init(
 
     Args:
         backend: Backend type ("local" or "grpc")
-        address: Address for gRPC backend
+        address: Deprecated (grpc backend now spawns servers automatically)
         serializer: Custom serializer for gRPC
         **options: Additional backend options
     """
@@ -222,10 +222,10 @@ register_backend("local", lambda _: LocalBackend())
 
 
 def _grpc_factory(config: RuntimeConfig) -> Backend:
-    from .backend.grpc import AsyncGrpcBackend
+    from .backend.multinode_grpc import MultiNodeGrpcBackend
 
-    return AsyncGrpcBackend(
-        config.address, dict(config.options), serializer=config.serializer
+    return MultiNodeGrpcBackend(
+        dict(config.options), serializer=config.serializer
     )
 
 
