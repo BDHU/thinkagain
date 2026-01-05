@@ -30,6 +30,15 @@ class RoundRobinPool:
             self._instances[name] = instances
             self._indices[name] = 0
 
+    def set_pool(self, name: str, instances: list, *, keep_index: bool = False) -> None:
+        """Create or replace a pool of instances."""
+        with self._lock:
+            self._instances[name] = instances
+            if keep_index and name in self._indices and instances:
+                self._indices[name] = self._indices[name] % len(instances)
+            else:
+                self._indices[name] = 0
+
     def remove_pool(self, name: str) -> None:
         """Remove a pool.
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import threading
 from dataclasses import dataclass, field, replace
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator, TYPE_CHECKING
@@ -45,27 +44,25 @@ class RuntimeConfig:
 
 
 class RuntimeContext:
-    """Thread-safe runtime context for backend management."""
+    """Runtime context for backend management."""
 
     def __init__(self):
-        self._local = threading.local()
         self._config = RuntimeConfig()
         self._config_version = 0
-        self._lock = threading.Lock()
+        self._backend: Backend | None = None
+        self._backend_version: int | None = None
 
     @property
     def config(self) -> RuntimeConfig:
         """Get current configuration (copy for safety)."""
-        with self._lock:
-            return replace(self._config, options=dict(self._config.options))
+        return replace(self._config, options=dict(self._config.options))
 
     def set_config(self, config: RuntimeConfig) -> None:
         """Set configuration and clear cached backend."""
-        with self._lock:
-            self._config = config
-            self._config_version += 1
-            self._local.backend = None
-            self._local.backend_version = None
+        self._config = config
+        self._config_version += 1
+        self._backend = None
+        self._backend_version = None
 
     def init(
         self,
@@ -86,21 +83,19 @@ class RuntimeContext:
         )
 
     def get_backend(self) -> Backend:
-        """Get thread-local backend instance."""
-        backend = getattr(self._local, "backend", None)
-        backend_version = getattr(self._local, "backend_version", None)
+        """Get cached backend instance."""
+        backend = self._backend
+        backend_version = self._backend_version
 
         # Fast path: return cached backend if version matches
         if backend is not None and backend_version == self._config_version:
             return backend
 
-        # Slow path: create or update backend under lock
-        with self._lock:
-            # Double-check version after acquiring lock
-            if backend is None or backend_version != self._config_version:
-                backend = self._create_backend()
-                self._local.backend = backend
-                self._local.backend_version = self._config_version
+        # Slow path: create or update backend
+        if backend is None or backend_version != self._config_version:
+            backend = self._create_backend()
+            self._backend = backend
+            self._backend_version = self._config_version
         return backend
 
     def _create_backend(self) -> Backend:
@@ -116,13 +111,13 @@ class RuntimeContext:
         return factory(self._config)
 
     def reset_backend(self) -> None:
-        """Reset thread-local backend."""
-        self._local.backend = None
-        self._local.backend_version = None
+        """Reset cached backend."""
+        self._backend = None
+        self._backend_version = None
 
     def close_backend(self) -> None:
-        """Close the current thread-local backend if it supports close()."""
-        backend = getattr(self._local, "backend", None)
+        """Close the current backend if it supports close()."""
+        backend = self._backend
         if backend is not None and hasattr(backend, "close"):
             backend.close()
 
@@ -138,7 +133,7 @@ def init(
     serializer: Serializer | None = None,
     **options,
 ) -> None:
-    """Initialize the distributed runtime (thread-safe).
+    """Initialize the distributed runtime.
 
     Args:
         backend: Backend type ("local" or "grpc")
@@ -150,12 +145,12 @@ def init(
 
 
 def get_runtime_config() -> RuntimeConfig:
-    """Get the current runtime configuration (thread-safe)."""
+    """Get the current runtime configuration."""
     return _runtime.config
 
 
 def get_backend() -> Backend:
-    """Get the current backend instance (thread-safe).
+    """Get the current backend instance.
 
     Returns thread-local backend, creating it if needed.
     """
@@ -163,7 +158,7 @@ def get_backend() -> Backend:
 
 
 def reset_backend() -> None:
-    """Reset the backend instance (thread-safe).
+    """Reset the backend instance.
 
     Forces recreation on next get_backend() call.
     Useful for testing or reconfiguration.
@@ -224,9 +219,7 @@ register_backend("local", lambda _: LocalBackend())
 def _grpc_factory(config: RuntimeConfig) -> Backend:
     from .backend.multinode_grpc import MultiNodeGrpcBackend
 
-    return MultiNodeGrpcBackend(
-        dict(config.options), serializer=config.serializer
-    )
+    return MultiNodeGrpcBackend(dict(config.options), serializer=config.serializer)
 
 
 register_backend("grpc", _grpc_factory)

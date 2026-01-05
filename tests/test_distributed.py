@@ -440,5 +440,3 @@ async def test_multinode_incremental_scaling():
 
     finally:
         await backend.close()
-
-
