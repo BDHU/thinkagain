@@ -31,3 +31,14 @@ class Backend(Protocol):
     async def shutdown(self, spec: "ReplicaSpec") -> None: ...
     def get_instance(self, spec: "ReplicaSpec") -> Any: ...
     def is_deployed(self, spec: "ReplicaSpec") -> bool: ...
+
+    def get_instance_count(self, spec: "ReplicaSpec") -> int:
+        """Get current number of deployed instances for this replica.
+
+        Args:
+            spec: ReplicaSpec to query
+
+        Returns:
+            Number of currently deployed instances (0 if not deployed)
+        """
+        ...

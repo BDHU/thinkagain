@@ -29,13 +29,9 @@ class ReplicaSpec:
 
     def __post_init__(self):
         """Validate resource specifications."""
-        if self.cpus < 0 or self.gpus < 0:
-            raise ValueError("Resource counts cannot be negative")
-        if self.cpus == 0 and self.gpus == 0:
-            raise ValueError(
-                "At least one resource must be > 0. "
-                "Use cpus=N for CPU-only or gpus=N for GPU-only workers."
-            )
+        from .validation import validate_resources
+
+        validate_resources(self.cpus, self.gpus)
 
     @property
     def name(self) -> str:

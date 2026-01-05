@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import subprocess
 import sys
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,50 +15,82 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from thinkagain.distributed.nodes import NodeConfig
 
-
-class _ProcessHandle(ABC):
-    @abstractmethod
-    def poll(self) -> int | None: ...
-
-    @abstractmethod
-    def readline_stdout(self) -> str: ...
-
-    @abstractmethod
-    def read_stderr(self) -> str: ...
-
-    @abstractmethod
-    def terminate(self) -> None: ...
-
-    @abstractmethod
-    def kill(self) -> None: ...
-
-    @abstractmethod
-    def wait(self, timeout: float | None = None) -> None: ...
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class SpawnedProcess:
+    """Represents a spawned server process with its connection details."""
+
     host: str
     port: int
-    handle: _ProcessHandle
+    process: subprocess.Popen | None = None  # For local processes
+    ssh_client: any = None  # For remote processes
+    channel: any = None  # SSH channel for remote processes
+    pid: int | None = None
 
     def poll(self) -> int | None:
-        return self.handle.poll()
-
-    def readline_stdout(self) -> str:
-        return self.handle.readline_stdout()
-
-    def read_stderr(self) -> str:
-        return self.handle.read_stderr()
+        """Check if process has exited. Returns exit code or None if still running."""
+        if self.process:
+            return self.process.poll()
+        if self.channel:
+            if self.channel.exit_status_ready():
+                return self.channel.recv_exit_status()
+        return None
 
     def terminate(self) -> None:
-        self.handle.terminate()
+        """Gracefully terminate the process."""
+        if self.process:
+            self.process.terminate()
+        elif self.channel and self.ssh_client and self.pid:
+            try:
+                _, stdout, _ = self.ssh_client.exec_command(f"kill {self.pid}")
+                stdout.channel.recv_exit_status()
+            except Exception as exc:
+                logger.warning(
+                    "Failed to terminate remote process %s on %s",
+                    self.pid,
+                    self.host,
+                    exc_info=exc,
+                )
+            self.channel.close()
 
     def kill(self) -> None:
-        self.handle.kill()
+        """Forcefully kill the process."""
+        if self.process:
+            self.process.kill()
+        elif self.channel and self.ssh_client and self.pid:
+            try:
+                _, stdout, _ = self.ssh_client.exec_command(f"kill -9 {self.pid}")
+                stdout.channel.recv_exit_status()
+            except Exception as exc:
+                logger.warning(
+                    "Failed to kill remote process %s on %s",
+                    self.pid,
+                    self.host,
+                    exc_info=exc,
+                )
+            self.channel.close()
 
     def wait(self, timeout: float | None = None) -> None:
-        self.handle.wait(timeout=timeout)
+        """Wait for process to complete."""
+        if self.process:
+            self.process.wait(timeout=timeout)
+        elif self.channel:
+            if timeout:
+                self.channel.settimeout(timeout)
+            self.channel.recv_exit_status()
+
+
+def _parse_ready_line(line: str) -> tuple[int, int | None]:
+    """Parse READY: message to extract port and pid.
+
+    Expected format: READY:port[:pid]
+    """
+    parts = line.strip().split(":")
+    port = int(parts[1])
+    pid = int(parts[2]) if len(parts) > 2 else None
+    return port, pid
 
 
 class ProcessSpawner(ABC):
@@ -70,29 +104,6 @@ class ProcessSpawner(ABC):
 
     @abstractmethod
     async def cleanup(self) -> None: ...
-
-
-class _LocalProcess(_ProcessHandle):
-    def __init__(self, process: subprocess.Popen):
-        self._process = process
-
-    def poll(self) -> int | None:
-        return self._process.poll()
-
-    def readline_stdout(self) -> str:
-        return self._process.stdout.readline()
-
-    def read_stderr(self) -> str:
-        return self._process.stderr.read()
-
-    def terminate(self) -> None:
-        self._process.terminate()
-
-    def kill(self) -> None:
-        self._process.kill()
-
-    def wait(self, timeout: float | None = None) -> None:
-        self._process.wait(timeout=timeout)
 
 
 class LocalSpawner(ProcessSpawner):
@@ -112,24 +123,22 @@ class LocalSpawner(ProcessSpawner):
             text=True,
             bufsize=1,
         )
-        port, _pid = await self._wait_for_ready(process)
+        port, pid = await self._wait_for_ready(process)
         return SpawnedProcess(
             host=node.host,
             port=port,
-            handle=_LocalProcess(process),
+            process=process,
+            pid=pid,
         )
 
-    async def _wait_for_ready(self, process: subprocess.Popen) -> tuple[int, int | None]:
-        import time
-
+    async def _wait_for_ready(
+        self, process: subprocess.Popen
+    ) -> tuple[int, int | None]:
         deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline:
             line = process.stdout.readline()
             if line.startswith("READY:"):
-                parts = line.strip().split(":")
-                port = int(parts[1])
-                pid = int(parts[2]) if len(parts) > 2 else None
-                return port, pid
+                return _parse_ready_line(line)
             if process.poll() is not None:
                 stderr = process.stderr.read()
                 raise RuntimeError(f"Server died during startup: {stderr}")
@@ -140,73 +149,6 @@ class LocalSpawner(ProcessSpawner):
 
     async def cleanup(self) -> None:
         pass
-
-
-class RemoteProcess(_ProcessHandle):
-    def __init__(self, ssh_client, channel, host: str, pid: int | None = None):
-        self._ssh_client = ssh_client
-        self._channel = channel
-        self._host = host
-        self._pid = pid
-        self._stdout_buffer: list[str] = []
-        self._stderr_buffer: list[str] = []
-        self._exit_status: int | None = None
-
-        self._stdout_task = asyncio.create_task(
-            self._buffer_stream(channel.makefile("r"), self._stdout_buffer)
-        )
-        self._stderr_task = asyncio.create_task(
-            self._buffer_stream(channel.makefile_stderr("r"), self._stderr_buffer)
-        )
-
-    async def _buffer_stream(self, stream, buffer: list[str]) -> None:
-        try:
-            loop = asyncio.get_event_loop()
-            while True:
-                line = await loop.run_in_executor(None, stream.readline)
-                if not line:
-                    break
-                buffer.append(line)
-        except Exception:
-            pass
-
-    def poll(self) -> int | None:
-        if self._exit_status is not None:
-            return self._exit_status
-        if self._channel.exit_status_ready():
-            self._exit_status = self._channel.recv_exit_status()
-        return self._exit_status
-
-    def readline_stdout(self) -> str:
-        return self._stdout_buffer.popleft() if self._stdout_buffer else ""
-
-    def read_stderr(self) -> str:
-        result = "".join(self._stderr_buffer)
-        self._stderr_buffer.clear()
-        return result
-
-    def terminate(self) -> None:
-        if self._pid:
-            try:
-                _, stdout, _ = self._ssh_client.exec_command(f"kill {self._pid}")
-                stdout.channel.recv_exit_status()
-            except Exception:
-                pass
-        self._channel.close()
-
-    def kill(self) -> None:
-        if self._pid:
-            try:
-                _, stdout, _ = self._ssh_client.exec_command(f"kill -9 {self._pid}")
-                stdout.channel.recv_exit_status()
-            except Exception:
-                pass
-        self._channel.close()
-
-    def wait(self, timeout: float | None = None) -> None:
-        if timeout:
-            self._channel.settimeout(timeout)
-        self._exit_status = self._channel.recv_exit_status()
 
 
 class SSHSpawner(ProcessSpawner):
@@ -242,13 +184,13 @@ class SSHSpawner(ProcessSpawner):
         channel.exec_command(cmd_str)
 
         port, pid = await self._wait_for_ready(channel)
-        remote_proc = RemoteProcess(
+        return SpawnedProcess(
+            host=node.host,
+            port=port,
             ssh_client=ssh_client,
             channel=channel,
-            host=node.host,
             pid=pid,
         )
-        return SpawnedProcess(host=node.host, port=port, handle=remote_proc)
 
     async def _get_ssh_client(self, node: "NodeConfig"):
         import paramiko
@@ -283,8 +225,6 @@ class SSHSpawner(ProcessSpawner):
         return remote_path
 
     async def _wait_for_ready(self, channel) -> tuple[int, int | None]:
-        import time
-
         deadline = time.monotonic() + 10.0
         stdout = channel.makefile("r")
         stderr = channel.makefile_stderr("r")
@@ -293,10 +233,7 @@ class SSHSpawner(ProcessSpawner):
         while time.monotonic() < deadline:
             line = await loop.run_in_executor(None, stdout.readline)
             if line.startswith("READY:"):
-                parts = line.strip().split(":")
-                port = int(parts[1])
-                pid = int(parts[2]) if len(parts) > 2 else None
-                return port, pid
+                return _parse_ready_line(line)
             if channel.exit_status_ready():
                 stderr_output = stderr.read()
                 raise RuntimeError(

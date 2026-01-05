@@ -401,7 +401,7 @@ async def test_multinode_incremental_scaling():
     try:
         # Initial deployment: 2 instances
         await backend.deploy(spec, instances=2, prefix="node")
-        assert len(backend._servers["DemoClass"]) == 2
+        assert backend.get_instance_count(spec) == 2
 
         # Test round-robin
         p1 = backend.get_instance(spec)
@@ -418,7 +418,7 @@ async def test_multinode_incremental_scaling():
 
         # Scale up to 3
         await backend.deploy(spec, instances=3, prefix="node")
-        assert len(backend._servers["DemoClass"]) == 3
+        assert backend.get_instance_count(spec) == 3
 
         # New server should be in rotation
         p4 = backend.get_instance(spec)
@@ -431,7 +431,7 @@ async def test_multinode_incremental_scaling():
 
         # Scale down to 1
         await backend.deploy(spec, instances=1, prefix="node")
-        assert len(backend._servers["DemoClass"]) == 1
+        assert backend.get_instance_count(spec) == 1
 
         # Only one server left
         p6 = backend.get_instance(spec)

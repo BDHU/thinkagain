@@ -38,3 +38,6 @@ class LocalBackend(PoolBackendMixin):
 
     def is_deployed(self, spec: "ReplicaSpec") -> bool:
         return self._is_deployed_in_pool(spec.name)
+
+    def get_instance_count(self, spec: "ReplicaSpec") -> int:
+        return len(self._pool.get_all(spec.name))
