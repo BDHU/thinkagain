@@ -19,7 +19,6 @@ import asyncio
 import subprocess
 import sys
 import tempfile
-import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -28,6 +27,7 @@ if TYPE_CHECKING:
     from thinkagain.distributed.replica import ReplicaSpec
 
 from ..backend.serialization import PickleSerializer, Serializer
+from ..backend.utils import RoundRobinPool
 
 # Lazy imports for grpc
 grpc_aio = None
@@ -86,7 +86,7 @@ class MultiNodeGrpcBackend:
         self._serializer = serializer or PickleSerializer()
         # replica_name -> list of ServerNode
         self._servers: dict[str, list[ServerNode]] = {}
-        self._round_robin_index: dict[str, int] = {}
+        self._pool = RoundRobinPool()
 
     async def deploy(
         self, spec: "ReplicaSpec", instances: int = 1, *args, **kwargs
@@ -135,12 +135,11 @@ class MultiNodeGrpcBackend:
         # Get or create server list
         if name not in self._servers:
             self._servers[name] = []
-            self._round_robin_index[name] = 0
 
         servers = self._servers[name]
 
-        # Create server script
-        server_script = self._create_server_script(spec, args, kwargs)
+        # Create server payload
+        server_payload = self._create_server_payload(spec, args, kwargs)
 
         # Spawn additional servers
         new_servers = []
@@ -149,9 +148,7 @@ class MultiNodeGrpcBackend:
         for i in range(instances_to_add):
             instance_id = current_count + i
             try:
-                server_node = await self._spawn_server(
-                    server_script, spec, instance_id=instance_id
-                )
+                server_node = await self._spawn_server(server_payload, spec)
                 new_servers.append(server_node)
             except Exception as e:
                 # Cleanup newly spawned servers on failure
@@ -163,6 +160,7 @@ class MultiNodeGrpcBackend:
 
         # Add new servers to the pool
         servers.extend(new_servers)
+        self._pool.set_pool(name, servers, keep_index=True)
 
     async def _scale_down(self, spec: "ReplicaSpec", desired_count: int) -> None:
         """Scale down by shutting down excess servers."""
@@ -177,118 +175,52 @@ class MultiNodeGrpcBackend:
         servers_to_keep = servers[:-instances_to_remove]
 
         for server in servers_to_shutdown:
-            # Send shutdown RPC
-            try:
-                if server.stub:
-                    _ensure_grpc()
-                    request = replica_pb2.ShutdownRequest(replica_name=name)
-                    await server.stub.Shutdown(request)
-            except Exception:
-                pass  # Ignore errors during shutdown
+            await self._shutdown_server(server, name)
 
-            # Close channel
-            if server.channel:
-                await server.channel.close()
+        if servers_to_keep:
+            self._servers[name] = servers_to_keep
+            self._pool.set_pool(name, servers_to_keep, keep_index=True)
+        else:
+            del self._servers[name]
+            self._pool.remove_pool(name)
 
-            # Terminate process
-            server.process.terminate()
-            try:
-                server.process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                server.process.kill()
-                server.process.wait()
-
-        # Update server list
-        self._servers[name] = servers_to_keep
-
-        # Reset round-robin index if needed
-        if self._round_robin_index[name] >= len(servers_to_keep):
-            self._round_robin_index[name] = 0
-
-    def _create_server_script(
+    def _create_server_payload(
         self, spec: "ReplicaSpec", args: tuple, kwargs: dict
-    ) -> str:
-        """Generate Python script for a server process."""
-        # Serialize the class definition and constructor args
+    ) -> bytes:
+        """Serialize payload for a server process."""
         import cloudpickle
 
-        cls_serialized = cloudpickle.dumps(spec.cls)
-        args_serialized = cloudpickle.dumps(args)
-        kwargs_serialized = cloudpickle.dumps(kwargs)
-
-        # Convert bytes to repr for embedding in script
-        cls_repr = repr(cls_serialized)
-        args_repr = repr(args_serialized)
-        kwargs_repr = repr(kwargs_serialized)
-
-        script = textwrap.dedent(
-            f"""
-            import asyncio
-            import sys
-            import cloudpickle
-
-            async def main():
-                from thinkagain.distributed.backend.grpc import ReplicaRegistry, serve
-
-                # Deserialize the class and constructor args
-                cls = cloudpickle.loads({cls_repr})
-                args = cloudpickle.loads({args_repr})
-                kwargs = cloudpickle.loads({kwargs_repr})
-
-                # Create registry and register the class
-                registry = ReplicaRegistry()
-                registry.register(cls)
-
-                # Get port from command line
-                port = int(sys.argv[1])
-
-                try:
-                    # Start server
-                    server, bound_port = await serve(port=port, registry=registry)
-
-                    # Deploy exactly 1 instance with the provided args
-                    registry.deploy(
-                        name=cls.__name__,
-                        instances=1,
-                        cpus={spec.cpus},
-                        gpus={spec.gpus},
-                        args=args,
-                        kwargs=kwargs,
-                    )
-
-                    # Signal ready
-                    print(f"READY:{{bound_port}}", flush=True)
-
-                    # Keep running
-                    await server.wait_for_termination()
-                except Exception as e:
-                    print(f"ERROR:{{e}}", file=sys.stderr, flush=True)
-                    sys.exit(1)
-
-            if __name__ == "__main__":
-                asyncio.run(main())
-            """
-        )
-        return script
+        payload = {
+            "cls": spec.cls,
+            "args": args,
+            "kwargs": kwargs,
+            "cpus": spec.cpus,
+            "gpus": spec.gpus,
+        }
+        return cloudpickle.dumps(payload)
 
     async def _spawn_server(
-        self, server_script: str, spec: "ReplicaSpec", instance_id: int
+        self, server_payload: bytes, spec: "ReplicaSpec"
     ) -> ServerNode:
         """Spawn a single server process and wait for it to be ready."""
         import socket
         import time
 
-        # Write script to temp file
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".py", delete=False
-        ) as f:
-            f.write(server_script)
-            script_path = f.name
+        # Write payload to temp file
+        with tempfile.NamedTemporaryFile(mode="wb", suffix=".pkl", delete=False) as f:
+            f.write(server_payload)
+            payload_path = f.name
 
         try:
             # Start server process on random port
             process = subprocess.Popen(
-                [sys.executable, script_path, "0"],
+                [
+                    sys.executable,
+                    "-m",
+                    "thinkagain.distributed.backend.grpc.server_main",
+                    payload_path,
+                    "0",
+                ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -341,7 +273,7 @@ class MultiNodeGrpcBackend:
 
         finally:
             # Cleanup temp file
-            Path(script_path).unlink(missing_ok=True)
+            Path(payload_path).unlink(missing_ok=True)
 
     async def shutdown(self, spec: "ReplicaSpec") -> None:
         """Shutdown all server processes for this replica."""
@@ -351,52 +283,45 @@ class MultiNodeGrpcBackend:
 
         servers = self._servers[name]
         for server in servers:
-            # Send shutdown RPC
-            try:
-                if server.stub:
-                    _ensure_grpc()
-                    request = replica_pb2.ShutdownRequest(replica_name=name)
-                    await server.stub.Shutdown(request)
-            except Exception:
-                pass  # Ignore errors during shutdown
-
-            # Close channel
-            if server.channel:
-                await server.channel.close()
-
-            # Terminate process
-            server.process.terminate()
-            try:
-                server.process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                server.process.kill()
-                server.process.wait()
+            await self._shutdown_server(server, name)
 
         del self._servers[name]
-        del self._round_robin_index[name]
+        self._pool.remove_pool(name)
+
+    async def _shutdown_server(self, server: ServerNode, replica_name: str) -> None:
+        """Shutdown a single server process."""
+        try:
+            if server.stub:
+                _ensure_grpc()
+                request = replica_pb2.ShutdownRequest(replica_name=replica_name)
+                await server.stub.Shutdown(request)
+        except Exception:
+            pass  # Ignore errors during shutdown
+
+        if server.channel:
+            await server.channel.close()
+
+        server.process.terminate()
+        try:
+            server.process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            server.process.kill()
+            server.process.wait()
 
     def get_instance(self, spec: "ReplicaSpec") -> Any:
         """Get proxy to next server instance using round-robin."""
         name = spec.name
-        if name not in self._servers:
+        if not self._pool.has_pool(name):
             raise RuntimeError(f"Replica '{name}' not deployed")
-
-        servers = self._servers[name]
-        if not servers:
-            raise RuntimeError(f"No servers available for '{name}'")
-
-        # Round-robin selection
-        idx = self._round_robin_index[name]
-        server = servers[idx]
-        self._round_robin_index[name] = (idx + 1) % len(servers)
 
         # Return proxy to this specific server
         # We need a modified proxy that uses a specific stub
+        server = self._pool.get_next(name)
         return _SingleServerProxy(server, name, self._serializer)
 
     def is_deployed(self, spec: "ReplicaSpec") -> bool:
         """Check if replica is deployed."""
-        return spec.name in self._servers
+        return self._pool.has_pool(spec.name)
 
     async def close(self):
         """Close all server processes and connections."""

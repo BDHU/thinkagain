@@ -50,7 +50,7 @@ async def main():
         for i in range(4):
             instance = DemoClass.get()
             result = await instance.process(f"data{i}")
-            print(f"  Call {i+1}: {result}")
+            print(f"  Call {i + 1}: {result}")
 
         # Step 2: Scale up to 3 instances
         print("\n[Step 2] Scale up to 3 instances")
@@ -63,7 +63,7 @@ async def main():
         for i in range(6):
             instance = DemoClass.get()
             result = await instance.process(f"batch2_{i}")
-            print(f"  Call {i+1}: {result}")
+            print(f"  Call {i + 1}: {result}")
 
         # Step 3: Scale down to 1 instance
         print("\n[Step 3] Scale down to 1 instance")
@@ -76,7 +76,7 @@ async def main():
         for i in range(3):
             instance = DemoClass.get()
             result = await instance.process(f"batch3_{i}")
-            print(f"  Call {i+1}: {result}")
+            print(f"  Call {i + 1}: {result}")
 
         # Step 4: Scale up again to 4 instances
         print("\n[Step 4] Scale up to 4 instances")
@@ -89,7 +89,7 @@ async def main():
         for i in range(8):
             instance = DemoClass.get()
             result = await instance.process(f"batch4_{i}")
-            print(f"  Call {i+1}: {result}")
+            print(f"  Call {i + 1}: {result}")
 
         # Step 5: No-op (already at 4)
         print("\n[Step 5] Deploy with same count (no-op)")
