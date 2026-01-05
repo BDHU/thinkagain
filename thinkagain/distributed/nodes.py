@@ -41,10 +41,9 @@ class NodeConfig:
 
     def __post_init__(self):
         """Validate configuration."""
-        if self.cpus < 0 or self.gpus < 0:
-            raise ValueError("Resource counts cannot be negative")
-        if self.cpus == 0 and self.gpus == 0:
-            raise ValueError("Node must have at least some CPU or GPU resources")
+        from .validation import validate_resources
+
+        validate_resources(self.cpus, self.gpus)
 
     @property
     def is_local(self) -> bool:

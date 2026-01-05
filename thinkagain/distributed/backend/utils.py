@@ -82,6 +82,18 @@ class RoundRobinPool:
         with self._lock:
             return name in self._instances
 
+    def get_all(self, name: str) -> list:
+        """Get all instances in a pool.
+
+        Args:
+            name: Pool identifier
+
+        Returns:
+            List of all instances in the pool (empty list if pool doesn't exist)
+        """
+        with self._lock:
+            return list(self._instances.get(name, []))
+
     def clear(self) -> None:
         """Clear all pools."""
         with self._lock:

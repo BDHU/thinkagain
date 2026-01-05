@@ -49,9 +49,8 @@ class RuntimeContext:
 
     def __init__(self):
         self._config = RuntimeConfig()
-        self._config_version = 0
         self._backend: Backend | None = None
-        self._backend_version: int | None = None
+        self._backend_needs_recreate = True
 
     @property
     def config(self) -> RuntimeConfig:
@@ -59,11 +58,9 @@ class RuntimeContext:
         return replace(self._config, options=dict(self._config.options))
 
     def set_config(self, config: RuntimeConfig) -> None:
-        """Set configuration and clear cached backend."""
+        """Set configuration and invalidate cached backend."""
         self._config = config
-        self._config_version += 1
-        self._backend = None
-        self._backend_version = None
+        self._backend_needs_recreate = True
 
     def init(
         self,
@@ -84,20 +81,11 @@ class RuntimeContext:
         )
 
     def get_backend(self) -> Backend:
-        """Get cached backend instance."""
-        backend = self._backend
-        backend_version = self._backend_version
-
-        # Fast path: return cached backend if version matches
-        if backend is not None and backend_version == self._config_version:
-            return backend
-
-        # Slow path: create or update backend
-        if backend is None or backend_version != self._config_version:
-            backend = self._create_backend()
-            self._backend = backend
-            self._backend_version = self._config_version
-        return backend
+        """Get cached backend instance, creating if needed."""
+        if self._backend is None or self._backend_needs_recreate:
+            self._backend = self._create_backend()
+            self._backend_needs_recreate = False
+        return self._backend
 
     def _create_backend(self) -> Backend:
         """Create backend instance from config."""
@@ -114,7 +102,7 @@ class RuntimeContext:
     def reset_backend(self) -> None:
         """Reset cached backend."""
         self._backend = None
-        self._backend_version = None
+        self._backend_needs_recreate = True
 
     def close_backend(self) -> None:
         """Close the current backend if it supports close()."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .autoscaling import AutoScaler, ScalingPolicy
 from .manager import (
     ReplicaManager,
     get_default_manager,
@@ -21,9 +22,11 @@ from .runtime import (
 
 
 __all__ = [
+    "AutoScaler",
     "NodeConfig",
     "ReplicaManager",
     "ReplicaSpec",
+    "ScalingPolicy",
     "replica",
     "get_default_manager",
     "set_default_manager",

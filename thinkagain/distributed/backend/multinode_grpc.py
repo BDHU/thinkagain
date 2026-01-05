@@ -113,8 +113,7 @@ class MultiNodeGrpcBackend:
         # Initialize process spawner
         self.spawner = create_spawner(self._node_configs)
 
-        # replica_name -> list of ServerNode
-        self._servers: dict[str, list[ServerNode]] = {}
+        # Round-robin pool for server instances
         self._pool = RoundRobinPool()
 
     async def deploy(
@@ -136,7 +135,7 @@ class MultiNodeGrpcBackend:
             **kwargs: Constructor keyword arguments for replica instances
         """
         name = spec.name
-        current_count = len(self._servers.get(name, []))
+        current_count = len(self._pool.get_all(name))
 
         # Case 1: Already at desired count
         if current_count == instances:
@@ -161,10 +160,6 @@ class MultiNodeGrpcBackend:
         """Scale up by spawning additional servers."""
         name = spec.name
         instances_to_add = desired_count - current_count
-
-        # Get or create server list
-        if name not in self._servers:
-            self._servers[name] = []
 
         # Ask scheduler where to place new instances
         try:
@@ -200,13 +195,13 @@ class MultiNodeGrpcBackend:
                 ) from e
 
         # Add new servers to the pool
-        self._servers[name].extend(new_servers)
-        self._pool.set_pool(name, self._servers[name], keep_index=True)
+        all_servers = self._pool.get_all(name) + new_servers
+        self._pool.set_pool(name, all_servers, keep_index=True)
 
     async def _scale_down(self, spec: "ReplicaSpec", desired_count: int) -> None:
         """Scale down by shutting down excess servers."""
         name = spec.name
-        servers = self._servers[name]
+        servers = self._pool.get_all(name)
         current_count = len(servers)
 
         instances_to_remove = current_count - desired_count
@@ -221,10 +216,8 @@ class MultiNodeGrpcBackend:
             self.nodes[server.host].release(spec.cpus, spec.gpus)
 
         if servers_to_keep:
-            self._servers[name] = servers_to_keep
             self._pool.set_pool(name, servers_to_keep, keep_index=True)
         else:
-            del self._servers[name]
             self._pool.remove_pool(name)
 
     def _create_server_payload(
@@ -319,14 +312,13 @@ class MultiNodeGrpcBackend:
     async def shutdown(self, spec: "ReplicaSpec") -> None:
         """Shutdown all server processes for this replica."""
         name = spec.name
-        if name not in self._servers:
+        servers = self._pool.get_all(name)
+        if not servers:
             return
 
-        servers = self._servers[name]
         for server in servers:
             await self._shutdown_server(server, name)
 
-        del self._servers[name]
         self._pool.remove_pool(name)
 
     async def _shutdown_server(self, server: ServerNode, replica_name: str) -> None:
@@ -364,6 +356,10 @@ class MultiNodeGrpcBackend:
         """Check if replica is deployed."""
         return self._pool.has_pool(spec.name)
 
+    def get_instance_count(self, spec: "ReplicaSpec") -> int:
+        """Get current number of deployed instances."""
+        return len(self._pool.get_all(spec.name))
+
     def get_cluster_state(self) -> dict[str, dict]:
         """Get current cluster resource state.
 
@@ -374,12 +370,11 @@ class MultiNodeGrpcBackend:
 
     async def close(self):
         """Close all server processes and connections."""
-        for name in list(self._servers.keys()):
-            # Create a temporary spec just for shutdown
-            from thinkagain.distributed.replica import ReplicaSpec
-
-            temp_spec = ReplicaSpec(cls=type(name, (), {}), cpus=1)
-            await self.shutdown(temp_spec)
+        for name in list(self._pool._instances.keys()):
+            servers = self._pool.get_all(name)
+            for server in servers:
+                await self._shutdown_server(server, name)
+            self._pool.remove_pool(name)
 
         # Cleanup spawner resources (SSH connections, etc.)
         await self.spawner.cleanup()
