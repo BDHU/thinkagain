@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, ContextManager
+from typing import TYPE_CHECKING, Any, Callable, ContextManager, Generic, TypeVar
 
 if TYPE_CHECKING:
     from .node import NodeBase
 
 from .executor import DAGExecutor
 
+T = TypeVar("T")
 
-class Context:
+
+class Context(Generic[T]):
     """Lazy wrapper around any value.
 
     Context holds a single value of any type and tracks the computation graph
@@ -88,12 +90,12 @@ class Context:
         self._get_executor().run_sync()
 
     @property
-    def data(self) -> Any:
+    def data(self) -> T:
         """Get the value, materializing pending nodes if needed."""
         self._run_pending_sync()
         return self._data
 
-    async def _data_async(self) -> Any:
+    async def _data_async(self) -> T:
         """Async get - materializes pending nodes first."""
         await self._run_pending_async()
         return self._data
