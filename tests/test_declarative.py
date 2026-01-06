@@ -4,7 +4,15 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 
 import pytest
 
-from thinkagain import Context, FunctionNode, Node, NodeDataclassError, run, node
+from thinkagain import (
+    Context,
+    FunctionNode,
+    Node,
+    NodeDataclassError,
+    Sequential,
+    run,
+    node,
+)
 from conftest import add_one, double
 
 
@@ -488,3 +496,174 @@ def test_pipeline_with_structured_data():
     assert result.data.query == "What is X?"
     assert result.data.docs == ["doc1", "doc2"]
     assert result.data.answer == "Answer for What is X?"
+
+
+# =============================================================================
+# Shared test state and nodes
+# =============================================================================
+
+
+@dataclass
+class State:
+    value: int
+    name: str = "default"
+
+
+@node
+async def increment(s: State) -> State:
+    return State(value=s.value + 1, name=s.name)
+
+
+@node
+async def double_state(s: State) -> State:
+    return State(value=s.value * 2, name=s.name)
+
+
+@node
+async def square(s: State) -> State:
+    return State(value=s.value**2)
+
+
+# =============================================================================
+# Context[T] generic typing tests
+# =============================================================================
+
+
+def test_context_generic_data_access():
+    """Test that Context[T].data returns T with proper typing."""
+    ctx: Context[State] = Context(State(value=42, name="test"))
+    state = ctx.data
+    assert isinstance(state, State)
+    assert state.value == 42
+    assert state.name == "test"
+
+
+def test_context_generic_with_nodes():
+    """Test Context[T] through node pipeline."""
+    ctx: Context[State] = Context(State(value=5))
+    ctx = increment(ctx)
+    ctx = double_state(ctx)
+    result: State = ctx.data
+    assert result.value == 12  # (5 + 1) * 2
+
+
+@pytest.mark.asyncio
+async def test_context_async_data_access():
+    """Test that async access also returns typed data."""
+    ctx: Context[State] = increment(Context(State(value=5)))
+    result: State = await ctx
+    assert result.value == 6
+
+
+def test_context_preserves_type_through_chain():
+    """Test that type is preserved through multiple transformations."""
+
+    @node
+    async def transform1(s: State) -> State:
+        return State(value=s.value + 1, name=s.name + "_1")
+
+    @node
+    async def transform2(s: State) -> State:
+        return State(value=s.value * 2, name=s.name + "_2")
+
+    @node
+    async def transform3(s: State) -> State:
+        return State(value=s.value - 3, name=s.name + "_3")
+
+    ctx: Context[State] = Context(State(value=10, name="start"))
+    ctx = transform1(ctx)
+    ctx = transform2(ctx)
+    ctx = transform3(ctx)
+
+    result: State = ctx.data
+    assert result.value == 19  # ((10 + 1) * 2) - 3
+    assert result.name == "start_1_2_3"
+
+
+# =============================================================================
+# Sequential container tests
+# =============================================================================
+
+
+def test_sequential_basic():
+    """Test basic Sequential pipeline."""
+    pipeline = Sequential(add_one, double)
+    ctx = pipeline(Context(5))
+    assert ctx.data == 12  # (5 + 1) * 2
+
+
+def test_sequential_with_dataclass():
+    """Test Sequential with dataclass state."""
+    pipeline = Sequential(increment, double_state, square)
+    ctx = pipeline(Context(State(value=2)))
+    assert ctx.data.value == 36  # ((2 + 1) * 2)^2 = 6^2
+
+
+def test_sequential_composition():
+    """Test composing and flattening Sequential pipelines."""
+    stage1 = Sequential(increment, double_state)
+    stage2 = Sequential(square)
+    combined = Sequential(stage1, stage2)
+
+    # Should flatten: increment, double_state, square
+    assert len(combined) == 3
+    assert combined.node_names == ["increment", "double_state", "square"]
+
+    ctx = combined(Context(State(value=2)))
+    assert ctx.data.value == 36  # ((2 + 1) * 2)^2
+
+
+def test_sequential_iteration():
+    """Test Sequential length, indexing, and iteration."""
+    pipeline = Sequential(add_one, double, add_one)
+
+    # Length
+    assert len(pipeline) == 3
+
+    # Indexing
+    assert pipeline[0] == add_one
+    assert pipeline[1] == double
+    assert pipeline[-1] == add_one
+
+    # Iteration
+    steps = list(pipeline)
+    assert steps == [add_one, double, add_one]
+
+    # Node names
+    assert pipeline.node_names == ["add_one", "double", "add_one"]
+
+
+def test_sequential_repr():
+    """Test Sequential string representation."""
+    short = Sequential(add_one, double)
+    assert repr(short) == "Sequential(add_one, double)"
+
+    long = Sequential(add_one, double, add_one, add_one, double)
+    assert "Sequential(add_one, ..., double) [5 steps]" == repr(long)
+
+
+def test_sequential_reusability():
+    """Test that Sequential pipelines are reusable."""
+    pipeline = Sequential(add_one, double)
+
+    ctx1 = pipeline(Context(5))
+    ctx2 = pipeline(Context(10))
+
+    assert ctx1.data == 12  # (5 + 1) * 2
+    assert ctx2.data == 22  # (10 + 1) * 2
+
+
+def test_sequential_in_function():
+    """Test using Sequential in a function with conditional logic."""
+
+    def custom_pipeline(ctx: Context[State]) -> Context[State]:
+        ctx = Sequential(increment, double_state)(ctx)
+        if ctx.data.value > 10:
+            ctx = square(ctx)
+        return ctx
+
+    ctx = custom_pipeline(Context(State(value=5)))
+    assert ctx.data.value == 144  # (5+1)*2 = 12, then 12^2 = 144
+
+    ctx2 = custom_pipeline(Context(State(value=2)))
+    assert ctx2.data.value == 6  # (2+1)*2 = 6, no square since <= 10
