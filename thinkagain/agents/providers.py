@@ -80,8 +80,8 @@ class VLLM(OpenAIBase):
     """vLLM local model provider."""
 
     model: str = "meta-llama/Llama-3.1-8B-Instruct"
-    base_url: str = "http://localhost:8000/v1"
-    api_key: str = "EMPTY"
+    base_url: str | None = "http://localhost:8000/v1"
+    api_key: str | None = "EMPTY"
 
 
 @dataclass
