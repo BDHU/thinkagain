@@ -15,10 +15,6 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from thinkagain.distributed.optimizer import ThroughputFunc
 
 from .optimizer import (
     Constraints,
@@ -27,47 +23,11 @@ from .optimizer import (
     WorkloadProfile,
 )
 from .profiling import get_profiler
+from .replica import ReplicaSpec
 from .runtime import get_backend
-from .manager import get_default_manager
+from .manager import get_default_manager, ReplicaManager
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ScalingPolicy:
-    """Scaling policy for a single replica class.
-
-    Defines how a replica should be scaled based on load and resources.
-    """
-
-    replica_name: str
-    throughput_func: ThroughputFunc
-
-    # Resource requirements (must match @replica decorator)
-    cpus_per_instance: int = 0
-    gpus_per_instance: int = 0
-
-    # Instance bounds
-    min_instances: int = 1
-    max_instances: int = 100
-
-    # Utilization target
-    max_utilization: float = 0.8
-
-    # Optional: base service rate for display
-    base_service_rate: float | None = None
-
-    def to_replica_config(self) -> ReplicaConfig:
-        """Convert to ReplicaConfig for optimizer."""
-        return ReplicaConfig(
-            name=self.replica_name,
-            throughput_func=self.throughput_func,
-            cpus_per_instance=self.cpus_per_instance,
-            gpus_per_instance=self.gpus_per_instance,
-            min_instances=self.min_instances,
-            max_instances=self.max_instances,
-            base_service_rate=self.base_service_rate,
-        )
 
 
 @dataclass
@@ -104,27 +64,26 @@ class AutoScaler:
 
     Example:
         from thinkagain.distributed import init, replica
-        from thinkagain.distributed.autoscaling import AutoScaler, ScalingPolicy
+        from thinkagain.distributed.autoscaling import AutoScaler
         from thinkagain.distributed.optimizer import linear_throughput
 
         init(backend="grpc")
 
-        @replica(cpus=2)
+        @replica(
+            cpus=2,
+            throughput_func=linear_throughput(200.0),
+            min_instances=1,
+            max_instances=10,
+        )
         class VectorDB:
             def search(self, query): ...
 
         await VectorDB.deploy(instances=1)
 
+        # Auto-scaler will automatically discover all replicas with throughput
         scaler = AutoScaler(
             target_rps=100.0,
             check_interval=30.0,
-            policies=[
-                ScalingPolicy(
-                    replica_name="VectorDB",
-                    throughput_func=linear_throughput(200.0),
-                    cpus_per_instance=2,
-                ),
-            ],
         )
 
         await scaler.start()  # Background monitoring starts
@@ -135,31 +94,55 @@ class AutoScaler:
     def __init__(
         self,
         target_rps: float,
-        policies: list[ScalingPolicy],
+        replicas: list[ReplicaSpec] | None = None,
         check_interval: float = 30.0,
         constraints: Constraints | None = None,
         cooldown_period: float = 60.0,
         scale_up_threshold: float = 0.85,
         scale_down_threshold: float = 0.50,
+        manager: ReplicaManager | None = None,
     ):
         """Initialize the AutoScaler.
 
         Args:
             target_rps: Target requests per second (external arrival rate)
-            policies: List of scaling policies (one per replica)
+            replicas: Optional list of ReplicaSpec to auto-scale. If None, auto-discovers
+                     all registered replicas with throughput configured.
             check_interval: Seconds between scaling checks (default: 30s)
             constraints: Resource constraints for optimizer (optional)
             cooldown_period: Minimum seconds between scaling actions (default: 60s)
             scale_up_threshold: Trigger scale-up if utilization > this (default: 0.85)
             scale_down_threshold: Trigger scale-down if utilization < this (default: 0.50)
+            manager: ReplicaManager to use (default: global manager)
         """
         self.target_rps = target_rps
-        self.policies = {p.replica_name: p for p in policies}
         self.check_interval = check_interval
         self.constraints = constraints or Constraints()
         self.cooldown_period = cooldown_period
         self.scale_up_threshold = scale_up_threshold
         self.scale_down_threshold = scale_down_threshold
+
+        # Determine which replicas to manage
+        if manager is None:
+            manager = get_default_manager()
+        self._manager = manager
+
+        if replicas is not None:
+            # Use provided replicas
+            self._replicas = {spec.name: spec for spec in replicas}
+        else:
+            # Auto-discover: find all replicas with throughput configured
+            self._replicas = {}
+            all_specs = self._manager.get_all()
+            for full_name, spec in all_specs.items():
+                if spec.throughput is not None:
+                    self._replicas[spec.name] = spec
+
+            if not self._replicas:
+                logger.warning(
+                    "No replicas with throughput found. "
+                    "Add throughput to @replica decorators or provide replicas list."
+                )
 
         # Runtime state
         self._running = False
@@ -170,6 +153,20 @@ class AutoScaler:
 
         # Profiler integration
         self._profiler = None
+
+    def _get_replica_names(self) -> list[str]:
+        """Get list of replica names being managed."""
+        return list(self._replicas.keys())
+
+    def _get_replica_configs(self) -> list[ReplicaConfig]:
+        """Convert replicas to ReplicaConfig list."""
+        configs = []
+        for spec in self._replicas.values():
+            try:
+                configs.append(spec.to_replica_config())
+            except ValueError as e:
+                logger.warning(f"Skipping replica {spec.name}: {e}")
+        return configs
 
     async def start(self) -> None:
         """Start the background scaling loop."""
@@ -188,7 +185,7 @@ class AutoScaler:
 
         logger.info(
             f"AutoScaler started: target_rps={self.target_rps}, "
-            f"check_interval={self.check_interval}s, policies={list(self.policies.keys())}"
+            f"check_interval={self.check_interval}s, replicas={self._get_replica_names()}"
         )
 
         # Start background task
@@ -228,10 +225,10 @@ class AutoScaler:
             logger.warning("No backend initialized, skipping scaling check")
             return
 
-        manager = get_default_manager()
+        manager = self._manager
 
         # Get current deployment state
-        for replica_name in self.policies.keys():
+        for replica_name in self._get_replica_names():
             spec = manager.get_spec(replica_name)
             if spec is None:
                 logger.warning(f"Replica '{replica_name}' not registered, skipping")
@@ -300,7 +297,7 @@ class AutoScaler:
             # Fallback: assume uniform load distribution
             # Create simple fanout: each replica gets equal share
             fanout_matrix = {
-                "default_node": {name: 1.0 for name in self.policies.keys()}
+                "default_node": {name: 1.0 for name in self._get_replica_names()}
             }
             external_arrivals = {"default_node": self.target_rps}
             workload = WorkloadProfile(
@@ -308,8 +305,8 @@ class AutoScaler:
                 fanout_matrix=fanout_matrix,
             )
 
-        # Convert policies to replica configs
-        replica_configs = [p.to_replica_config() for p in self.policies.values()]
+        # Convert replicas/policies to replica configs
+        replica_configs = self._get_replica_configs()
 
         # Run optimizer
         optimizer = ReplicaOptimizer(
@@ -411,7 +408,7 @@ class AutoScaler:
         result = self._compute_optimal_counts()
 
         status = {}
-        for replica_name in self.policies.keys():
+        for replica_name in self._get_replica_names():
             current = self._current_counts.get(replica_name, 0)
             target = (
                 result.replica_counts.get(replica_name, current) if result else current

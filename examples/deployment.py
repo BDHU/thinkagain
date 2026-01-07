@@ -1,20 +1,19 @@
 """Comprehensive deployment, scaling, and optimization demo.
 
-Demonstrates:
-- Basic manual scaling (scale up/down instances)
-- Remote multi-node deployment via SSH
-- Auto-scaling based on load with profiling
-- Optimization with constraint solving
+Demonstrates the new clean optimizer-first API:
+- Profile → Optimize → Deploy workflow
+- Automatic optimal instance count computation
+- Scenario comparison for capacity planning
+- Auto-scaling with re-optimization
 
 Run different scenarios:
-    python deployment.py                    # Basic scaling
-    python deployment.py --remote           # Remote deployment
-    python deployment.py --autoscale        # Auto-scaling with load
-    python deployment.py --optimize         # Profiling + optimizer
+    python deployment.py                    # Optimize and deploy
+    python deployment.py --scenarios        # Compare deployment scenarios
+    python deployment.py --autoscale        # Optimize + auto-scale
 
 Requirements:
     pip install 'thinkagain[grpc]'          # For all modes
-    pip install gurobipy                    # For --autoscale and --optimize
+    pip install gurobipy                    # For optimization
 """
 
 import argparse
@@ -22,8 +21,17 @@ import asyncio
 import time
 
 from thinkagain import Context, node, run
-from thinkagain.distributed import init, replica
-from thinkagain.distributed.profiling import node_context, profile
+from thinkagain.distributed import (
+    AutoScaler,
+    Constraints,
+    compare_scenarios,
+    init,
+    optimize,
+    profile,
+    replica,
+)
+from thinkagain.distributed.optimizer import batched_throughput, linear_throughput
+from thinkagain.distributed.profiling import node_context
 
 
 # ============================================================================
@@ -31,7 +39,7 @@ from thinkagain.distributed.profiling import node_context, profile
 # ============================================================================
 
 
-@replica(cpus=2)
+@replica(cpus=2, throughput=linear_throughput(200.0))
 class VectorDB:
     def __init__(self):
         self.count = 0
@@ -42,7 +50,7 @@ class VectorDB:
         return [f"doc_{i}" for i in range(top_k)]
 
 
-@replica(cpus=1, gpus=1)
+@replica(cpus=1, gpus=1, throughput=batched_throughput(50.0, 32))
 class LLM:
     def __init__(self):
         self.count = 0
@@ -53,7 +61,7 @@ class LLM:
         return f"Response for: {prompt[:30]}..."
 
 
-@replica(cpus=1)
+@replica(cpus=1, throughput=linear_throughput(1000.0))
 class Cache:
     def __init__(self):
         self.store = {}
@@ -98,101 +106,151 @@ def pipeline(ctx):
 
 
 # ============================================================================
-# Basic Scaling
+# Optimize and Deploy (New Clean API)
 # ============================================================================
 
 
-async def demo_basic():
-    """Simple manual scaling demo."""
+async def demo_optimize_deploy():
+    """New clean API: Profile → Optimize → Deploy."""
     print("=" * 70)
-    print("BASIC SCALING")
+    print("OPTIMIZE AND DEPLOY")
     print("=" * 70)
+
+    try:
+        from thinkagain.distributed.optimizer import GUROBI_AVAILABLE
+
+        if not GUROBI_AVAILABLE:
+            print("\n⚠ Requires: pip install gurobipy")
+            return
+    except ImportError as e:
+        print(f"\n⚠ Error: {e}")
+        return
 
     init(backend="grpc")
 
-    print("\n[1] Deploy 2 instances")
-    await VectorDB.deploy(instances=2)
-
-    print("Testing 2 instances:")
-    for i in range(4):
-        result = await VectorDB.get().search(f"q{i}")
-        print(f"  {i + 1}: {len(result)} docs")
-
-    print("\n[2] Scale up to 4 instances")
-    await VectorDB.deploy(instances=4)
-
-    print("Testing 4 instances:")
-    for i in range(4):
-        result = await VectorDB.get().search(f"q{i}")
-        print(f"  {i + 1}: {len(result)} docs")
-
-    print("\n[3] Scale down to 1 instance")
-    await VectorDB.deploy(instances=1)
-
-    print("Testing 1 instance:")
-    for i in range(2):
-        result = await VectorDB.get().search(f"q{i}")
-        print(f"  {i + 1}: {len(result)} docs")
-
-    await VectorDB.shutdown()
-    print("\n✓ Done\n" + "=" * 70)
-
-
-# ============================================================================
-# Remote Deployment
-# ============================================================================
-
-
-async def demo_remote():
-    """Multi-node remote deployment demo."""
-    print("=" * 70)
-    print("REMOTE DEPLOYMENT")
-    print("=" * 70)
-
-    from thinkagain.distributed.nodes import NodeConfig
-
-    # Configure nodes (update with your actual hosts)
-    nodes = [
-        NodeConfig(host="localhost", cpus=8, gpus=0),
-        # NodeConfig(
-        #     host="worker1.example.com",
-        #     cpus=16, gpus=2,
-        #     ssh_user="ubuntu",
-        #     ssh_key_path="~/.ssh/id_rsa",
-        # ),
+    print("\n[1] Profile sample workload")
+    queries = [
+        "What is ML?",
+        "Explain neural networks",
+        "How does backprop work?",
+        "What are transformers?",
+        "Explain gradient descent",
     ]
 
-    print(f"\n[Cluster] {len(nodes)} node(s):")
-    for n in nodes:
-        print(f"  {n.host}: {n.cpus} CPUs, {n.gpus} GPUs")
+    with profile():
+        # Deploy minimal instances for profiling
+        await VectorDB.deploy(instances=1)
+        await LLM.deploy(instances=1)
+        await Cache.deploy(instances=1)
 
-    init(backend="grpc", nodes=nodes)
+        # Run sample queries to profile the workflow
+        for q in queries:
+            result = run(pipeline, q, context_factory=node_context)
+            print(f"  ✓ {q[:40]}")
 
-    print("\n[Deploy] Across cluster...")
-    await VectorDB.deploy(instances=3)
-    await Cache.deploy(instances=1)
+        # Shutdown profiling deployment
+        await VectorDB.shutdown()
+        await LLM.shutdown()
+        await Cache.shutdown()
 
-    # Show placement
-    from thinkagain.distributed.runtime import get_backend
-    state = get_backend().get_cluster_state()
+    print("\n[2] Optimize deployment plan")
+    plan = optimize(
+        target_rps=100.0,
+        max_cpus=64,
+        max_gpus=4,
+        max_utilization=0.75,
+    )
 
-    print("\n[Resources]")
-    for host, s in state.items():
-        cpu_pct = s['utilization']['cpu'] * 100
-        print(f"  {host}: {s['available_cpus']}/{s['total_cpus']} CPUs ({cpu_pct:.0f}% used)")
+    print("\n" + str(plan))
 
-    print("\n[Test]")
-    for i in range(4):
-        result = await VectorDB.get().search(f"item_{i}")
-        print(f"  {i + 1}: {len(result)} docs")
+    print("\n[3] Deploy with optimal configuration")
+    await plan.deploy()
+
+    print("\n[4] Run production workload")
+    for i, q in enumerate(queries * 2):
+        result = run(pipeline, q, context_factory=node_context)
+        if i % 3 == 0:
+            print(f"  Request {i + 1}: {result.data[:40]}...")
 
     await VectorDB.shutdown()
+    await LLM.shutdown()
     await Cache.shutdown()
     print("\n✓ Done\n" + "=" * 70)
 
 
 # ============================================================================
-# Auto-Scaling
+# Scenario Comparison
+# ============================================================================
+
+
+async def demo_scenarios():
+    """Compare different deployment scenarios."""
+    print("=" * 70)
+    print("SCENARIO COMPARISON")
+    print("=" * 70)
+
+    try:
+        from thinkagain.distributed.optimizer import GUROBI_AVAILABLE
+
+        if not GUROBI_AVAILABLE:
+            print("\n⚠ Requires: pip install gurobipy")
+            return
+    except ImportError as e:
+        print(f"\n⚠ Error: {e}")
+        return
+
+    init(backend="grpc")
+
+    print("\n[1] Profile workload")
+    queries = [
+        "What is ML?",
+        "Explain neural networks",
+        "How does backprop work?",
+    ]
+
+    with profile():
+        await VectorDB.deploy(instances=1)
+        await LLM.deploy(instances=1)
+        await Cache.deploy(instances=1)
+
+        for q in queries:
+            run(pipeline, q, context_factory=node_context)
+
+        await VectorDB.shutdown()
+        await LLM.shutdown()
+        await Cache.shutdown()
+
+    print("\n[2] Compare scenarios")
+    scenarios = {
+        "Budget": Constraints(max_total_cpus=32, max_total_gpus=2),
+        "Balanced": Constraints(
+            max_total_cpus=64, max_total_gpus=4, max_utilization=0.75
+        ),
+        "Performance": Constraints(
+            max_utilization=0.6, max_total_cpus=128, max_total_gpus=8
+        ),
+    }
+
+    plans = compare_scenarios(target_rps=100.0, scenarios=scenarios)
+
+    for name, plan in plans.items():
+        print(f"\n{name}:")
+        print(f"  Status: {plan.result.solver_status}")
+        print(f"  Resources: {plan.total_cpus} CPUs, {plan.total_gpus} GPUs")
+        print(f"  Instances: {plan.result.total_instances} total")
+        print(
+            f"  Avg Utilization: {plan.result.metrics.get('avg_utilization', 0.0):.1%}"
+        )
+        print("  Replica counts:")
+        for replica_name, count in sorted(plan.replica_counts.items()):
+            util = plan.result.utilizations.get(replica_name, 0.0)
+            print(f"    {replica_name}: {count} ({util:.1%} util)")
+
+    print("\n✓ Done\n" + "=" * 70)
+
+
+# ============================================================================
+# Auto-Scaling with Re-Optimization
 # ============================================================================
 
 
@@ -219,18 +277,13 @@ async def simulate_load(rps: float, duration: float):
 
 
 async def demo_autoscale():
-    """Auto-scaling based on load."""
+    """Auto-scaling with periodic re-optimization."""
     print("=" * 70)
-    print("AUTO-SCALING")
+    print("AUTO-SCALING WITH RE-OPTIMIZATION")
     print("=" * 70)
 
     try:
-        from thinkagain.distributed import AutoScaler, ScalingPolicy
-        from thinkagain.distributed.optimizer import (
-            GUROBI_AVAILABLE,
-            batched_throughput,
-            linear_throughput,
-        )
+        from thinkagain.distributed.optimizer import GUROBI_AVAILABLE
 
         if not GUROBI_AVAILABLE:
             print("\n⚠ Requires: pip install gurobipy")
@@ -241,63 +294,53 @@ async def demo_autoscale():
 
     init(backend="grpc")
 
-    print("\n[1] Initial deployment")
-    await VectorDB.deploy(instances=1)
-    await LLM.deploy(instances=1)
-    await Cache.deploy(instances=1)
+    print("\n[1] Profile and optimize initial deployment")
+    with profile():
+        await VectorDB.deploy(instances=1)
+        await LLM.deploy(instances=1)
+        await Cache.deploy(instances=1)
 
-    print("\n[2] Configure auto-scaler")
+        # Quick profiling run
+        for _ in range(10):
+            ctx = Context("test query", context_factory=node_context)
+            await retrieve(ctx)
+            await generate_response(ctx)
+
+        await VectorDB.shutdown()
+        await LLM.shutdown()
+        await Cache.shutdown()
+
+    plan = optimize(target_rps=50.0, max_cpus=64, max_gpus=4)
+    print("\nInitial plan:")
+    for name, count in plan.replica_counts.items():
+        print(f"  {name}: {count} instances")
+
+    print("\n[2] Deploy and start auto-scaler")
+    await plan.deploy()
+
     scaler = AutoScaler(
         target_rps=50.0,
         check_interval=8.0,
         cooldown_period=12.0,
-        scale_up_threshold=0.75,
-        scale_down_threshold=0.40,
-        policies=[
-            ScalingPolicy(
-                replica_name="VectorDB",
-                throughput_func=linear_throughput(200.0),
-                cpus_per_instance=2,
-                min_instances=1,
-                max_instances=6,
-                max_utilization=0.8,
-            ),
-            ScalingPolicy(
-                replica_name="LLM",
-                throughput_func=batched_throughput(50.0, 32),
-                cpus_per_instance=1,
-                gpus_per_instance=1,
-                min_instances=1,
-                max_instances=4,
-                max_utilization=0.8,
-            ),
-            ScalingPolicy(
-                replica_name="Cache",
-                throughput_func=linear_throughput(1000.0),
-                cpus_per_instance=1,
-                min_instances=1,
-                max_instances=3,
-                max_utilization=0.8,
-            ),
-        ],
+        constraints=Constraints(max_total_cpus=64, max_total_gpus=4),
     )
 
     await scaler.start()
 
-    print("\n[3] Run workload scenarios")
+    print("\n[3] Run varying workload")
     with profile():
-        print("\n  Low load (30 req/s, 15s)")
-        await simulate_load(30.0, 15.0)
-        await asyncio.sleep(1)
+        print("\n  Low load (30 req/s, 12s)")
+        await simulate_load(30.0, 12.0)
+        await asyncio.sleep(2)
 
         status = scaler.get_status()
         for name, s in status.items():
             print(f"    {name}: {s.current_instances} inst, {s.utilization:.0%} util")
 
-        print("\n  High load (100 req/s, 15s)")
+        print("\n  High load (100 req/s, 12s)")
         scaler.target_rps = 100.0
-        await simulate_load(100.0, 15.0)
-        await asyncio.sleep(1)
+        await simulate_load(100.0, 12.0)
+        await asyncio.sleep(2)
 
         status = scaler.get_status()
         for name, s in status.items():
@@ -314,127 +357,22 @@ async def demo_autoscale():
 
 
 # ============================================================================
-# Optimizer
-# ============================================================================
-
-
-def demo_optimize():
-    """Profiling and optimizer."""
-    print("=" * 70)
-    print("PROFILING + OPTIMIZER")
-    print("=" * 70)
-
-    try:
-        from thinkagain.distributed.optimizer import (
-            GUROBI_AVAILABLE,
-            Constraints,
-            ReplicaConfig,
-            batched_throughput,
-            compute_optimal_counts_from_profiler,
-            linear_throughput,
-        )
-
-        if not GUROBI_AVAILABLE:
-            print("\n⚠ Requires: pip install gurobipy")
-            return
-    except ImportError as e:
-        print(f"\n⚠ Error: {e}")
-        return
-
-    print("\n[1] Deploy and profile")
-    VectorDB.deploy(instances=2)
-    LLM.deploy(instances=2)
-    Cache.deploy(instances=1)
-
-    with profile() as session:
-        queries = [
-            "What is ML?",
-            "Explain neural networks",
-            "How does backprop work?",
-        ]
-
-        for q in queries:
-            result = run(pipeline, q, context_factory=session.context_factory)
-            print(f"  {q[:30]:30} → {result.data[:25]}...")
-
-        print("\n  Fanout:")
-        for node_name, replicas in sorted(session.profiler.get_fanout_matrix().items()):
-            for replica, count in sorted(replicas.items()):
-                print(f"    {node_name} → {replica}: {count:.1f} calls/exec")
-
-        print("\n[2] Optimize allocation")
-        configs = [
-            ReplicaConfig(
-                name="VectorDB",
-                throughput_func=linear_throughput(200.0),
-                cpus_per_instance=2,
-                base_service_rate=200.0,
-            ),
-            ReplicaConfig(
-                name="LLM",
-                throughput_func=batched_throughput(50.0, 32),
-                cpus_per_instance=0,
-                gpus_per_instance=1,
-                base_service_rate=50.0,
-            ),
-            ReplicaConfig(
-                name="Cache",
-                throughput_func=linear_throughput(1000.0),
-                cpus_per_instance=1,
-                base_service_rate=1000.0,
-            ),
-        ]
-
-        scenarios = [
-            ("Moderate", 50.0, 64, 4),
-            ("High", 200.0, 128, 8),
-            ("CPU-limited", 100.0, 32, 8),
-        ]
-
-        for name, rps, cpus, gpus in scenarios:
-            result = compute_optimal_counts_from_profiler(
-                session.profiler,
-                external_rps=rps,
-                replica_configs=configs,
-                constraints=Constraints(
-                    max_utilization=0.8,
-                    max_total_cpus=cpus,
-                    max_total_gpus=gpus,
-                ),
-            )
-
-            if result.solver_status == "OPTIMAL":
-                print(f"\n  {name} ({rps} req/s): {result.total_cpus}/{cpus} CPUs, {result.total_gpus}/{gpus} GPUs")
-                for r, count in sorted(result.replica_counts.items()):
-                    util = result.utilizations[r]
-                    print(f"    {r}: {count} inst ({util:.0%} util)")
-
-    VectorDB.shutdown()
-    LLM.shutdown()
-    Cache.shutdown()
-    print("\n✓ Done\n" + "=" * 70)
-
-
-# ============================================================================
 # Main
 # ============================================================================
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--remote", action="store_true", help="Remote deployment")
-    parser.add_argument("--autoscale", action="store_true", help="Auto-scaling")
-    parser.add_argument("--optimize", action="store_true", help="Optimizer")
+    parser.add_argument("--scenarios", action="store_true", help="Compare scenarios")
+    parser.add_argument("--autoscale", action="store_true", help="Auto-scaling demo")
     args = parser.parse_args()
 
-    if args.remote:
-        asyncio.run(demo_remote())
+    if args.scenarios:
+        asyncio.run(demo_scenarios())
     elif args.autoscale:
         asyncio.run(demo_autoscale())
-    elif args.optimize:
-        demo_optimize()
     else:
-        asyncio.run(demo_basic())
+        asyncio.run(demo_optimize_deploy())
 
 
 if __name__ == "__main__":
