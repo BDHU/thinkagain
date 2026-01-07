@@ -2,7 +2,7 @@
 
 from .agent import Agent
 from .llm import LLM, call_llm, execute_tool_call, execute_tools, tool
-from .providers import VLLM, Anthropic, OpenAI
+from .providers import VLLM, OpenAI
 from .state import AgentState, Message, ToolCall
 
 __all__ = [
@@ -21,5 +21,4 @@ __all__ = [
     "LLM",
     "VLLM",
     "OpenAI",
-    "Anthropic",
 ]
