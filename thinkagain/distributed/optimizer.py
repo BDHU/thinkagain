@@ -167,9 +167,6 @@ class ReplicaConfig:
     min_instances: int = 1
     max_instances: int = 100
 
-    # Convenience: store service_rate for display/heuristics
-    base_service_rate: float | None = None
-
 
 @dataclass
 class WorkloadProfile:
@@ -197,7 +194,7 @@ class Constraints:
     # Per-replica overrides
     per_replica_constraints: dict[str, dict] = field(
         default_factory=dict
-    )  # Per-replica overrides (e.g., max_utilization)
+    )  # Per-replica overrides (e.g., max_utilization, min_instances, max_instances)
 
 
 @dataclass
@@ -218,6 +215,188 @@ class OptimizationResult:
     metrics: dict[str, Any]  # Additional metrics
     solver_status: str  # Gurobi solver status
     objective_value: float  # Objective function value
+
+
+class DeploymentPlan:
+    """Actionable deployment plan from optimization.
+
+    Provides a clean interface to deploy optimized replica configurations
+    and create auto-scalers from optimization results.
+
+    Example:
+        plan = optimize(target_rps=100.0, max_cpus=64)
+        print(plan)  # Pretty-print the plan
+
+        await plan.deploy()  # Deploy all replicas
+
+        # Or deploy selectively
+        await plan.deploy_only(['VectorDB', 'LLM'])
+
+        # Create auto-scaler from plan
+        scaler = await plan.autoscale(reoptimize_interval=60.0)
+    """
+
+    def __init__(
+        self,
+        result: OptimizationResult,
+        target_rps: float,
+        constraints: Constraints | None = None,
+    ):
+        """Initialize deployment plan.
+
+        Args:
+            result: Optimization result
+            target_rps: Target requests per second
+            constraints: Constraints used for optimization
+        """
+        self.result = result
+        self.target_rps = target_rps
+        self.constraints = constraints or Constraints()
+
+    @property
+    def replica_counts(self) -> dict[str, int]:
+        """Get recommended replica counts."""
+        return self.result.replica_counts
+
+    @property
+    def total_cpus(self) -> int:
+        """Get total CPUs required."""
+        return self.result.total_cpus
+
+    @property
+    def total_gpus(self) -> int:
+        """Get total GPUs required."""
+        return self.result.total_gpus
+
+    @property
+    def is_optimal(self) -> bool:
+        """Check if optimization found optimal solution."""
+        return self.result.solver_status == "OPTIMAL"
+
+    async def deploy(self) -> None:
+        """Deploy all replicas with optimal instance counts (async).
+
+        Raises:
+            RuntimeError: If optimization was not successful
+        """
+        if not self.is_optimal:
+            raise RuntimeError(
+                f"Cannot deploy non-optimal plan. Solver status: {self.result.solver_status}"
+            )
+
+        from .manager import get_default_manager
+
+        manager = get_default_manager()
+
+        # Deploy each replica with recommended count
+        for replica_name, count in self.result.replica_counts.items():
+            spec = manager.get_spec(replica_name)
+            if spec is None:
+                raise RuntimeError(f"Replica '{replica_name}' not found in registry")
+
+            await spec.deploy(instances=count)
+
+    def deploy_sync(self) -> None:
+        """Deploy all replicas with optimal instance counts (sync).
+
+        Raises:
+            RuntimeError: If optimization was not successful
+        """
+        import asyncio
+
+        asyncio.run(self.deploy())
+
+    async def deploy_only(self, replica_names: list[str]) -> None:
+        """Deploy only specified replicas (async).
+
+        Args:
+            replica_names: List of replica names to deploy
+        """
+        if not self.is_optimal:
+            raise RuntimeError(
+                f"Cannot deploy non-optimal plan. Solver status: {self.result.solver_status}"
+            )
+
+        from .manager import get_default_manager
+
+        manager = get_default_manager()
+
+        for replica_name in replica_names:
+            if replica_name not in self.result.replica_counts:
+                raise ValueError(f"Replica '{replica_name}' not in optimization result")
+
+            spec = manager.get_spec(replica_name)
+            if spec is None:
+                raise RuntimeError(f"Replica '{replica_name}' not found in registry")
+
+            count = self.result.replica_counts[replica_name]
+            await spec.deploy(instances=count)
+
+    async def autoscale(
+        self,
+        reoptimize_interval: float = 60.0,
+        cooldown_period: float = 30.0,
+    ):
+        """Create and start an AutoScaler based on this plan.
+
+        Args:
+            reoptimize_interval: Seconds between re-optimization runs
+            cooldown_period: Minimum seconds between scaling actions
+
+        Returns:
+            Started AutoScaler instance
+        """
+        from .autoscaling import AutoScaler
+
+        # Deploy with current plan first
+        await self.deploy()
+
+        # Create auto-scaler that will re-optimize periodically
+        scaler = AutoScaler(
+            target_rps=self.target_rps,
+            check_interval=reoptimize_interval,
+            constraints=self.constraints,
+            cooldown_period=cooldown_period,
+        )
+
+        await scaler.start()
+        return scaler
+
+    def __repr__(self) -> str:
+        """Pretty-print the deployment plan."""
+        lines = []
+        lines.append("=" * 70)
+        lines.append("DEPLOYMENT PLAN")
+        lines.append("=" * 70)
+        lines.append(f"Target RPS: {self.target_rps}")
+        lines.append(f"Status: {self.result.solver_status}")
+        lines.append("")
+        lines.append("Resources:")
+        lines.append(f"  Total CPUs: {self.result.total_cpus}")
+        lines.append(f"  Total GPUs: {self.result.total_gpus}")
+        lines.append(f"  Total Instances: {self.result.total_instances}")
+        lines.append("")
+        lines.append("Replicas:")
+
+        for name in sorted(self.result.replica_counts.keys()):
+            count = self.result.replica_counts[name]
+            util = self.result.utilizations.get(name, 0.0)
+            arrival = self.result.arrival_rates.get(name, 0.0)
+            capacity = self.result.capacities.get(name, 0.0)
+
+            lines.append(f"  {name}:")
+            lines.append(f"    Instances: {count}")
+            lines.append(f"    Utilization: {util:.1%}")
+            lines.append(f"    Arrival Rate: {arrival:.1f} req/s")
+            lines.append(f"    Capacity: {capacity:.1f} req/s")
+
+        lines.append("")
+        lines.append(
+            f"Avg Utilization: {self.result.metrics.get('avg_utilization', 0.0):.1%}"
+        )
+        lines.append("=" * 70)
+
+        return "\n".join(lines)
 
 
 class ReplicaOptimizer:
@@ -500,7 +679,7 @@ def _compute_external_arrivals(
 def compute_optimal_counts_from_profiler(
     profiler,
     external_rps: float,
-    replica_configs: list[ReplicaConfig],
+    replicas: list | None = None,
     constraints: Constraints | None = None,
 ) -> OptimizationResult:
     """Helper function to compute optimal counts directly from profiler.
@@ -508,7 +687,7 @@ def compute_optimal_counts_from_profiler(
     Args:
         profiler: ReplicaProfiler instance with profiling data
         external_rps: External requests per second entering the system
-        replica_configs: List of ReplicaConfig with throughput functions
+        replicas: Optional list of ReplicaSpec. If None, auto-discovers from registry.
         constraints: Optimization constraints
 
     Returns:
@@ -518,55 +697,53 @@ def compute_optimal_counts_from_profiler(
         from thinkagain.distributed.profiling import profile, node_context
         from thinkagain.distributed.optimizer import (
             compute_optimal_counts_from_profiler,
-            ReplicaConfig,
             Constraints,
             linear_throughput,
             batched_throughput,
         )
+        from thinkagain.distributed import replica
+
+        @replica(cpus=2, throughput=linear_throughput(200.0))
+        class VectorDB:
+            ...
+
+        @replica(gpus=1, throughput=batched_throughput(50.0, 32))
+        class LLMPool:
+            ...
 
         with profile() as profiler:
             # Run workload
             for _ in range(100):
                 run(pipeline, data, context_factory=node_context)
 
-            # Define replica configs with different scaling behaviors
-            configs = [
-                ReplicaConfig(
-                    name='VectorDB',
-                    throughput_func=linear_throughput(200.0),  # Linear scaling
-                    cost_per_instance=1.0,
-                ),
-                ReplicaConfig(
-                    name='LLMPool',
-                    throughput_func=batched_throughput(
-                        base_rate=50.0,
-                        batch_size=32,
-                    ),  # Batching effects
-                    cost_per_instance=10.0,  # Expensive
-                ),
-                ReplicaConfig(
-                    name='Cache',
-                    throughput_func=linear_throughput(1000.0),
-                    cost_per_instance=0.1,
-                ),
-            ]
-
-            # Compute optimal counts
+            # Compute optimal counts (auto-discovers replicas)
             result = compute_optimal_counts_from_profiler(
                 profiler,
                 external_rps=100.0,
-                replica_configs=configs,
-                constraints=Constraints(
-                    max_utilization=0.8,
-                    total_budget=50.0,
-                ),
+                constraints=Constraints(max_utilization=0.8),
             )
 
             print(f"Recommended counts: {result.replica_counts}")
             print(f"Utilizations: {result.utilizations}")
-            print(f"Total cost: {result.total_cost}")
     """
     _require_gurobi()
+
+    if replicas is None:
+        # Auto-discover replicas from registry
+        from .manager import get_default_manager
+
+        manager = get_default_manager()
+        all_specs = manager.get_all()
+        replicas = [spec for spec in all_specs.values() if spec.throughput is not None]
+
+        if not replicas:
+            raise ValueError(
+                "No replicas with throughput found. "
+                "Add throughput to @replica decorators."
+            )
+
+    # Convert replicas to configs
+    replica_configs = [spec.to_replica_config() for spec in replicas]
 
     fanout_matrix = profiler.get_fanout_matrix()
     entry_nodes = set(profiler.get_node_executions().keys())
@@ -613,3 +790,176 @@ def compute_optimal_counts_heuristic(
         replica_counts[replica] = max(1, count)
 
     return replica_counts
+
+
+# ============================================================================
+# New Clean API
+# ============================================================================
+
+
+def optimize(
+    target_rps: float,
+    profiler=None,
+    constraints: Constraints | None = None,
+    max_cpus: int | None = None,
+    max_gpus: int | None = None,
+    max_utilization: float = 0.8,
+) -> DeploymentPlan:
+    """Compute optimal replica deployment plan.
+
+    This is the main entry point for optimization. It discovers all replicas
+    with throughput functions configured, runs the optimizer, and returns an
+    actionable deployment plan.
+
+    Args:
+        target_rps: Target requests per second (external arrival rate)
+        profiler: Optional profiler instance. If None, uses global profiler
+                 or assumes uniform load distribution.
+        constraints: Advanced constraints (optional). Use max_cpus/max_gpus for simple cases.
+        max_cpus: Maximum total CPUs (shorthand for constraints.max_total_cpus)
+        max_gpus: Maximum total GPUs (shorthand for constraints.max_total_gpus)
+        max_utilization: Target max utilization (default: 0.8)
+
+    Returns:
+        DeploymentPlan that can be deployed or inspected
+
+    Example:
+        # Simplest usage
+        plan = optimize(target_rps=100.0, max_cpus=64, max_gpus=4)
+        await plan.deploy()
+
+        # With profiling
+        with profile():
+            run_workload()
+
+        plan = optimize(target_rps=100.0)
+        print(plan)  # Inspect before deploying
+
+        # Advanced constraints
+        plan = optimize(
+            target_rps=100.0,
+            constraints=Constraints(
+                max_total_cpus=64,
+                max_total_gpus=4,
+                max_utilization=0.75,
+                per_replica_constraints={
+                    'LLM': {'max_instances': 2},
+                }
+            )
+        )
+
+    Raises:
+        ImportError: If gurobipy is not installed
+        ValueError: If no replicas with throughput configured are found
+    """
+    _require_gurobi()
+
+    # Build constraints
+    if constraints is None:
+        constraints = Constraints(max_utilization=max_utilization)
+
+    # Apply shorthand parameters
+    if max_cpus is not None:
+        constraints.max_total_cpus = max_cpus
+    if max_gpus is not None:
+        constraints.max_total_gpus = max_gpus
+
+    # Auto-discover replicas with throughput configured
+    from .manager import get_default_manager
+
+    manager = get_default_manager()
+    all_specs = manager.get_all()
+    replicas = [spec for spec in all_specs.values() if spec.throughput is not None]
+
+    if not replicas:
+        raise ValueError(
+            "No replicas with throughput configured found. "
+            "Add throughput parameter to @replica decorators."
+        )
+
+    # Convert to ReplicaConfig
+    replica_configs = [spec.to_replica_config() for spec in replicas]
+
+    # Get or create profiler
+    if profiler is None:
+        from .profiling import get_profiler
+
+        profiler = get_profiler()
+
+    # Build workload profile
+    if profiler is not None:
+        fanout_matrix = profiler.get_fanout_matrix()
+        node_executions = profiler.get_node_executions()
+
+        if not fanout_matrix or not node_executions:
+            # No profiling data, use uniform distribution
+            fanout_matrix = {"default_node": {spec.name: 1.0 for spec in replicas}}
+            external_arrivals = {"default_node": target_rps}
+        else:
+            # Use profiling data
+            entry_nodes = set(node_executions.keys())
+            external_arrivals = _compute_external_arrivals(entry_nodes, target_rps)
+    else:
+        # No profiler, assume uniform distribution
+        fanout_matrix = {"default_node": {spec.name: 1.0 for spec in replicas}}
+        external_arrivals = {"default_node": target_rps}
+
+    workload = WorkloadProfile(
+        external_arrivals=external_arrivals,
+        fanout_matrix=fanout_matrix,
+    )
+
+    # Run optimizer
+    optimizer = ReplicaOptimizer(configs=replica_configs, constraints=constraints)
+    result = optimizer.optimize(workload)
+
+    # Return deployment plan
+    return DeploymentPlan(
+        result=result,
+        target_rps=target_rps,
+        constraints=constraints,
+    )
+
+
+def compare_scenarios(
+    target_rps: float,
+    scenarios: dict[str, Constraints],
+    profiler=None,
+) -> dict[str, DeploymentPlan]:
+    """Compare multiple deployment scenarios.
+
+    Args:
+        target_rps: Target requests per second
+        scenarios: Dict mapping scenario name to constraints
+        profiler: Optional profiler instance
+
+    Returns:
+        Dict mapping scenario name to deployment plan
+
+    Example:
+        scenarios = {
+            "Budget": Constraints(max_total_cpus=32, max_total_gpus=2),
+            "Performance": Constraints(max_utilization=0.6),
+            "Balanced": Constraints(max_total_cpus=64, max_utilization=0.75),
+        }
+
+        plans = compare_scenarios(target_rps=100.0, scenarios=scenarios)
+
+        for name, plan in plans.items():
+            print(f"\n{name}:")
+            print(f"  CPUs: {plan.total_cpus}, GPUs: {plan.total_gpus}")
+            print(f"  Instances: {plan.result.total_instances}")
+    """
+    results = {}
+    for name, constraints in scenarios.items():
+        try:
+            plan = optimize(
+                target_rps=target_rps,
+                profiler=profiler,
+                constraints=constraints,
+            )
+            results[name] = plan
+        except Exception as e:
+            print(f"Warning: Scenario '{name}' failed: {e}")
+
+    return results

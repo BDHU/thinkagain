@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import threading
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from .optimizer import ThroughputFunc
 
 from .replica import ReplicaSpec
 
@@ -35,20 +38,41 @@ class ReplicaManager:
             )
         return None
 
-    def register(self, cls: type, cpus: int = 0, gpus: int = 0) -> ReplicaSpec:
-        """Register a replica class with resource requirements.
+    def register(
+        self,
+        cls: type,
+        cpus: int = 0,
+        gpus: int = 0,
+        throughput: ThroughputFunc | None = None,
+        min_instances: int = 1,
+        max_instances: int = 100,
+        max_utilization: float = 0.8,
+    ) -> ReplicaSpec:
+        """Register a replica class with resource requirements and scaling config.
 
         Args:
             cls: The replica class to register
             cpus: CPUs per instance (0 for GPU-only workers)
-            gpus: GPUs per instance (0 for CPU-only workers)
+            gpus: GPUs per instance (0 for GPU-only workers)
+            throughput: Throughput model for auto-scaling/optimization (optional)
+            min_instances: Minimum instances for auto-scaling (default: 1, deprecated)
+            max_instances: Maximum instances for auto-scaling (default: 100, deprecated)
+            max_utilization: Target max utilization for auto-scaling (default: 0.8)
 
         At least one of cpus or gpus must be > 0.
 
         Returns:
             ReplicaSpec for the registered class
         """
-        spec = ReplicaSpec(cls=cls, cpus=cpus, gpus=gpus)
+        spec = ReplicaSpec(
+            cls=cls,
+            cpus=cpus,
+            gpus=gpus,
+            throughput=throughput,
+            min_instances=min_instances,
+            max_instances=max_instances,
+            max_utilization=max_utilization,
+        )
         with self._lock:
             self._registry[spec.full_name] = spec
         return spec
@@ -59,33 +83,52 @@ class ReplicaManager:
         *,
         cpus: int | None = None,
         gpus: int | None = None,
+        throughput: ThroughputFunc | None = None,
+        min_instances: int = 1,
+        max_instances: int = 100,
+        max_utilization: float = 0.8,
     ):
         """Decorator to register a class as a replica.
 
         Args:
             cpus: CPUs per instance (None means 0, i.e., not used)
             gpus: GPUs per instance (None means 0, i.e., not used)
+            throughput: Throughput model for auto-scaling/optimization (optional)
+            min_instances: Minimum instances for auto-scaling (default: 1, deprecated)
+            max_instances: Maximum instances for auto-scaling (default: 100, deprecated)
+            max_utilization: Target max utilization for auto-scaling (default: 0.8)
 
         At least one of cpus or gpus must be specified and > 0.
 
         Examples:
-            @replica(cpus=2, gpus=1)  # Mixed: 2 CPUs + 1 GPU per instance
-            class HybridModel:
-                ...
-
-            @replica(gpus=1)  # GPU-only: 1 GPU, 0 CPUs per instance
-            class LLMPool:
-                ...
-
-            @replica(cpus=4)  # CPU-only: 4 CPUs, 0 GPUs per instance
+            # Simple deployment (no auto-scaling)
+            @replica(cpus=2)
             class VectorDB:
+                ...
+
+            # With optimization
+            @replica(cpus=2, throughput=linear_throughput(200.0))
+            class VectorDB:
+                ...
+
+            # GPU-based with batching
+            @replica(gpus=1, throughput=batched_throughput(50.0, 32))
+            class LLM:
                 ...
         """
 
         def decorator(cls: type) -> ReplicaSpec:
             final_cpus = 0 if cpus is None else cpus
             final_gpus = 0 if gpus is None else gpus
-            return self.register(cls, cpus=final_cpus, gpus=final_gpus)
+            return self.register(
+                cls,
+                cpus=final_cpus,
+                gpus=final_gpus,
+                throughput=throughput,
+                min_instances=min_instances,
+                max_instances=max_instances,
+                max_utilization=max_utilization,
+            )
 
         if _cls is None:
             return decorator
@@ -127,34 +170,50 @@ def replica(
     *,
     cpus: int | None = None,
     gpus: int | None = None,
-    manager: ReplicaManager | None = None,
+    throughput: ThroughputFunc | None = None,
+    min_instances: int = 1,
+    max_instances: int = 100,
+    max_utilization: float = 0.8,
 ) -> Callable[[type], ReplicaSpec] | ReplicaSpec:
-    """Decorator that registers replicas with a manager.
+    """Decorator that registers replicas with the global manager.
 
     Args:
         cpus: CPUs per instance (None means 0)
         gpus: GPUs per instance (None means 0)
-        manager: ReplicaManager to use (default: global manager)
+        throughput: Throughput model for auto-scaling/optimization (optional)
+        min_instances: Minimum instances for auto-scaling (default: 1, deprecated)
+        max_instances: Maximum instances for auto-scaling (default: 100, deprecated)
+        max_utilization: Target max utilization for auto-scaling (default: 0.8)
 
     At least one of cpus or gpus must be specified and > 0.
 
     Examples:
-        @replica(cpus=4, gpus=1)  # Mixed: 4 CPUs + 1 GPU per instance
-        class HybridModel:
-            ...
-
-        @replica(gpus=2)  # GPU-only: 2 GPUs, 0 CPUs per instance
-        class vLLM:
-            ...
-
-        @replica(cpus=8)  # CPU-only: 8 CPUs, 0 GPUs per instance
+        # Simple deployment
+        @replica(cpus=8)
         class VectorDB:
             ...
-    """
-    if manager is None:
-        manager = get_default_manager()
 
-    return manager.replica(_cls, cpus=cpus, gpus=gpus)
+        # With optimization
+        @replica(cpus=2, throughput=linear_throughput(200.0))
+        class VectorDB:
+            ...
+
+        # GPU-based with batching
+        @replica(gpus=1, throughput=batched_throughput(50.0, 32))
+        class LLM:
+            ...
+    """
+    manager = get_default_manager()
+
+    return manager.replica(
+        _cls,
+        cpus=cpus,
+        gpus=gpus,
+        throughput=throughput,
+        min_instances=min_instances,
+        max_instances=max_instances,
+        max_utilization=max_utilization,
+    )
 
 
 _default_manager = ReplicaManager()
