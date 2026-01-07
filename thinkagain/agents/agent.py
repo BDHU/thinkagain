@@ -20,7 +20,7 @@ class Agent:
 
     Args:
         model: Either a model string (e.g., "gpt-4") or a provider instance
-               (e.g., OpenAI(model="gpt-4"), VLLM(...), Anthropic(...))
+               (e.g., OpenAI(model="gpt-4"), VLLM(...))
         tools: Optional list of tool functions. Tools can be plain async functions
                or decorated with @tool for advanced features.
         max_iterations: Maximum number of agent loop iterations (default: 10)
