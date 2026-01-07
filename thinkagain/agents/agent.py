@@ -6,8 +6,9 @@ from typing import Any, Callable
 
 from thinkagain import Context
 
-from .llm import LLM, call_llm, execute_tools
-from .providers import OpenAI
+from .agent_nodes import call_llm, execute_tools
+from .llms import OpenAI
+from .protocols import LLM
 from .state import AgentState, Message
 
 
