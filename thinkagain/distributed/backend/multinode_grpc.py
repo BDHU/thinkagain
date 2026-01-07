@@ -255,16 +255,16 @@ class MultiNodeGrpcBackend:
 
         try:
             # Build command
+            node_config = self._node_configs[target_host]
+            bind_host = "127.0.0.1" if node_config.is_local else "0.0.0.0"
             command = [
                 sys.executable,
                 "-m",
                 "thinkagain.distributed.backend.grpc.server_main",
                 payload_path,
                 "0",  # port 0 = random port
+                bind_host,
             ]
-
-            # Get node config
-            node_config = self._node_configs[target_host]
 
             # Spawn server process (local or remote)
             spawned = await self.spawner.spawn(

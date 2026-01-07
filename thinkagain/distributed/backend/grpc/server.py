@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import socket
 from typing import Any
 
 import grpc.aio
@@ -121,6 +122,7 @@ async def serve(
     registry: ReplicaRegistry | None = None,
     *,
     serializer: Serializer | None = None,
+    bind_host: str = "0.0.0.0",
 ) -> tuple[grpc.aio.Server, int]:
     """Start the async gRPC server.
 
@@ -137,11 +139,16 @@ async def serve(
     if serializer is None:
         serializer = PickleSerializer()
 
+    if port == 0:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind((bind_host, 0))
+            port = sock.getsockname()[1]
+
     server = grpc.aio.server()
     replica_pb2_grpc.add_ReplicaServiceServicer_to_server(
         AsyncReplicaServicer(registry, serializer), server
     )
-    bound_port = server.add_insecure_port(f"0.0.0.0:{port}")
+    bound_port = server.add_insecure_port(f"{bind_host}:{port}")
     if bound_port == 0:
         raise RuntimeError(f"Failed to bind gRPC server to port {port}")
     await server.start()
@@ -153,6 +160,7 @@ async def run_server(
     registry: ReplicaRegistry | None = None,
     *,
     serializer: Serializer | None = None,
+    bind_host: str = "0.0.0.0",
 ) -> None:
     """Run the async gRPC server.
 
@@ -164,6 +172,11 @@ async def run_server(
     Example:
         asyncio.run(run_server(port=50051))
     """
-    server, bound_port = await serve(port, registry, serializer=serializer)
+    server, bound_port = await serve(
+        port,
+        registry,
+        serializer=serializer,
+        bind_host=bind_host,
+    )
     print(f"thinkagain gRPC server listening on port {bound_port}")
     await server.wait_for_termination()
