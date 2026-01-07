@@ -1,5 +1,7 @@
 """Slimmed down tests for distributed execution."""
 
+import socket
+
 import pytest
 
 from thinkagain import Context, arun, chain, node, replica
@@ -382,6 +384,11 @@ async def test_multinode_incremental_scaling():
     """
     pytest.importorskip("grpc", reason="gRPC backend requires the grpc package")
     pytest.importorskip("cloudpickle", reason="Multi-node backend requires cloudpickle")
+    try:
+        sock = socket.socket()
+        sock.close()
+    except PermissionError:
+        pytest.skip("Socket creation not permitted in this environment")
 
     from thinkagain.distributed.backend.multinode_grpc import MultiNodeGrpcBackend
     from thinkagain.distributed.replica import ReplicaSpec

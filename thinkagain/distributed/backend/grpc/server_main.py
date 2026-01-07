@@ -8,12 +8,16 @@ import sys
 
 
 async def main() -> None:
-    if len(sys.argv) != 3:
-        print("Usage: server_main.py <payload_path> <port>", file=sys.stderr)
+    if len(sys.argv) not in (3, 4):
+        print(
+            "Usage: server_main.py <payload_path> <port> [bind_host]",
+            file=sys.stderr,
+        )
         sys.exit(2)
 
     payload_path = sys.argv[1]
     port = int(sys.argv[2])
+    bind_host = sys.argv[3] if len(sys.argv) == 4 else "0.0.0.0"
 
     try:
         import cloudpickle
@@ -32,7 +36,11 @@ async def main() -> None:
         registry = ReplicaRegistry()
         registry.register(cls)
 
-        server, bound_port = await serve(port=port, registry=registry)
+        server, bound_port = await serve(
+            port=port,
+            registry=registry,
+            bind_host=bind_host,
+        )
 
         registry.deploy(
             name=cls.__name__,
