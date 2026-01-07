@@ -85,5 +85,5 @@ python3 -c "import thinkagain; print('OK')"
 
 ## See Also
 
-- [examples/remote_deployment_demo.py](examples/remote_deployment_demo.py) - Full example
+- [examples/deployment.py](examples/deployment.py) - Deployment, scaling, and optimization examples
 - [PHASE1_IMPLEMENTATION.md](PHASE1_IMPLEMENTATION.md) - Architecture details
