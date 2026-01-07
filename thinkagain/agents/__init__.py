@@ -1,9 +1,11 @@
 """Minimal agent helpers for ThinkAgain."""
 
 from .agent import Agent
-from .llm import LLM, call_llm, execute_tool_call, execute_tools, tool
-from .providers import VLLM, OpenAI
+from .agent_nodes import call_llm, execute_tool_call, execute_tools
+from .llms import OpenAI, VLLM
+from .protocols import LLM
 from .state import AgentState, Message, ToolCall
+from .tools import tool
 
 __all__ = [
     # High-level API

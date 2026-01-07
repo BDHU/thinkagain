@@ -89,4 +89,3 @@ class OpenAI(OpenAIBase):
     """OpenAI model provider."""
 
     model: str = "gpt-4"
-

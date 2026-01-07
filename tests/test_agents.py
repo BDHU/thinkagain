@@ -55,7 +55,7 @@ def test_agent_state_immutability():
 @pytest.mark.asyncio
 async def test_function_to_schema():
     """Test function to schema conversion."""
-    from thinkagain.agents.llm import _function_to_schema
+    from thinkagain.agents.tools import _function_to_schema
 
     async def search(query: str, limit: int = 10) -> str:
         """Search for information."""
@@ -187,7 +187,7 @@ async def test_execute_tools_no_calls():
 async def test_execute_tool_call_node():
     """Test single tool call execution node."""
     from thinkagain import Context
-    from thinkagain.agents.llm import execute_tool_call
+    from thinkagain.agents.agent_nodes import execute_tool_call
 
     async def multiply(a: int, b: int) -> int:
         """Multiply two numbers."""
