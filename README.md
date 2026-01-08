@@ -31,6 +31,7 @@ can deploy them as replica pools that run locally or behind a gRPC server.
 - **`run` / `arun`** – Helpers that normalize inputs and materialize pending nodes via DAG traversal.
 - **`replica`** – Decorator that registers a class as a managed pool of workers.
 - **`distributed.runtime`** – Context manager that deploys registered replicas.
+- **`@jit`** – JAX-style tracing for graph execution with `cond`, `while_loop`, and `scan`.
 
 ## Installation
 
@@ -125,6 +126,33 @@ Run the declarative demo to see conditional branches and loops:
 ```bash
 python examples/demo.py
 ```
+
+## Graph API (JAX-style tracing)
+
+Use `@jit` to trace async functions into a static graph. Inside `@jit`, use
+`cond`, `while_loop`, and `scan` for control flow.
+
+```python
+from thinkagain import jit, node, cond, while_loop, scan
+
+@node
+async def step(x: int) -> int:
+    return x + 1
+
+@jit(static_argnames=("max_steps",))
+async def pipeline(x: int, *, max_steps: int = 3) -> int:
+    x = await while_loop(lambda s: s < max_steps, step, x)
+    x = await cond(lambda s: s % 2 == 0, step, step, x)
+    return x
+```
+
+Notes:
+- Keyword args are dynamic inputs by default; list names in `static_argnames`
+  to treat them as compile-time constants (changing them recompiles).
+- Static kwargs must be hashable.
+- `cond` branch output patterns must match, and `scan` bodies must return
+  `(carry, output)` tuples.
+- `parent_values` is a reserved parameter name for internal execution.
 
 ## Documentation
 
