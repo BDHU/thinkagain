@@ -15,6 +15,7 @@ from .tracing import (
     trace_branch,
     validate_cond_branches,
     validate_scan_body,
+    validate_switch_branches,
     validate_while_body,
 )
 
@@ -196,3 +197,66 @@ async def scan(
     outputs_id = ctx.add_node(lambda t: t[1], (TracedValue(scan_id, ctx),), {})
 
     return TracedValue(carry_id, ctx), TracedValue(outputs_id, ctx)
+
+
+async def switch(
+    index_fn: Callable[[T], int],
+    branches: list[Callable[[T], U]],
+    operand: T,
+) -> U:
+    """Multi-way branch selection for computation graphs.
+
+    Inside @jit: Traced as a graph node
+    Outside @jit: Executes like match/case statement
+
+    Args:
+        index_fn: Function that returns branch index (0-based)
+        branches: List of branch functions to choose from
+        operand: Input passed to index function and chosen branch
+
+    Returns:
+        Result from the selected branch
+
+    Raises:
+        IndexError: If index is out of bounds
+        TracingError: If branches have incompatible signatures
+
+    Example:
+        @jit
+        async def route(request):
+            return await switch(
+                lambda r: {"GET": 0, "POST": 1, "DELETE": 2}.get(r.method, 3),
+                [handle_get, handle_post, handle_delete, handle_default],
+                request
+            )
+
+    Note:
+        More efficient than nested cond() calls for 3+ branches.
+        Similar to jax.lax.switch() in JAX.
+    """
+    if not branches:
+        raise ValueError("switch requires at least one branch")
+
+    ctx = get_trace_context()
+
+    if ctx is None:
+        # Outside @jit - execute directly
+        index = await maybe_await(index_fn, operand)
+        if not isinstance(index, int) or index < 0 or index >= len(branches):
+            raise IndexError(f"switch index {index} out of range [0, {len(branches)})")
+        return await maybe_await(branches[index], operand)
+
+    # Inside @jit - validate and trace
+    _check_no_capture(index_fn, ctx, "switch index_fn")
+
+    # Validate and trace all branches
+    traced_branches = []
+    for i, branch_fn in enumerate(branches):
+        _check_body_capture(branch_fn, ctx, f"switch branch {i}")
+        traced_branch = await _maybe_trace(branch_fn, 1, ctx)
+        traced_branches.append(traced_branch)
+
+    validate_switch_branches(traced_branches)
+
+    node_id = ctx.add_switch(operand, index_fn, traced_branches)
+    return TracedValue(node_id, ctx)

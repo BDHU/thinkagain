@@ -8,6 +8,7 @@ from .core import (
     jit,
     node,
     scan,
+    switch,
     while_loop,
 )
 from .distributed import ReplicaManager, ReplicaSpec, replica
@@ -25,6 +26,7 @@ __all__ = [
     "cond",
     "while_loop",
     "scan",
+    "switch",
     # Core - Errors
     "NodeExecutionError",
     # Distributed (legacy - will be updated to use new API)
