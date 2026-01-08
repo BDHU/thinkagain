@@ -183,6 +183,35 @@ async def call_tool(s: State) -> State:
 These patterns work identically in sync or async contexts because the only state
 that matters is the `Context` object that flows through the pipeline.
 
+## Graph Tracing API
+
+ThinkAgain also ships a JAX-style tracing API for building static graphs from
+async code. Use `@jit` to trace a function, and use `cond`, `while_loop`, or
+`scan` to express control flow inside the traced region.
+
+```python
+from thinkagain import jit, node, cond, scan, while_loop
+
+@node
+async def step(x: int) -> int:
+    return x + 1
+
+@jit(static_argnames=("max_steps",))
+async def pipeline(x: int, *, max_steps: int = 3) -> int:
+    x = await while_loop(lambda s: s < max_steps, step, x)
+    x = await cond(lambda s: s % 2 == 0, step, step, x)
+    return x
+```
+
+Key behaviors:
+- Keyword arguments are dynamic inputs by default. Use `static_argnames` to
+  treat specific kwargs as compile-time constants; changing them recompiles.
+- Static kwargs must be hashable to participate in cache keys.
+- `cond` branch outputs must use the same output pattern.
+- `scan` bodies must return `(carry, output)` tuples.
+- `parent_values` is reserved for internal execution and cannot be used as a
+  node parameter.
+
 ## Future Work
 
 - Additional backends (Ray, asyncio pools, etc.) can slot into the same backend
