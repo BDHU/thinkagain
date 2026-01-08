@@ -24,6 +24,7 @@ from .graph import (
     OutputKind,
     OutputRef,
     ScanNode,
+    SwitchNode,
     TracedValue,
     WhileNode,
 )
@@ -183,6 +184,21 @@ class TraceContext:
             source_location=_get_source_location(body_fn)
             if callable(body_fn)
             else None,
+        )
+        self.nodes.append(node)
+        return node.node_id
+
+    def add_switch(
+        self, operand: Any, index_fn: Callable, branches: list[Graph | Callable]
+    ) -> int:
+        """Add a switch node."""
+        node = SwitchNode(
+            node_id=self._next_id(),
+            args=self._normalize_many((operand,)),
+            kwargs={},
+            index_fn=index_fn,
+            branches=branches,
+            source_location=_get_source_location(index_fn),
         )
         self.nodes.append(node)
         return node.node_id
@@ -410,6 +426,27 @@ def validate_scan_body(body: Graph | Callable) -> None:
         val = body.output_ref.value
         if not isinstance(val, tuple) or len(val) != 2:
             raise TracingError(f"scan body must return (carry, output), got {val!r}")
+
+
+def validate_switch_branches(branches: list[Graph | Callable]) -> None:
+    """Validate switch branches have compatible outputs."""
+    if not branches:
+        raise TracingError("switch must have at least one branch")
+
+    for i, branch in enumerate(branches):
+        _validate_graph(branch, f"switch branch {i}")
+
+    # Check all branches return same output pattern
+    graph_branches = [b for b in branches if isinstance(b, Graph)]
+    if len(graph_branches) > 1:
+        first_kind = graph_branches[0].output_ref.kind
+        for i, branch in enumerate(graph_branches[1:], start=1):
+            if branch.output_ref.kind is not first_kind:
+                raise TracingError(
+                    f"switch branches must return same pattern: "
+                    f"branch 0={first_kind.value}, "
+                    f"branch {i}={branch.output_ref.kind.value}"
+                )
 
 
 # ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 
 from .errors import NodeExecutionError, TracingError
 from .graph import Graph
-from .ops import cond, scan, while_loop
+from .ops import cond, scan, switch, while_loop
 from .tracing import Node, clear_compiled_cache, get_cache_info, jit, node
 
 __all__ = [
@@ -14,6 +14,7 @@ __all__ = [
     "cond",
     "while_loop",
     "scan",
+    "switch",
     # Types
     "Graph",
     # Errors

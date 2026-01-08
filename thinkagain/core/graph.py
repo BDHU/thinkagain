@@ -85,6 +85,14 @@ class ScanNode(GraphNode):
     body_fn: "Graph | Callable" = field(default=None)
 
 
+@dataclass
+class SwitchNode(GraphNode):
+    """Switch/case control flow node for multi-way branching."""
+
+    index_fn: Callable = field(default=None)
+    branches: list["Graph | Callable"] = field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # TracedValue
 # ---------------------------------------------------------------------------

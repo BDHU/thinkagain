@@ -5,7 +5,14 @@ from dataclasses import dataclass
 
 import thinkagain
 from thinkagain.core.errors import TracingError
-from thinkagain.core.graph import CallNode, CondNode, WhileNode, ScanNode, OutputKind
+from thinkagain.core.graph import (
+    CallNode,
+    CondNode,
+    WhileNode,
+    ScanNode,
+    SwitchNode,
+    OutputKind,
+)
 from thinkagain.core.tracing import _compiled_cache, Graph
 
 
@@ -708,3 +715,84 @@ async def test_while_predicate_rejects_captured_traced_value():
 
     with pytest.raises(TracingError):
         await pipeline(State(value=1, threshold=2))
+
+
+# =============================================================================
+# Switch Operator Tests
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_switch_branches_traced_as_subgraphs():
+    """Test that @node functions in switch branches are traced as Graphs."""
+    _compiled_cache.clear()
+
+    @thinkagain.jit
+    async def pipeline_with_switch(state: State) -> State:
+        def get_tier(s: State) -> int:
+            return 0 if s.value < 10 else 1
+
+        return await thinkagain.switch(
+            get_tier,
+            [increment, double],
+            state,
+        )
+
+    result = await pipeline_with_switch(State(value=7))
+    assert result.value == 8
+
+    # Verify graph tracing
+    for cache_key, graph in _compiled_cache.items():
+        if cache_key[0] is pipeline_with_switch.__wrapped__:
+            for node in graph.nodes:
+                if isinstance(node, SwitchNode):
+                    assert len(node.branches) == 2
+                    for branch in node.branches:
+                        assert isinstance(branch, Graph)
+                    return
+    pytest.fail("Switch node not found in compiled graph")
+
+
+@pytest.mark.asyncio
+async def test_switch_index_out_of_bounds():
+    """Test that switch raises IndexError for out-of-bounds index."""
+
+    with pytest.raises(IndexError, match="switch index"):
+        await thinkagain.switch(lambda _: 5, [lambda x: x], 10)
+
+
+@pytest.mark.asyncio
+async def test_switch_rejects_mismatched_output_kinds():
+    """switch should reject branches with incompatible output patterns."""
+    _compiled_cache.clear()
+
+    async def return_input(x: int) -> int:
+        return x
+
+    async def return_literal(_: int) -> int:
+        return 42
+
+    @thinkagain.jit
+    async def pipeline(x: int) -> int:
+        return await thinkagain.switch(lambda _: 0, [return_input, return_literal], x)
+
+    with pytest.raises(TracingError, match="switch branches must return same pattern"):
+        await pipeline(5)
+
+
+@pytest.mark.asyncio
+async def test_switch_index_fn_rejects_captured_traced_value():
+    """switch index_fn should not capture TracedValues."""
+    _compiled_cache.clear()
+
+    @thinkagain.jit
+    async def pipeline(state: State) -> State:
+        threshold = await get_threshold(state)
+        return await thinkagain.switch(
+            lambda s: 0 if s.value < threshold else 1,
+            [increment, double],
+            state,
+        )
+
+    with pytest.raises(TracingError, match="switch index_fn closes over TracedValue"):
+        await pipeline(State(value=1, threshold=5))

@@ -15,6 +15,7 @@ from .graph import (
     NodeRef,
     OutputKind,
     ScanNode,
+    SwitchNode,
     TracedValue,
     WhileNode,
 )
@@ -101,6 +102,8 @@ def _node_name(node: GraphNode) -> str:
         name = f"while#{node.node_id}"
     elif isinstance(node, ScanNode):
         name = f"scan#{node.node_id}"
+    elif isinstance(node, SwitchNode):
+        name = f"switch#{node.node_id}"
     else:
         name = f"node#{node.node_id}"
     if node.source_location:
@@ -177,12 +180,31 @@ async def _exec_scan(
     return (carry, outputs)
 
 
+async def _exec_switch(
+    node: SwitchNode, args: tuple, kwargs: dict, ctx: ExecutionContext
+) -> Any:
+    """Execute a switch node."""
+    operand = args[0]
+    index = await maybe_await(node.index_fn, operand)
+
+    if not isinstance(index, int) or index < 0 or index >= len(node.branches):
+        raise IndexError(f"switch index {index} out of range [0, {len(node.branches)})")
+
+    branch = node.branches[index]
+
+    if isinstance(branch, Graph):
+        graph_args = ctx.prepare_subgraph_args(branch, (operand,))
+        return await branch.execute(*graph_args, parent_values=ctx.capture_values)
+    return await maybe_await(branch, operand)
+
+
 # Dispatch table for node execution
 _EXECUTORS = {
     CallNode: _exec_call,
     CondNode: _exec_cond,
     WhileNode: _exec_while,
     ScanNode: _exec_scan,
+    SwitchNode: _exec_switch,
 }
 
 
