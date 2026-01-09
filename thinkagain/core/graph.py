@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from .tracing import TraceContext
@@ -41,56 +41,74 @@ class OutputRef:
 
 
 # ---------------------------------------------------------------------------
-# Graph Nodes
+# Node Executor Protocol
+# ---------------------------------------------------------------------------
+
+
+class NodeExecutor(Protocol):
+    """Strategy for executing a graph node.
+
+    This protocol defines the interface that all node executors must implement.
+    Each executor encapsulates both the execution logic and the data needed
+    for that execution (e.g., the function to call, branches to take, etc.).
+
+    Executors should be immutable (frozen dataclasses) to ensure graphs are
+    safely cacheable and serializable.
+    """
+
+    async def execute(
+        self,
+        args: tuple,
+        kwargs: dict,
+        ctx: Any,  # ExecutionContext, but avoids circular import
+    ) -> Any:
+        """Execute this node with resolved arguments.
+
+        Args:
+            args: Resolved positional arguments
+            kwargs: Resolved keyword arguments
+            ctx: Execution context with graph state and helpers
+
+        Returns:
+            Result of the node execution
+        """
+        ...
+
+    def display_name(self) -> str:
+        """Get a display name for this node (for error messages and debugging).
+
+        Returns:
+            Human-readable name for this node
+        """
+        ...
+
+
+# ---------------------------------------------------------------------------
+# Graph Node
 # ---------------------------------------------------------------------------
 
 
 @dataclass
-class GraphNode:
-    """Base class for traced computation graph nodes."""
+class Node:
+    """Universal graph node.
+
+    A node represents a single operation in the computation graph. The actual
+    execution logic is delegated to the executor, which implements the
+    NodeExecutor protocol.
+
+    Attributes:
+        node_id: Unique identifier within the graph
+        args: Normalized argument references (InputRef, NodeRef, or literals)
+        kwargs: Normalized keyword argument references
+        executor: Strategy object that knows how to execute this node
+        source_location: Optional source code location for debugging
+    """
 
     node_id: int
     args: tuple
     kwargs: dict
+    executor: Any  # NodeExecutor - Any to avoid protocol complexity with dataclass
     source_location: str | None = None
-
-
-@dataclass
-class CallNode(GraphNode):
-    """Regular function call node."""
-
-    fn: Callable = field(default=None)
-
-
-@dataclass
-class CondNode(GraphNode):
-    """Conditional control flow node."""
-
-    pred_fn: Callable = field(default=None)
-    branches: dict[str, "Graph | Callable"] = field(default_factory=dict)
-
-
-@dataclass
-class WhileNode(GraphNode):
-    """While loop control flow node."""
-
-    cond_fn: Callable = field(default=None)
-    body_fn: "Graph | Callable" = field(default=None)
-
-
-@dataclass
-class ScanNode(GraphNode):
-    """Scan control flow node."""
-
-    body_fn: "Graph | Callable" = field(default=None)
-
-
-@dataclass
-class SwitchNode(GraphNode):
-    """Switch/case control flow node for multi-way branching."""
-
-    index_fn: Callable = field(default=None)
-    branches: list["Graph | Callable"] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -163,10 +181,13 @@ class Graph:
     Represents both top-level graphs (from @jit) and subgraphs (from control flow).
     """
 
-    nodes: list[GraphNode]
+    nodes: list[Node]
     input_count: int
     output_ref: OutputRef | None = None
     captured_inputs: dict[int, int] = field(default_factory=dict)
+    resource_list: list = field(
+        default_factory=list
+    )  # Resources (handles, etc.) used in graph
 
     def __post_init__(self):
         if self.output_ref is None:
@@ -175,8 +196,24 @@ class Graph:
             else:
                 raise ValueError("Empty graph requires explicit output_ref.")
 
-    async def execute(self, *args, parent_values: dict[int, Any] | None = None) -> Any:
-        """Execute this graph with given inputs."""
+    async def execute(
+        self,
+        *args,
+        parent_values: dict[int, Any] | None = None,
+        service_provider: Any | None = None,
+    ) -> Any:
+        """Execute this graph with given inputs.
+
+        Args:
+            *args: Input arguments
+            parent_values: Values from parent graph (for nested graphs)
+            service_provider: Optional service provider for service calls
+
+        Returns:
+            Graph output value
+        """
         from .executor import execute_graph
 
-        return await execute_graph(self, *args, parent_values=parent_values)
+        return await execute_graph(
+            self, *args, parent_values=parent_values, service_provider=service_provider
+        )

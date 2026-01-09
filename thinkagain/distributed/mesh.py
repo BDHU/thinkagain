@@ -24,6 +24,37 @@ def _get_mesh_stack() -> list["Mesh"]:
 
 
 # ---------------------------------------------------------------------------
+# Service Pool
+# ---------------------------------------------------------------------------
+
+
+class _ServicePool:
+    """Pool of service instances for load balancing.
+
+    Simple round-robin load balancer for service replicas.
+    """
+
+    def __init__(self, instances: list):
+        """Initialize pool with service instances.
+
+        Args:
+            instances: List of service instances
+        """
+        self.instances = instances
+        self._current = 0
+
+    def get_next(self):
+        """Get next instance (round-robin).
+
+        Returns:
+            Next service instance
+        """
+        instance = self.instances[self._current]
+        self._current = (self._current + 1) % len(self.instances)
+        return instance
+
+
+# ---------------------------------------------------------------------------
 # MeshNode
 # ---------------------------------------------------------------------------
 
@@ -97,6 +128,7 @@ class Mesh:
         """
         self.backend = backend
         self._nodes = []  # Store original MeshNodes for endpoint tracking
+        self._service_pools = {}  # hash(handle) -> ServicePool
 
         # Expand nodes to devices if needed
         expanded = []
@@ -147,16 +179,70 @@ class Mesh:
                 endpoints.append(node.endpoint)
         return endpoints
 
+    async def _ensure_deployed(self, handle):
+        """Ensure service is deployed (auto-deploy with n=1 if needed).
+
+        Args:
+            handle: ReplicaHandle to deploy
+
+        This is called automatically when a service is first used in a pipeline.
+        """
+        handle_id = hash(handle)
+
+        if handle_id not in self._service_pools:
+            # Auto-deploy with single instance
+            replica_class = handle.resolve_class()
+            instance = replica_class(*handle.init_args, **dict(handle.init_kwargs))
+
+            pool = _ServicePool([instance])
+            self._service_pools[handle_id] = pool
+
+    def get_service_replica(self, handle):
+        """Get next available replica for a service (round-robin).
+
+        Args:
+            handle: ReplicaHandle
+
+        Returns:
+            Service instance
+        """
+        handle_id = hash(handle)
+        if handle_id not in self._service_pools:
+            raise RuntimeError(
+                f"Service {handle.replica_class_name} not deployed. "
+                f"This should not happen (auto-deploy failed)."
+            )
+
+        return self._service_pools[handle_id].get_next()
+
     def __enter__(self):
-        """Enter mesh context."""
+        """Enter mesh context.
+
+        Provides service execution capability for graph execution.
+        Service tracing hooks are registered automatically during @jit tracing.
+        """
+        from .service_runtime import ServiceExecutionProvider
+
         stack = _get_mesh_stack()
         stack.append(self)
+
+        # Store service provider for execution
+        self._service_provider = ServiceExecutionProvider(self)
+
         return self
 
     def __exit__(self, *args):
         """Exit mesh context."""
         stack = _get_mesh_stack()
         stack.pop()
+
+    def get_service_provider(self):
+        """Get the service provider for this mesh.
+
+        Returns:
+            ServiceExecutionProvider that can execute service calls
+        """
+        return getattr(self, "_service_provider", None)
 
     def __repr__(self):
         return f"Mesh(gpus={self.total_gpus}, cpus={self.total_cpus}, backend={self.backend})"

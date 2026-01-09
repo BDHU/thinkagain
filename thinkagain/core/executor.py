@@ -7,19 +7,13 @@ from typing import Any
 
 from .errors import NodeExecutionError
 from .graph import (
-    CallNode,
-    CondNode,
     Graph,
-    GraphNode,
     InputRef,
+    Node,
     NodeRef,
     OutputKind,
-    ScanNode,
-    SwitchNode,
     TracedValue,
-    WhileNode,
 )
-from .runtime import maybe_await
 
 
 # ---------------------------------------------------------------------------
@@ -35,6 +29,7 @@ class ExecutionContext:
     inputs: tuple
     parent_values: dict[int, Any] | None = None
     node_values: dict[int, Any] = field(default_factory=dict)
+    service_provider: Any | None = None  # ServiceProvider protocol
     node_ids: set[int] = field(init=False)
 
     def __post_init__(self) -> None:
@@ -115,131 +110,12 @@ def _resolve_literal_output(value: Any, ctx: ExecutionContext) -> Any:
         return value
 
 
-def _node_name(node: GraphNode) -> str:
+def _node_name(node: Node) -> str:
     """Get a display name for a node (for error messages)."""
-    if isinstance(node, CallNode):
-        fn_name = getattr(node.fn, "__name__", type(node.fn).__name__)
-        name = f"{fn_name}#{node.node_id}"
-    elif isinstance(node, CondNode):
-        name = f"cond#{node.node_id}"
-    elif isinstance(node, WhileNode):
-        name = f"while#{node.node_id}"
-    elif isinstance(node, ScanNode):
-        name = f"scan#{node.node_id}"
-    elif isinstance(node, SwitchNode):
-        name = f"switch#{node.node_id}"
-    else:
-        name = f"node#{node.node_id}"
+    name = f"{node.executor.display_name()}#{node.node_id}"
     if node.source_location:
         return f"{name} at {node.source_location}"
     return name
-
-
-# ---------------------------------------------------------------------------
-# Node Executors
-# ---------------------------------------------------------------------------
-
-
-async def _exec_call(
-    node: CallNode, args: tuple, kwargs: dict, ctx: ExecutionContext
-) -> Any:
-    """Execute a regular function call node."""
-    from .hooks import _hooks
-
-    # Check hooks for custom execution (e.g., distributed)
-    if _hooks:
-        for hook in _hooks:
-            handled, result = await hook(node.fn, args, kwargs, node.node_id)
-            if handled:
-                return result
-
-    # Regular execution
-    return await maybe_await(node.fn, *args, **kwargs)
-
-
-async def _exec_cond(
-    node: CondNode, args: tuple, kwargs: dict, ctx: ExecutionContext
-) -> Any:
-    """Execute a conditional node."""
-    operand = args[0]
-    pred_result = await maybe_await(node.pred_fn, operand)
-    branch = node.branches["true"] if pred_result else node.branches["false"]
-
-    if isinstance(branch, Graph):
-        graph_args = ctx.prepare_subgraph_args(branch, (operand,))
-        return await branch.execute(*graph_args, parent_values=ctx.capture_values)
-    return await maybe_await(branch, operand)
-
-
-async def _exec_while(
-    node: WhileNode, args: tuple, kwargs: dict, ctx: ExecutionContext
-) -> Any:
-    """Execute a while loop node."""
-    operand = args[0]
-
-    while await maybe_await(node.cond_fn, operand):
-        if isinstance(node.body_fn, Graph):
-            graph_args = ctx.prepare_subgraph_args(node.body_fn, (operand,))
-            operand = await node.body_fn.execute(
-                *graph_args, parent_values=ctx.capture_values
-            )
-        else:
-            operand = await maybe_await(node.body_fn, operand)
-    return operand
-
-
-async def _exec_scan(
-    node: ScanNode, args: tuple, kwargs: dict, ctx: ExecutionContext
-) -> Any:
-    """Execute a scan node."""
-    carry, xs = args[0], args[1]
-    outputs = []
-
-    for x in xs:
-        if isinstance(node.body_fn, Graph):
-            graph_args = ctx.prepare_subgraph_args(node.body_fn, (carry, x))
-            result = await node.body_fn.execute(
-                *graph_args, parent_values=ctx.capture_values
-            )
-        else:
-            result = await maybe_await(node.body_fn, carry, x)
-
-        if not isinstance(result, tuple) or len(result) != 2:
-            raise RuntimeError(
-                f"scan body must return (carry, output) tuple, got {result!r}"
-            )
-        carry, output = result
-        outputs.append(output)
-
-    return (carry, outputs)
-
-
-async def _exec_switch(
-    node: SwitchNode, args: tuple, kwargs: dict, ctx: ExecutionContext
-) -> Any:
-    """Execute a switch node."""
-    operand = args[0]
-    index = await maybe_await(node.index_fn, operand)
-
-    if not isinstance(index, int) or index < 0 or index >= len(node.branches):
-        raise IndexError(f"switch index {index} out of range [0, {len(node.branches)})")
-
-    branch = node.branches[index]
-
-    if isinstance(branch, Graph):
-        graph_args = ctx.prepare_subgraph_args(branch, (operand,))
-        return await branch.execute(*graph_args, parent_values=ctx.capture_values)
-    return await maybe_await(branch, operand)
-
-
-# Dispatch table for node execution
-_EXECUTORS = {
-    CallNode: _exec_call,
-    CondNode: _exec_cond,
-    WhileNode: _exec_while,
-    ScanNode: _exec_scan,
-    SwitchNode: _exec_switch,
-}
 
 
 # ---------------------------------------------------------------------------
@@ -248,13 +124,31 @@ _EXECUTORS = {
 
 
 async def execute_graph(
-    graph: Graph, *args, parent_values: dict[int, Any] | None = None
+    graph: Graph,
+    *args,
+    parent_values: dict[int, Any] | None = None,
+    service_provider: Any | None = None,
 ) -> Any:
-    """Execute a graph with given inputs."""
+    """Execute a graph with given inputs.
+
+    Args:
+        graph: Graph to execute
+        *args: Input arguments
+        parent_values: Values from parent graph (for nested graphs)
+        service_provider: Optional service provider for service calls
+
+    Returns:
+        Graph output value
+    """
     if len(args) != graph.input_count:
         raise ValueError(f"Expected {graph.input_count} inputs, got {len(args)}")
 
-    ctx = ExecutionContext(graph=graph, inputs=args, parent_values=parent_values)
+    ctx = ExecutionContext(
+        graph=graph,
+        inputs=args,
+        parent_values=parent_values,
+        service_provider=service_provider,
+    )
     executed: list[str] = []
 
     # Import profiling module once if needed
@@ -266,19 +160,19 @@ async def execute_graph(
         resolved_args = ctx.resolve_many(node.args)
         resolved_kwargs = ctx.resolve_many(node.kwargs)
 
-        executor = _EXECUTORS.get(type(node))
-        if not executor:
-            raise ValueError(f"Unknown node type: {type(node).__name__}")
-
         try:
             # Fast path: no profiling overhead when disabled
             if profiler is None:
-                result = await executor(node, resolved_args, resolved_kwargs, ctx)
+                result = await node.executor.execute(
+                    resolved_args, resolved_kwargs, ctx
+                )
             else:
                 # Profiling enabled - use context manager
                 node_name = _node_name(node)
                 with profiling.node_context(node_name):
-                    result = await executor(node, resolved_args, resolved_kwargs, ctx)
+                    result = await node.executor.execute(
+                        resolved_args, resolved_kwargs, ctx
+                    )
         except Exception as exc:
             node_name = _node_name(node)
             raise NodeExecutionError(node_name, executed, exc) from exc

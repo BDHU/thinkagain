@@ -5,13 +5,13 @@ from dataclasses import dataclass
 
 import thinkagain
 from thinkagain.core.errors import TracingError
-from thinkagain.core.graph import (
-    CallNode,
-    CondNode,
-    WhileNode,
-    ScanNode,
-    SwitchNode,
-    OutputKind,
+from thinkagain.core.graph import Node, OutputKind
+from thinkagain.core.executors import (
+    CallExecutor,
+    CondExecutor,
+    WhileExecutor,
+    ScanExecutor,
+    SwitchExecutor,
 )
 from thinkagain.core.tracing import _compiled_cache, Graph
 
@@ -78,6 +78,14 @@ async def no_return(state: State) -> None:
     return None
 
 
+def _find_node_by_executor_type(graph: Graph, executor_type: type) -> Node | None:
+    """Find a node with the given executor type in a graph."""
+    for node in graph.nodes:
+        if isinstance(node.executor, executor_type):
+            return node
+    return None
+
+
 # =============================================================================
 # Subgraph Tracing Tests
 # =============================================================================
@@ -104,13 +112,14 @@ async def test_cond_branches_traced_as_subgraphs():
     # Verify graph tracing
     for cache_key, graph in _compiled_cache.items():
         if cache_key[0] is pipeline_with_cond.__wrapped__:
-            for node in graph.nodes:
-                if isinstance(node, CondNode):
-                    assert isinstance(node.branches["true"], Graph)
-                    assert isinstance(node.branches["false"], Graph)
-                    assert len(node.branches["true"].nodes) > 0
-                    assert len(node.branches["false"].nodes) > 0
-                    return
+            node = _find_node_by_executor_type(graph, CondExecutor)
+            if node:
+                executor = node.executor
+                assert isinstance(executor.true_branch, Graph)
+                assert isinstance(executor.false_branch, Graph)
+                assert len(executor.true_branch.nodes) > 0
+                assert len(executor.false_branch.nodes) > 0
+                return
     pytest.fail("Cond node not found in compiled graph")
 
 
@@ -134,11 +143,12 @@ async def test_while_loop_body_traced_as_subgraph():
     # Verify graph tracing
     for cache_key, graph in _compiled_cache.items():
         if cache_key[0] is pipeline_with_while.__wrapped__:
-            for node in graph.nodes:
-                if isinstance(node, WhileNode):
-                    assert isinstance(node.body_fn, Graph)
-                    assert len(node.body_fn.nodes) > 0
-                    return
+            node = _find_node_by_executor_type(graph, WhileExecutor)
+            if node:
+                executor = node.executor
+                assert isinstance(executor.body_fn, Graph)
+                assert len(executor.body_fn.nodes) > 0
+                return
     pytest.fail("While node not found in compiled graph")
 
 
@@ -163,11 +173,12 @@ async def test_scan_body_traced_as_subgraph():
     # Verify graph tracing
     for cache_key, graph in _compiled_cache.items():
         if cache_key[0] is pipeline_with_scan.__wrapped__:
-            for node in graph.nodes:
-                if isinstance(node, ScanNode):
-                    assert isinstance(node.body_fn, Graph)
-                    assert len(node.body_fn.nodes) > 0
-                    return
+            node = _find_node_by_executor_type(graph, ScanExecutor)
+            if node:
+                executor = node.executor
+                assert isinstance(executor.body_fn, Graph)
+                assert len(executor.body_fn.nodes) > 0
+                return
     pytest.fail("Scan node not found in compiled graph")
 
 
@@ -189,12 +200,13 @@ async def test_simple_sync_functions_not_traced():
     # Verify simple function is NOT traced
     for cache_key, graph in _compiled_cache.items():
         if cache_key[0] is pipeline_with_simple_scan.__wrapped__:
-            for node in graph.nodes:
-                if isinstance(node, ScanNode):
-                    assert not isinstance(node.body_fn, Graph), (
-                        "Simple sync function should NOT be traced as Graph"
-                    )
-                    return
+            node = _find_node_by_executor_type(graph, ScanExecutor)
+            if node:
+                executor = node.executor
+                assert not isinstance(executor.body_fn, Graph), (
+                    "Simple sync function should NOT be traced as Graph"
+                )
+                return
     pytest.fail("Scan node not found in compiled graph")
 
 
@@ -231,15 +243,13 @@ async def test_captured_value_in_cond_branch():
     # Verify captured values in graph
     for cache_key, graph in _compiled_cache.items():
         if cache_key[0] is pipeline_with_captured_value.__wrapped__:
-            for node in graph.nodes:
-                if isinstance(node, CondNode) and isinstance(
-                    node.branches.get("true"), Graph
-                ):
-                    branch_graph = node.branches["true"]
-                    assert len(branch_graph.captured_inputs) > 0, (
-                        "Should have captured values"
-                    )
-                    return
+            node = _find_node_by_executor_type(graph, CondExecutor)
+            if node and isinstance(node.executor.true_branch, Graph):
+                branch_graph = node.executor.true_branch
+                assert len(branch_graph.captured_inputs) > 0, (
+                    "Should have captured values"
+                )
+                return
     pytest.fail("Cond node with Graph not found")
 
 
@@ -296,13 +306,11 @@ async def test_captured_value_with_nested_tracing():
 
     for cache_key, graph in _compiled_cache.items():
         if cache_key[0] is pipeline.__wrapped__:
-            for node in graph.nodes:
-                if isinstance(node, CondNode) and isinstance(
-                    node.branches.get("true"), Graph
-                ):
-                    branch_graph = node.branches["true"]
-                    assert branch_graph.captured_inputs, "Expected captured inputs"
-                    return
+            node = _find_node_by_executor_type(graph, CondExecutor)
+            if node and isinstance(node.executor.true_branch, Graph):
+                branch_graph = node.executor.true_branch
+                assert branch_graph.captured_inputs, "Expected captured inputs"
+                return
     pytest.fail("Cond node with Graph not found")
 
 
@@ -673,9 +681,10 @@ async def test_nested_jit_is_inlined_into_outer_trace():
     for cache_key, graph in _compiled_cache.items():
         if cache_key[0] is outer.__wrapped__:
             for node in graph.nodes:
-                if isinstance(node, CallNode):
-                    assert node.fn is not inner.__wrapped__
-                    assert node.fn is not inner
+                if isinstance(node.executor, CallExecutor):
+                    # The executor should NOT be for inner or inner.__wrapped__
+                    assert node.executor.fn is not inner.__wrapped__
+                    assert node.executor.fn is not inner
             return
     pytest.fail("outer graph not found")
 
@@ -744,12 +753,13 @@ async def test_switch_branches_traced_as_subgraphs():
     # Verify graph tracing
     for cache_key, graph in _compiled_cache.items():
         if cache_key[0] is pipeline_with_switch.__wrapped__:
-            for node in graph.nodes:
-                if isinstance(node, SwitchNode):
-                    assert len(node.branches) == 2
-                    for branch in node.branches:
-                        assert isinstance(branch, Graph)
-                    return
+            node = _find_node_by_executor_type(graph, SwitchExecutor)
+            if node:
+                executor = node.executor
+                assert len(executor.branches) == 2
+                for branch in executor.branches:
+                    assert isinstance(branch, Graph)
+                return
     pytest.fail("Switch node not found in compiled graph")
 
 

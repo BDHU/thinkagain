@@ -5,10 +5,12 @@ from .core import (
     GpuDevice,
     Graph,
     NodeExecutionError,
+    ReplicaHandle,
     cond,
     devices,
     jit,
     node,
+    replica,
     scan,
     switch,
     while_loop,
@@ -28,6 +30,8 @@ __version__ = "0.3.0"
 __all__ = [
     # Core - Node decorator
     "node",
+    # Core - Replica decorator
+    "replica",
     # Core - Compilation
     "jit",
     "Graph",
@@ -36,6 +40,8 @@ __all__ = [
     "while_loop",
     "scan",
     "switch",
+    # Core - Types
+    "ReplicaHandle",
     # Core - Errors
     "NodeExecutionError",
     # Core - Devices
