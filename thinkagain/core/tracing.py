@@ -285,11 +285,11 @@ def _captures_traced_value(fn: Callable, ctx: TraceContext | None) -> bool:
 
 
 def is_traceable(fn: Callable) -> bool:
-    """Check if a function can be traced (async or Node class)."""
+    """Check if a function can be traced (async function or @node decorated)."""
     return (
         inspect.iscoroutinefunction(fn)
         or hasattr(fn, "_is_node")
-        or (hasattr(fn, "__call__") and hasattr(fn, "forward"))
+        or inspect.iscoroutinefunction(getattr(fn, "__call__", None))
     )
 
 
@@ -302,9 +302,43 @@ def _get_trace_fn(fn: Callable, parent_ctx: TraceContext | None) -> Callable:
     """Get the actual function to trace (unwrap @node if needed)."""
     if hasattr(fn, "_node_fn") and _captures_traced_value(fn._node_fn, parent_ctx):
         return fn._node_fn
-    if hasattr(fn, "forward") and _captures_traced_value(fn.forward, parent_ctx):
-        return fn.forward
+    # For @node decorated classes, trace the __call__ method if it captures values
+    if inspect.iscoroutinefunction(
+        getattr(fn, "__call__", None)
+    ) and _captures_traced_value(fn.__call__, parent_ctx):
+        return fn.__call__
     return fn
+
+
+def _normalize_literal(
+    value: Any,
+    inputs: list[TracedValue],
+    ctx: TraceContext,
+) -> Any:
+    """Recursively normalize TracedValues in a literal value to refs.
+
+    This handles cases where a @jit function returns a literal container
+    (dict, list, tuple) that contains TracedValue objects as elements.
+    """
+    if isinstance(value, TracedValue):
+        # Normalize TracedValue to InputRef or NodeRef
+        if value in inputs:
+            return InputRef(inputs.index(value))
+        if value.trace_ctx is ctx:
+            return NodeRef(value.node_id)
+        raise TracingError("TracedValue from wrong context in literal.")
+    elif isinstance(value, dict):
+        # Recursively normalize dict values
+        return {k: _normalize_literal(v, inputs, ctx) for k, v in value.items()}
+    elif isinstance(value, list):
+        # Recursively normalize list elements
+        return [_normalize_literal(v, inputs, ctx) for v in value]
+    elif isinstance(value, tuple):
+        # Recursively normalize tuple elements
+        return tuple(_normalize_literal(v, inputs, ctx) for v in value)
+    else:
+        # Primitive value, return as-is
+        return value
 
 
 def _make_output_ref(
@@ -323,7 +357,9 @@ def _make_output_ref(
             idx = ctx._register_capture(result)
             return OutputRef(OutputKind.INPUT, idx)
         raise TracingError("TracedValue from wrong context.")
-    return OutputRef(OutputKind.LITERAL, result)
+    # Normalize any TracedValues inside literal containers
+    normalized = _normalize_literal(result, inputs, ctx)
+    return OutputRef(OutputKind.LITERAL, normalized)
 
 
 async def _trace_fn(
@@ -532,20 +568,59 @@ def jit(
 
 
 def node(fn: Callable[..., T]) -> Callable[..., T]:
-    """Decorator to mark an async function as a traceable node.
+    """Decorator to mark an async function or class as a traceable node.
 
     Inside @jit: Returns TracedValue, adds to computation graph
     Outside @jit: Executes normally
 
-    Example:
+    Works with:
+    - Async functions
+    - Classes with async __call__ method
+    - Any callable that returns an awaitable
+
+    Examples:
         @node
         async def retrieve_docs(state):
             docs = await db.search(state.query)
             return replace(state, documents=docs)
-    """
-    if not inspect.iscoroutinefunction(fn):
-        raise TypeError(f"@node requires async function, got {fn.__name__}")
 
+        @node
+        class LLMNode:
+            def __init__(self, model: str):
+                self.model = model
+
+            async def __call__(self, state):
+                response = await llm.generate(self.model, state.query)
+                return replace(state, answer=response)
+    """
+    # Check if it's an async function or a class/callable with async __call__
+    is_async_fn = inspect.iscoroutinefunction(fn)
+    is_async_callable = inspect.iscoroutinefunction(getattr(fn, "__call__", None))
+
+    if not (is_async_fn or is_async_callable):
+        raise TypeError(
+            f"@node requires async function or class with async __call__, "
+            f"got {fn.__name__}"
+        )
+
+    # If it's a class with async __call__, wrap the __call__ method
+    if inspect.isclass(fn):
+        original_call = fn.__call__
+
+        async def wrapped_call(self, *args, **kwargs):
+            ctx = _trace_ctx_var.get()
+            if ctx is not None:
+                # Add the instance (self) as the callable node
+                node_id = ctx.add_node(self, args, kwargs)
+                return TracedValue(node_id, ctx)
+            return await original_call(self, *args, **kwargs)
+
+        fn.__call__ = wrapped_call
+        fn._is_node = True
+        fn._node_fn = fn
+        return fn
+
+    # For async functions, wrap in tracing logic
     @functools.wraps(fn)
     async def wrapper(*args, **kwargs):
         ctx = _trace_ctx_var.get()
@@ -559,30 +634,17 @@ def node(fn: Callable[..., T]) -> Callable[..., T]:
     return wrapper
 
 
-class Node:
-    """Base class for stateful nodes (alternative to @node decorator).
-
-    Example:
-        class LLMNode(Node):
-            def __init__(self, model: str):
-                self.model = model
-
-            async def forward(self, state):
-                response = await llm.generate(self.model, state.query)
-                return replace(state, answer=response)
-    """
-
-    async def __call__(self, *args, **kwargs):
-        ctx = _trace_ctx_var.get()
-        if ctx is not None:
-            node_id = ctx.add_node(self, args, kwargs)
-            return TracedValue(node_id, ctx)
-        return await self.forward(*args, **kwargs)
-
-    async def forward(self, *args, **kwargs):
-        """Override to implement the node's computation."""
-        raise NotImplementedError(f"{type(self).__name__} must implement forward()")
-
-    @property
-    def name(self) -> str:
-        return type(self).__name__
+# ---------------------------------------------------------------------------
+# Stateful nodes using @node decorator on classes
+# ---------------------------------------------------------------------------
+#
+# Use @node decorator on classes instead of inheritance:
+#
+# @node
+# class LLMNode:
+#     def __init__(self, model: str):
+#         self.model = model
+#
+#     async def __call__(self, state):
+#         response = await llm.generate(self.model, state.query)
+#         return replace(state, answer=response)

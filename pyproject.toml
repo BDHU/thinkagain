@@ -14,6 +14,7 @@ authors = [
 ]
 dependencies = [
   "numpy>=1.24.0",
+  "nvidia-ml-py>=12.570.0",
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -65,5 +66,5 @@ include = [
 
 [tool.ruff]
 extend-exclude = [
-  "thinkagain/distributed/backend/grpc/proto",
+  "thinkagain/distributed/grpc/proto",
 ]
