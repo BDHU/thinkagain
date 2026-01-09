@@ -6,10 +6,18 @@ These operators trace control flow (conditionals, loops) into the computation gr
 from typing import Callable, TypeVar
 
 from .errors import TracingError
+from .executors import (
+    CallExecutor,
+    CondExecutor,
+    ScanExecutor,
+    SwitchExecutor,
+    WhileExecutor,
+)
 from .graph import Graph, TracedValue
 from .runtime import maybe_await
 from .tracing import (
     _captures_traced_value,
+    _get_source_location,
     get_trace_context,
     is_traceable,
     trace_branch,
@@ -96,9 +104,12 @@ async def cond(
     false_branch = await _maybe_trace(false_fn, 1, ctx)
     validate_cond_branches(true_branch, false_branch)
 
-    node_id = ctx.add_cond(
-        operand, pred_fn, {"true": true_branch, "false": false_branch}
+    executor = CondExecutor(
+        pred_fn=pred_fn,
+        true_branch=true_branch,
+        false_branch=false_branch,
     )
+    node_id = ctx.add_node(executor, (operand,), {}, _get_source_location(pred_fn))
     return TracedValue(node_id, ctx)
 
 
@@ -145,7 +156,8 @@ async def while_loop(
     body = await _maybe_trace(body_fn, 1, ctx)
     validate_while_body(body)
 
-    node_id = ctx.add_while(init, cond_fn, body)
+    executor = WhileExecutor(cond_fn=cond_fn, body_fn=body)
+    node_id = ctx.add_node(executor, (init,), {}, _get_source_location(cond_fn))
     return TracedValue(node_id, ctx)
 
 
@@ -190,11 +202,15 @@ async def scan(
     body = await _maybe_trace(fn, 2, ctx)
     validate_scan_body(body)
 
-    scan_id = ctx.add_scan(init, xs, body)
+    executor = ScanExecutor(body_fn=body)
+    scan_id = ctx.add_node(executor, (init, xs), {}, _get_source_location(fn))
 
     # Create extraction nodes for the tuple elements
-    carry_id = ctx.add_node(lambda t: t[0], (TracedValue(scan_id, ctx),), {})
-    outputs_id = ctx.add_node(lambda t: t[1], (TracedValue(scan_id, ctx),), {})
+    extract_carry = CallExecutor(fn=lambda t: t[0])
+    extract_outputs = CallExecutor(fn=lambda t: t[1])
+
+    carry_id = ctx.add_node(extract_carry, (TracedValue(scan_id, ctx),), {})
+    outputs_id = ctx.add_node(extract_outputs, (TracedValue(scan_id, ctx),), {})
 
     return TracedValue(carry_id, ctx), TracedValue(outputs_id, ctx)
 
@@ -258,5 +274,6 @@ async def switch(
 
     validate_switch_branches(traced_branches)
 
-    node_id = ctx.add_switch(operand, index_fn, traced_branches)
+    executor = SwitchExecutor(index_fn=index_fn, branches=tuple(traced_branches))
+    node_id = ctx.add_node(executor, (operand,), {}, _get_source_location(index_fn))
     return TracedValue(node_id, ctx)

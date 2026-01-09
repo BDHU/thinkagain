@@ -15,18 +15,13 @@ from typing import Any, Callable, TypeVar
 
 from .errors import TracingError
 from .graph import (
-    CallNode,
-    CondNode,
     Graph,
-    GraphNode,
     InputRef,
+    Node,
     NodeRef,
     OutputKind,
     OutputRef,
-    ScanNode,
-    SwitchNode,
     TracedValue,
-    WhileNode,
 )
 
 T = TypeVar("T")
@@ -89,16 +84,47 @@ def is_tracing() -> bool:
     return _trace_ctx_var.get() is not None
 
 
+# ---------------------------------------------------------------------------
+# Tracing Plugin Registry
+# ---------------------------------------------------------------------------
+
+# Plugin system to decouple core tracing from distributed modules
+_tracing_plugins: list[Callable[[TraceContext], Any]] = []
+
+
+def register_tracing_plugin(factory: Callable[[TraceContext], Any]) -> None:
+    """Register a plugin factory that creates tracing hooks.
+
+    Args:
+        factory: Callable that takes a TraceContext and returns a hook object
+                with record_call() and get_resource_index() methods (TracingHook protocol)
+
+    Example:
+        register_tracing_plugin(lambda ctx: MyTracingHook(ctx))
+    """
+    _tracing_plugins.append(factory)
+
+
+def unregister_all_tracing_plugins() -> None:
+    """Clear all registered tracing plugins."""
+    _tracing_plugins.clear()
+
+
 @dataclass
 class TraceContext:
     """Context for capturing computation graph during tracing."""
 
-    nodes: list[GraphNode] = field(default_factory=list)
+    nodes: list[Node] = field(default_factory=list)
     node_counter: int = 0
     parent_ctx: TraceContext | None = None
     next_capture_index: int = 0
     captured_inputs: dict[int, int] = field(default_factory=dict)
     input_values: dict[TracedValue, int] = field(default_factory=dict)
+    # Resource tracking (discovered during tracing) - e.g., service handles
+    resources: dict[int, int] = field(
+        default_factory=dict
+    )  # id(resource) -> input_index
+    resource_list: list = field(default_factory=list)  # Ordered list of resources
 
     def _normalize(self, value: Any) -> Any:
         """Convert TracedValue to appropriate reference type."""
@@ -131,77 +157,56 @@ class TraceContext:
         self.node_counter += 1
         return node_id
 
-    def add_node(self, fn: Callable, args: tuple, kwargs: dict) -> int:
-        """Add a regular call node to the graph."""
-        node = CallNode(
+    def add_node(
+        self,
+        executor: Any,
+        args: tuple,
+        kwargs: dict,
+        source_location: str | None = None,
+    ) -> int:
+        """Add a node to the graph with the given executor.
+
+        This is the universal method for adding any type of node. The executor
+        determines how the node will be executed.
+
+        Args:
+            executor: NodeExecutor implementation (e.g., CallExecutor, CondExecutor)
+            args: Positional arguments (will be normalized)
+            kwargs: Keyword arguments (will be normalized)
+            source_location: Optional source location for debugging
+
+        Returns:
+            The node ID of the added node
+        """
+        node = Node(
             node_id=self._next_id(),
             args=self._normalize_many(args),
             kwargs=self._normalize_many(kwargs),
-            fn=fn,
-            source_location=_get_source_location(fn),
+            executor=executor,
+            source_location=source_location,
         )
         self.nodes.append(node)
         return node.node_id
 
-    def add_cond(
-        self,
-        operand: Any,
-        pred_fn: Callable,
-        branches: dict[str, Graph | Callable],
-    ) -> int:
-        """Add a conditional node."""
-        node = CondNode(
-            node_id=self._next_id(),
-            args=self._normalize_many((operand,)),
-            kwargs={},
-            pred_fn=pred_fn,
-            branches=branches,
-            source_location=_get_source_location(pred_fn),
-        )
-        self.nodes.append(node)
-        return node.node_id
+    def get_resource_index(self, resource: Any) -> int:
+        """Get or register input index for a resource (e.g., service handle).
 
-    def add_while(self, init: Any, cond_fn: Callable, body_fn: Graph | Callable) -> int:
-        """Add a while loop node."""
-        node = WhileNode(
-            node_id=self._next_id(),
-            args=self._normalize_many((init,)),
-            kwargs={},
-            cond_fn=cond_fn,
-            body_fn=body_fn,
-            source_location=_get_source_location(cond_fn),
-        )
-        self.nodes.append(node)
-        return node.node_id
+        Args:
+            resource: Resource instance to track
 
-    def add_scan(self, init: Any, xs: Any, body_fn: Graph | Callable) -> int:
-        """Add a scan node."""
-        node = ScanNode(
-            node_id=self._next_id(),
-            args=self._normalize_many((init, xs)),
-            kwargs={},
-            body_fn=body_fn,
-            source_location=_get_source_location(body_fn)
-            if callable(body_fn)
-            else None,
-        )
-        self.nodes.append(node)
-        return node.node_id
+        Returns:
+            Input index where this resource will be passed
+        """
+        resource_id = id(resource)
 
-    def add_switch(
-        self, operand: Any, index_fn: Callable, branches: list[Graph | Callable]
-    ) -> int:
-        """Add a switch node."""
-        node = SwitchNode(
-            node_id=self._next_id(),
-            args=self._normalize_many((operand,)),
-            kwargs={},
-            index_fn=index_fn,
-            branches=branches,
-            source_location=_get_source_location(index_fn),
-        )
-        self.nodes.append(node)
-        return node.node_id
+        if resource_id not in self.resources:
+            # First time seeing this resource - register it
+            resource_idx = self.next_capture_index
+            self.resources[resource_id] = resource_idx
+            self.resource_list.append(resource)
+            self.next_capture_index += 1
+
+        return self.resources[resource_id]
 
 
 # ---------------------------------------------------------------------------
@@ -209,12 +214,17 @@ class TraceContext:
 # ---------------------------------------------------------------------------
 
 
-def _get_source_location(fn: Callable) -> str | None:
-    """Get source location of a function for debugging."""
-    if fn is None or isinstance(fn, Graph):
+def _get_source_location(obj: Any) -> str | None:
+    """Get source location of an object for debugging."""
+    if obj is None or isinstance(obj, Graph):
         return None
+    # For executors, try to get the location of the underlying function
+    if hasattr(obj, "fn"):
+        obj = obj.fn
+    elif hasattr(obj, "pred_fn"):
+        obj = obj.pred_fn
     try:
-        return f"{inspect.getfile(fn)}:{inspect.getsourcelines(fn)[1]}"
+        return f"{inspect.getfile(obj)}:{inspect.getsourcelines(obj)[1]}"
     except (OSError, TypeError):
         return None
 
@@ -377,6 +387,20 @@ async def _trace_fn(
     kwargs = kwargs or {}
     static_argnames = static_argnames or set()
 
+    # Register replica hooks for tracing via plugin system
+    from ..core.replica import register_replica_hook, unregister_replica_hook
+
+    replica_hook_registered = False
+    registered_hooks = []
+
+    # Instantiate all registered tracing plugins
+    for plugin_factory in _tracing_plugins:
+        hook = plugin_factory(ctx)
+        if hook is not None:  # Plugin may return None if not applicable
+            register_replica_hook(hook)
+            registered_hooks.append(hook)
+            replica_hook_registered = True
+
     try:
         trace_fn = _get_trace_fn(fn, parent_ctx)
 
@@ -403,14 +427,26 @@ async def _trace_fn(
         result = await trace_fn(*pos_inputs, **traced_kwargs)
         output_ref = _make_output_ref(result, all_inputs, ctx, allow_parent)
 
+        # Total input count includes: positional args + dynamic kwargs + captured values + resources
+        total_input_count = (
+            input_count
+            + len(kw_inputs)
+            + len(ctx.captured_inputs)
+            + len(ctx.resource_list)
+        )
+
         return Graph(
             nodes=ctx.nodes,
-            input_count=input_count + len(kw_inputs) + len(ctx.captured_inputs),
+            input_count=total_input_count,
             output_ref=output_ref,
             captured_inputs=ctx.captured_inputs,
+            resource_list=ctx.resource_list,
         )
     finally:
         _trace_ctx_var.reset(token)
+        # Unregister replica hook if we registered it
+        if replica_hook_registered:
+            unregister_replica_hook()
 
 
 async def trace_branch(
@@ -491,9 +527,24 @@ def validate_switch_branches(branches: list[Graph | Callable]) -> None:
 
 
 def _cache_key(
-    fn: Callable, args: tuple, kwargs: dict, static_argnames: set[str]
+    fn: Callable,
+    args: tuple,
+    kwargs: dict,
+    static_argnames: set[str],
+    graph: "Graph | None" = None,
 ) -> tuple:
-    """Compute cache key for compilation."""
+    """Compute cache key for compilation.
+
+    Args:
+        fn: Function being compiled
+        args: Positional arguments
+        kwargs: Keyword arguments
+        static_argnames: Set of kwarg names that trigger recompilation
+        graph: Optional graph (after tracing) to include resources
+
+    Returns:
+        Cache key tuple
+    """
     arg_types = tuple(type(a) for a in args)
     kw_sig = []
     for k in sorted(kwargs):
@@ -506,7 +557,13 @@ def _cache_key(
             kw_sig.append((k, type(v), v))
         else:
             kw_sig.append((k, type(v)))
-    return (fn, arg_types, tuple(kw_sig), tuple(sorted(static_argnames)))
+
+    # Include resources if graph is available (after tracing)
+    resource_key = ()
+    if graph is not None:
+        resource_key = tuple(hash(r) for r in graph.resource_list)
+
+    return (fn, arg_types, tuple(kw_sig), tuple(sorted(static_argnames)), resource_key)
 
 
 # ---------------------------------------------------------------------------
@@ -549,19 +606,40 @@ def jit(
         if _trace_ctx_var.get() is not None:
             return await fn(*args, **kwargs)
 
-        # Check cache
-        key = _cache_key(fn, args, kwargs, static)
-        if key in _compiled_cache:
-            graph = _compiled_cache[key]
+        # Get service provider from mesh if available
+        from ..distributed import get_current_mesh
+
+        mesh = get_current_mesh()
+        service_provider = mesh.get_service_provider() if mesh else None
+
+        # Check cache (without graph first)
+        key_base = _cache_key(fn, args, kwargs, static, graph=None)
+        if key_base in _compiled_cache:
+            graph = _compiled_cache[key_base]
             dynamic_kw = [kwargs[k] for k in sorted(kwargs) if k not in static]
-            return await graph.execute(*args, *dynamic_kw)
+            # Resources are appended after dynamic kwargs
+            return await graph.execute(
+                *args,
+                *dynamic_kw,
+                *graph.resource_list,
+                service_provider=service_provider,
+            )
 
         # Trace and cache
         graph = await _trace_fn(fn, len(args), kwargs=kwargs, static_argnames=static)
-        _cache_put(key, graph)
+
+        # Cache with full key including resources
+        key_full = _cache_key(fn, args, kwargs, static, graph=graph)
+        _cache_put(key_full, graph)
 
         dynamic_kw = [kwargs[k] for k in sorted(kwargs) if k not in static]
-        return await graph.execute(*args, *dynamic_kw)
+        # Resources are appended after dynamic kwargs
+        return await graph.execute(
+            *args,
+            *dynamic_kw,
+            *graph.resource_list,
+            service_provider=service_provider,
+        )
 
     wrapper._is_jit = True
     return wrapper
@@ -593,6 +671,8 @@ def node(fn: Callable[..., T]) -> Callable[..., T]:
                 response = await llm.generate(self.model, state.query)
                 return replace(state, answer=response)
     """
+    from .executors import CallExecutor
+
     # Check if it's an async function or a class/callable with async __call__
     is_async_fn = inspect.iscoroutinefunction(fn)
     is_async_callable = inspect.iscoroutinefunction(getattr(fn, "__call__", None))
@@ -611,7 +691,10 @@ def node(fn: Callable[..., T]) -> Callable[..., T]:
             ctx = _trace_ctx_var.get()
             if ctx is not None:
                 # Add the instance (self) as the callable node
-                node_id = ctx.add_node(self, args, kwargs)
+                executor = CallExecutor(fn=self)
+                node_id = ctx.add_node(
+                    executor, args, kwargs, _get_source_location(self)
+                )
                 return TracedValue(node_id, ctx)
             return await original_call(self, *args, **kwargs)
 
@@ -625,26 +708,13 @@ def node(fn: Callable[..., T]) -> Callable[..., T]:
     async def wrapper(*args, **kwargs):
         ctx = _trace_ctx_var.get()
         if ctx is not None:
-            node_id = ctx.add_node(fn, args, kwargs)
+            # Use wrapper as fn so that attributes like _distribution_config are visible
+            # to execution hooks (e.g., distributed execution hook)
+            executor = CallExecutor(fn=wrapper)
+            node_id = ctx.add_node(executor, args, kwargs, _get_source_location(fn))
             return TracedValue(node_id, ctx)
         return await fn(*args, **kwargs)
 
     wrapper._is_node = True
     wrapper._node_fn = fn
     return wrapper
-
-
-# ---------------------------------------------------------------------------
-# Stateful nodes using @node decorator on classes
-# ---------------------------------------------------------------------------
-#
-# Use @node decorator on classes instead of inheritance:
-#
-# @node
-# class LLMNode:
-#     def __init__(self, model: str):
-#         self.model = model
-#
-#     async def __call__(self, state):
-#         response = await llm.generate(self.model, state.query)
-#         return replace(state, answer=response)

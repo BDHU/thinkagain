@@ -5,12 +5,14 @@ from .errors import NodeExecutionError, TracingError
 from .graph import Graph
 from .hooks import ExecutionHook, register_hook, unregister_hook
 from .ops import cond, scan, switch, while_loop
+from .replica import ReplicaHandle, replica
 from .tracing import clear_compiled_cache, get_cache_info, jit, node
 
 __all__ = [
     # Decorators
     "jit",
     "node",
+    "replica",
     # Control flow
     "cond",
     "while_loop",
@@ -18,6 +20,7 @@ __all__ = [
     "switch",
     # Types
     "Graph",
+    "ReplicaHandle",
     # Devices
     "Device",
     "GpuDevice",
