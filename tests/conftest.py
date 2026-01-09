@@ -1,13 +1,10 @@
 """Shared test fixtures."""
 
-from contextlib import contextmanager
 import asyncio
 
 import pytest
 
-from thinkagain import node
-from thinkagain.distributed import get_default_manager, reset_backend
-from thinkagain.distributed.profiling import disable_profiling
+from thinkagain import disable_profiling, node
 
 
 def run_async(coro) -> None:
@@ -22,8 +19,6 @@ def run_async(coro) -> None:
 
 def _reset_state() -> None:
     disable_profiling()
-    get_default_manager().clear()
-    reset_backend()
 
 
 # Shared node definitions - now pure functions
@@ -50,26 +45,7 @@ def nodes():
 
 @pytest.fixture(autouse=True)
 def clean_registry():
-    """Ensure distributed tests start with a clean registry/backend."""
+    """Ensure distributed tests start with clean state."""
     _reset_state()
     yield
     _reset_state()
-
-
-@pytest.fixture
-def shutdown_on_exit():
-    """Context manager to ensure replicas are shutdown (async-aware)."""
-
-    @contextmanager
-    def _shutdown(*replicas):
-        try:
-            yield
-        finally:
-            # Shutdown all replicas - need to handle async
-            async def _shutdown_all():
-                for replica_cls in replicas:
-                    await replica_cls.shutdown()
-
-            run_async(_shutdown_all())
-
-    return _shutdown

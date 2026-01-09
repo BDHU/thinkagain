@@ -796,3 +796,235 @@ async def test_switch_index_fn_rejects_captured_traced_value():
 
     with pytest.raises(TracingError, match="switch index_fn closes over TracedValue"):
         await pipeline(State(value=1, threshold=5))
+
+
+# =============================================================================
+# @node Decorator on Classes Tests
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_node_decorator_on_class():
+    """Test that @node works on classes with async __call__."""
+    _compiled_cache.clear()
+
+    @thinkagain.node
+    class Multiplier:
+        def __init__(self, factor: int):
+            self.factor = factor
+
+        async def __call__(self, state: State) -> State:
+            return State(
+                value=state.value * self.factor,
+                threshold=state.threshold,
+                label=f"{state.label}_x{self.factor}",
+            )
+
+    @thinkagain.jit
+    async def pipeline(state: State) -> State:
+        multiplier = Multiplier(3)
+        return await multiplier(state)
+
+    result = await pipeline(State(value=5))
+    assert result.value == 15
+    assert "_x3" in result.label
+
+
+@pytest.mark.asyncio
+async def test_node_decorator_on_class_in_control_flow():
+    """Test that @node decorated class works in control flow operators."""
+    _compiled_cache.clear()
+
+    @thinkagain.node
+    class Adder:
+        def __init__(self, amount: int):
+            self.amount = amount
+
+        async def __call__(self, state: State) -> State:
+            return State(
+                value=state.value + self.amount,
+                threshold=state.threshold,
+                label=f"{state.label}_add{self.amount}",
+            )
+
+    @thinkagain.jit
+    async def pipeline(state: State) -> State:
+        add_ten = Adder(10)
+        add_five = Adder(5)
+        return await thinkagain.cond(
+            lambda s: s.value < 10,
+            add_ten,
+            add_five,
+            state,
+        )
+
+    result_low = await pipeline(State(value=3))
+    assert result_low.value == 13
+
+    result_high = await pipeline(State(value=15))
+    assert result_high.value == 20
+
+
+@pytest.mark.asyncio
+async def test_node_decorator_on_class_with_while_loop():
+    """Test @node decorated class in while_loop."""
+    _compiled_cache.clear()
+
+    @thinkagain.node
+    class Incrementer:
+        def __init__(self, step: int):
+            self.step = step
+
+        async def __call__(self, state: State) -> State:
+            return State(
+                value=state.value + self.step,
+                threshold=state.threshold,
+                label=state.label,
+            )
+
+    @thinkagain.jit
+    async def pipeline(state: State) -> State:
+        inc = Incrementer(2)
+        return await thinkagain.while_loop(
+            lambda s: s.value < 10,
+            inc,
+            state,
+        )
+
+    result = await pipeline(State(value=0))
+    assert result.value == 10
+
+
+@pytest.mark.asyncio
+async def test_node_decorator_on_class_with_scan():
+    """Test @node decorated class in scan."""
+    _compiled_cache.clear()
+
+    @thinkagain.node
+    class Processor:
+        def __init__(self, prefix: str):
+            self.prefix = prefix
+
+        async def __call__(self, carry: int, item: str) -> tuple[int, str]:
+            return carry + 1, f"{self.prefix}: {item} (#{carry + 1})"
+
+    @thinkagain.jit
+    async def pipeline(items: list[str]) -> list[str]:
+        proc = Processor("Item")
+        _, results = await thinkagain.scan(proc, 0, items)
+        return results
+
+    results = await pipeline(["a", "b", "c"])
+    assert len(results) == 3
+    assert "Item: a (#1)" in results[0]
+    assert "Item: b (#2)" in results[1]
+
+
+@pytest.mark.asyncio
+async def test_node_decorator_rejects_class_without_async_call():
+    """Test that @node rejects classes without async __call__."""
+
+    with pytest.raises(TypeError, match="async __call__"):
+
+        @thinkagain.node
+        class BadNode:
+            def __call__(self, x: int) -> int:  # NOT async
+                return x + 1
+
+
+@pytest.mark.asyncio
+async def test_node_decorator_rejects_sync_function():
+    """Test that @node still rejects sync functions."""
+
+    with pytest.raises(TypeError, match="async function or class with async __call__"):
+
+        @thinkagain.node
+        def sync_func(x: int) -> int:
+            return x + 1
+
+
+@pytest.mark.asyncio
+async def test_node_decorated_class_outside_jit():
+    """Test that @node decorated class works outside @jit context."""
+
+    @thinkagain.node
+    class Doubler:
+        async def __call__(self, x: int) -> int:
+            return x * 2
+
+    doubler = Doubler()
+    result = await doubler(5)
+    assert result == 10
+
+
+@pytest.mark.asyncio
+async def test_node_decorated_class_has_node_markers():
+    """Test that @node decorated class has the proper _is_node marker."""
+
+    @thinkagain.node
+    class MarkedNode:
+        async def __call__(self, x: int) -> int:
+            return x
+
+    assert hasattr(MarkedNode, "_is_node")
+    assert MarkedNode._is_node is True
+    assert hasattr(MarkedNode, "_node_fn")
+
+
+@pytest.mark.asyncio
+async def test_node_decorated_class_with_state_mutation():
+    """Test that @node decorated class can maintain state across calls."""
+    _compiled_cache.clear()
+
+    @thinkagain.node
+    class StatefulCounter:
+        def __init__(self):
+            self.count = 0
+
+        async def __call__(self, x: int) -> int:
+            self.count += 1
+            return x + self.count
+
+    # Outside @jit, state persists
+    counter = StatefulCounter()
+    result1 = await counter(10)
+    result2 = await counter(10)
+    assert result1 == 11  # 10 + 1
+    assert result2 == 12  # 10 + 2
+
+    # Inside @jit, instance is captured in graph
+    @thinkagain.jit
+    async def pipeline(x: int) -> int:
+        cnt = StatefulCounter()
+        return await cnt(x)
+
+    result3 = await pipeline(20)
+    assert result3 == 21
+
+
+@pytest.mark.asyncio
+async def test_node_decorated_class_multiple_instances():
+    """Test that multiple instances of @node decorated class work correctly."""
+    _compiled_cache.clear()
+
+    @thinkagain.node
+    class Adder:
+        def __init__(self, val: int):
+            self.val = val
+
+        async def __call__(self, x: int) -> int:
+            return x + self.val
+
+    @thinkagain.jit
+    async def pipeline(x: int) -> int:
+        # Create two different instances with different configurations
+        add_five = Adder(5)
+        add_ten = Adder(10)
+
+        # Use both in the same pipeline
+        x = await add_five(x)
+        x = await add_ten(x)
+        return x
+
+    result = await pipeline(10)
+    assert result == 25  # 10 + 5 + 10

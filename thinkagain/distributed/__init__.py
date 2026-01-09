@@ -2,48 +2,19 @@
 
 from __future__ import annotations
 
-from .autoscaling import AutoScaler
-from .manager import replica
-from .nodes import NodeConfig
-from .optimizer import (
-    Constraints,
-    DeploymentPlan,
-    compare_scenarios,
-    optimize,
-)
-from .profiling import profile
-from .runtime import init
-
-
-# Backward compatibility - keep these but not in primary docs
-from .manager import (  # noqa: F401
-    ReplicaManager,
-    get_default_manager,
-    set_default_manager,
-)
-from .replica import ReplicaSpec  # noqa: F401
-from .runtime import (  # noqa: F401
-    get_runtime_config,
-    list_backends,
-    register_backend,
-    reset_backend,
-    runtime,
-)
-
+from .mesh import Mesh, MeshNode, get_current_mesh
+from .replication import replicate
 
 __all__ = [
-    # Core API (primary interface)
-    "init",
-    "replica",
-    "optimize",
-    "profile",
-    # Scaling
-    "AutoScaler",
-    # Configuration
-    "Constraints",
-    "NodeConfig",
-    # Results
-    "DeploymentPlan",
-    # Utilities
-    "compare_scenarios",
+    "replicate",
+    "Mesh",
+    "MeshNode",
+    "get_current_mesh",
 ]
+
+# Auto-register distributed execution hook when this module is imported
+# This allows core executor to handle @replicate functions without direct coupling
+from ..core.hooks import register_hook
+from .execution_hook import distributed_execution_hook
+
+register_hook(distributed_execution_hook)

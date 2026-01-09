@@ -91,6 +91,30 @@ class ExecutionContext:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_literal_output(value: Any, ctx: ExecutionContext) -> Any:
+    """Recursively resolve refs (InputRef/NodeRef) in a literal output value.
+
+    This handles cases where a @jit function returns a literal container
+    (dict, list, tuple) that contains InputRef or NodeRef objects as elements.
+    These need to be resolved to their actual computed values.
+    """
+    if isinstance(value, (InputRef, NodeRef)):
+        # Resolve ref to its computed value
+        return ctx.resolve(value)
+    elif isinstance(value, dict):
+        # Recursively resolve dict values
+        return {k: _resolve_literal_output(v, ctx) for k, v in value.items()}
+    elif isinstance(value, list):
+        # Recursively resolve list elements
+        return [_resolve_literal_output(v, ctx) for v in value]
+    elif isinstance(value, tuple):
+        # Recursively resolve tuple elements
+        return tuple(_resolve_literal_output(v, ctx) for v in value)
+    else:
+        # Primitive value, return as-is
+        return value
+
+
 def _node_name(node: GraphNode) -> str:
     """Get a display name for a node (for error messages)."""
     if isinstance(node, CallNode):
@@ -120,6 +144,16 @@ async def _exec_call(
     node: CallNode, args: tuple, kwargs: dict, ctx: ExecutionContext
 ) -> Any:
     """Execute a regular function call node."""
+    from .hooks import _hooks
+
+    # Check hooks for custom execution (e.g., distributed)
+    if _hooks:
+        for hook in _hooks:
+            handled, result = await hook(node.fn, args, kwargs, node.node_id)
+            if handled:
+                return result
+
+    # Regular execution
     return await maybe_await(node.fn, *args, **kwargs)
 
 
@@ -219,8 +253,14 @@ async def execute_graph(
     """Execute a graph with given inputs."""
     if len(args) != graph.input_count:
         raise ValueError(f"Expected {graph.input_count} inputs, got {len(args)}")
+
     ctx = ExecutionContext(graph=graph, inputs=args, parent_values=parent_values)
     executed: list[str] = []
+
+    # Import profiling module once if needed
+    from . import profiling
+
+    profiler = profiling._profiler  # Direct access avoids function call overhead
 
     for node in graph.nodes:
         resolved_args = ctx.resolve_many(node.args)
@@ -231,12 +271,23 @@ async def execute_graph(
             raise ValueError(f"Unknown node type: {type(node).__name__}")
 
         try:
-            result = await executor(node, resolved_args, resolved_kwargs, ctx)
+            # Fast path: no profiling overhead when disabled
+            if profiler is None:
+                result = await executor(node, resolved_args, resolved_kwargs, ctx)
+            else:
+                # Profiling enabled - use context manager
+                node_name = _node_name(node)
+                with profiling.node_context(node_name):
+                    result = await executor(node, resolved_args, resolved_kwargs, ctx)
         except Exception as exc:
-            raise NodeExecutionError(_node_name(node), executed, exc) from exc
+            node_name = _node_name(node)
+            raise NodeExecutionError(node_name, executed, exc) from exc
 
         ctx.node_values[node.node_id] = result
-        executed.append(_node_name(node))
+        if profiler is not None:
+            executed.append(node_name if "node_name" in locals() else _node_name(node))
+        else:
+            executed.append(_node_name(node))
 
     # Resolve output
     out = graph.output_ref
@@ -244,4 +295,6 @@ async def execute_graph(
         return ctx.node_values[out.value]
     if out.kind is OutputKind.INPUT:
         return args[out.value]
-    return out.value  # LITERAL
+
+    # LITERAL - need to resolve any TracedValues in the literal
+    return _resolve_literal_output(out.value, ctx)

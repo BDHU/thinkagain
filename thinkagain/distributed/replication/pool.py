@@ -1,0 +1,279 @@
+"""Replica pool for distributed execution."""
+
+from __future__ import annotations
+
+import threading
+import warnings
+from abc import ABC, abstractmethod
+from typing import Any, Callable
+
+from ...core.runtime import maybe_await
+from ..mesh import Mesh
+from .replicate import DistributionConfig
+
+
+# Thread-local storage for active pools
+_pools = threading.local()
+
+
+def _get_pools() -> dict[tuple[int, int], "ReplicaPool"]:
+    """Get thread-local pool registry keyed by (mesh_id, fn_id)."""
+    if not hasattr(_pools, "registry"):
+        _pools.registry = {}
+    return _pools.registry
+
+
+class Replica(ABC):
+    """Abstract base class for replica execution backends."""
+
+    @abstractmethod
+    async def execute(self, *args, **kwargs) -> Any:
+        """Execute function on this replica.
+
+        Args:
+            *args: Positional arguments to pass to the function
+            **kwargs: Keyword arguments to pass to the function
+
+        Returns:
+            Result of the function execution
+        """
+        pass
+
+    async def shutdown(self):
+        """Shutdown this replica and cleanup resources."""
+        pass
+
+
+class LocalReplica(Replica):
+    """Local replica that executes functions in the same process."""
+
+    def __init__(self, fn: Callable, state: Any = None):
+        """Initialize local replica.
+
+        Args:
+            fn: Function to execute
+            state: Optional state from setup function
+        """
+        self.fn = fn
+        self.state = state
+
+    async def execute(self, *args, **kwargs) -> Any:
+        """Execute function locally."""
+        if self.state is not None:
+            # If setup was provided, state is first argument
+            return await maybe_await(self.fn, self.state, *args, **kwargs)
+        else:
+            # No setup, call function directly
+            return await maybe_await(self.fn, *args, **kwargs)
+
+
+class RemoteReplica(Replica):
+    """Remote replica that executes functions via gRPC."""
+
+    def __init__(self, endpoint: str):
+        """Initialize remote replica.
+
+        Args:
+            endpoint: gRPC server endpoint (e.g., "server1:8000")
+        """
+        self.endpoint = endpoint
+        self._client = None
+
+    async def execute(self, *args, **kwargs) -> Any:
+        """Execute function on remote server via gRPC."""
+        if self._client is None:
+            # Lazy initialization of gRPC client
+            from ..grpc.client import GrpcClient
+
+            self._client = GrpcClient(self.endpoint)
+
+        return await self._client.execute(*args, **kwargs)
+
+    async def shutdown(self):
+        """Close gRPC connection."""
+        if self._client is not None:
+            await self._client.close()
+
+
+class ReplicaPool:
+    """Pool of replicas for load-balanced execution."""
+
+    def __init__(self, fn: Callable, config: DistributionConfig, mesh: Mesh):
+        """Initialize replica pool.
+
+        Args:
+            fn: Function to replicate
+            config: Distribution configuration
+            mesh: Mesh providing resources
+        """
+        self.fn = fn
+        self.config = config
+        self.mesh = mesh
+        self.replicas: list[Replica] = []
+        self._current_index = 0
+        self._endpoint_index = 0
+        self._deployed = False
+
+    def _get_next_endpoint(self) -> str:
+        """Get next available endpoint from mesh (round-robin).
+
+        Returns:
+            Endpoint address for next replica
+
+        Raises:
+            RuntimeError: If no endpoints are available in the mesh
+        """
+        endpoints = self.mesh.get_endpoints()
+        if not endpoints:
+            raise RuntimeError(
+                "No endpoints available in mesh for remote deployment. "
+                "Please configure MeshNodes with endpoint addresses."
+            )
+
+        # Simple round-robin for now (can be made pluggable for optimizer)
+        endpoint = endpoints[self._endpoint_index % len(endpoints)]
+        self._endpoint_index += 1
+        return endpoint
+
+    async def deploy(self, n: int = 1):
+        """Deploy n instances of the function.
+
+        Args:
+            n: Number of instances to deploy
+        """
+        if self._deployed:
+            raise RuntimeError(f"Pool for {self.fn.__name__} already deployed")
+
+        # Check mesh capacity
+        max_n = self.mesh.max_instances(self.config.gpus)
+        if self.config.gpus and max_n == 0:
+            # GPU required but mesh has no GPUs - deploy single instance anyway
+            # (will run on CPU, useful for development/testing)
+            warnings.warn(
+                f"{self.fn.__name__} requires {self.config.gpus} GPUs "
+                f"but mesh has {self.mesh.total_gpus} GPUs. "
+                "Deploying single instance anyway (will run on CPU).",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            n = 1
+        elif n > max_n:
+            raise ValueError(
+                f"Cannot deploy {n} instances with {self.config.gpus} GPUs per instance. "
+                f"Mesh has {self.mesh.total_gpus} GPUs total, max {max_n} instances."
+            )
+
+        # Create instances based on backend
+        for i in range(n):
+            if self.config.backend == "local":
+                # Local execution
+                if self.config.setup:
+                    # Run setup to create state
+                    state = await maybe_await(self.config.setup)
+                    replica = LocalReplica(self.fn, state)
+                else:
+                    # No setup, stateless replica
+                    replica = LocalReplica(self.fn, None)
+
+            elif self.config.backend == "grpc":
+                # Remote execution via gRPC
+                # Note: setup() is run on the server side, not here
+                endpoint = self._get_next_endpoint()
+                replica = RemoteReplica(endpoint)
+
+            else:
+                raise ValueError(
+                    f"Unknown backend: {self.config.backend}. "
+                    f"Supported backends: 'local', 'grpc'"
+                )
+
+            self.replicas.append(replica)
+
+        self._deployed = True
+
+    def get_next(self) -> Replica:
+        """Get next replica (round-robin).
+
+        Returns:
+            Next replica to use
+
+        Raises:
+            RuntimeError: If pool not deployed
+        """
+        if not self._deployed or not self.replicas:
+            raise RuntimeError(
+                f"Pool for {self.fn.__name__} not deployed. "
+                f"Call deploy() first or ensure auto-deploy is enabled."
+            )
+
+        replica = self.replicas[self._current_index]
+        self._current_index = (self._current_index + 1) % len(self.replicas)
+        return replica
+
+    async def shutdown(self):
+        """Shutdown all replicas and cleanup resources."""
+        for replica in self.replicas:
+            await replica.shutdown()
+        self.replicas.clear()
+        self._deployed = False
+
+    @property
+    def instance_count(self) -> int:
+        """Number of deployed instances."""
+        return len(self.replicas)
+
+    def __repr__(self):
+        fn_name = self.fn.__name__
+        status = "deployed" if self._deployed else "not deployed"
+        return f"ReplicaPool({fn_name}, {self.instance_count} instances, {status})"
+
+
+def get_or_create_pool(
+    fn: Callable, config: DistributionConfig, mesh: Mesh
+) -> ReplicaPool:
+    """Get existing pool or create new one.
+
+    Args:
+        fn: Function to replicate
+        config: Distribution configuration
+        cluster: Cluster providing resources
+
+    Returns:
+        ReplicaPool for the function
+    """
+    pools = _get_pools()
+    pool_key = (id(mesh), id(fn))
+
+    if pool_key not in pools:
+        pool = ReplicaPool(fn, config, mesh)
+        pools[pool_key] = pool
+
+    return pools[pool_key]
+
+
+async def ensure_deployed(pool: ReplicaPool):
+    """Ensure pool is deployed (auto-deploy with n=1 if needed).
+
+    Args:
+        pool: Pool to check/deploy
+    """
+    if not pool._deployed:
+        # Auto-deploy with single instance
+        await pool.deploy(n=1)
+
+
+def get_all_pools() -> dict[tuple[int, int], ReplicaPool]:
+    """Get all active pools (for debugging/monitoring).
+
+    Returns:
+        Dictionary of (mesh_id, fn_id) -> ReplicaPool
+    """
+    return _get_pools().copy()
+
+
+async def shutdown_all():
+    """Shutdown all active pools."""
+    pools = _get_pools()
+    for pool in list(pools.values()):
+        await pool.shutdown()
+    pools.clear()
