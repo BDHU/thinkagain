@@ -180,9 +180,9 @@ async def combine_results(original: str, *processed: str) -> dict:
 # ============================================================================
 
 # These handles are used within @jit pipelines
-retriever = Retriever.init()
-llm = LLM.init("llama-70b")
-text_processor = TextProcessor.init()
+retriever = Retriever.init()  # type: ignore[attr-defined]
+llm = LLM.init("llama-70b")  # type: ignore[attr-defined]
+text_processor = TextProcessor.init()  # type: ignore[attr-defined]
 
 
 # ============================================================================

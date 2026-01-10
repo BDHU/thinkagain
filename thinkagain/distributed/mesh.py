@@ -117,14 +117,14 @@ class Mesh:
         """Total number of CPU devices in mesh."""
         return len(self._cpus)
 
-    def max_instances(self, gpus: int | None) -> int:
+    def max_instances(self, gpus: int | None) -> int | float:
         """Calculate max instances given GPU requirement per instance.
 
         Args:
             gpus: GPUs required per instance (None = CPU-only)
 
         Returns:
-            Maximum number of instances that can be deployed
+            Maximum number of instances that can be deployed (float('inf') for CPU-only)
         """
         if gpus is None or gpus == 0:
             return float("inf")  # No GPU limit
