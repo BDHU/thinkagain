@@ -13,6 +13,7 @@ from .core import (
     replica,
     scan,
     switch,
+    trace,
     while_loop,
 )
 from .core.profiling import (
@@ -31,6 +32,8 @@ __all__ = [
     "node",
     # Core - Replica decorator
     "replica",
+    # Core - Traceable types
+    "trace",
     # Core - Compilation
     "jit",
     "Graph",

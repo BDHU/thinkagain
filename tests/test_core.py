@@ -22,6 +22,11 @@ from thinkagain.core.graph.graph import Graph
 # =============================================================================
 
 
+@pytest.fixture(autouse=True)
+def _clear_compiled_cache():
+    _compiled_cache.clear()
+
+
 @dataclass
 class State:
     value: int
@@ -87,6 +92,15 @@ def _find_node_by_executor_type(graph: Graph, executor_type: type) -> Node | Non
     return None
 
 
+def _graph_for(fn: object) -> Graph:
+    """Get the compiled graph for a traced function."""
+    target = getattr(fn, "__wrapped__", fn)
+    for cache_key, graph in _compiled_cache.items():
+        if cache_key[0] is target:
+            return graph
+    pytest.fail(f"{target} graph not found")
+
+
 # =============================================================================
 # Subgraph Tracing Tests
 # =============================================================================
@@ -111,17 +125,14 @@ async def test_cond_branches_traced_as_subgraphs():
     assert result.value == 6
 
     # Verify graph tracing
-    for cache_key, graph in _compiled_cache.items():
-        if cache_key[0] is pipeline_with_cond.__wrapped__:
-            node = _find_node_by_executor_type(graph, CondExecutor)
-            if node:
-                executor = node.executor
-                assert isinstance(executor.true_branch, Graph)
-                assert isinstance(executor.false_branch, Graph)
-                assert len(executor.true_branch.nodes) > 0
-                assert len(executor.false_branch.nodes) > 0
-                return
-    pytest.fail("Cond node not found in compiled graph")
+    graph = _graph_for(pipeline_with_cond)
+    node = _find_node_by_executor_type(graph, CondExecutor)
+    assert node, "Cond node not found in compiled graph"
+    executor = node.executor
+    assert isinstance(executor.true_branch, Graph)
+    assert isinstance(executor.false_branch, Graph)
+    assert len(executor.true_branch.nodes) > 0
+    assert len(executor.false_branch.nodes) > 0
 
 
 @pytest.mark.asyncio
@@ -142,15 +153,12 @@ async def test_while_loop_body_traced_as_subgraph():
     assert result.value == 5
 
     # Verify graph tracing
-    for cache_key, graph in _compiled_cache.items():
-        if cache_key[0] is pipeline_with_while.__wrapped__:
-            node = _find_node_by_executor_type(graph, WhileExecutor)
-            if node:
-                executor = node.executor
-                assert isinstance(executor.body_fn, Graph)
-                assert len(executor.body_fn.nodes) > 0
-                return
-    pytest.fail("While node not found in compiled graph")
+    graph = _graph_for(pipeline_with_while)
+    node = _find_node_by_executor_type(graph, WhileExecutor)
+    assert node, "While node not found in compiled graph"
+    executor = node.executor
+    assert isinstance(executor.body_fn, Graph)
+    assert len(executor.body_fn.nodes) > 0
 
 
 @pytest.mark.asyncio
@@ -172,15 +180,12 @@ async def test_scan_body_traced_as_subgraph():
     assert "Processed: a" in results[0]
 
     # Verify graph tracing
-    for cache_key, graph in _compiled_cache.items():
-        if cache_key[0] is pipeline_with_scan.__wrapped__:
-            node = _find_node_by_executor_type(graph, ScanExecutor)
-            if node:
-                executor = node.executor
-                assert isinstance(executor.body_fn, Graph)
-                assert len(executor.body_fn.nodes) > 0
-                return
-    pytest.fail("Scan node not found in compiled graph")
+    graph = _graph_for(pipeline_with_scan)
+    node = _find_node_by_executor_type(graph, ScanExecutor)
+    assert node, "Scan node not found in compiled graph"
+    executor = node.executor
+    assert isinstance(executor.body_fn, Graph)
+    assert len(executor.body_fn.nodes) > 0
 
 
 @pytest.mark.asyncio
@@ -199,16 +204,13 @@ async def test_simple_sync_functions_not_traced():
     assert len(results) == 2
 
     # Verify simple function is NOT traced
-    for cache_key, graph in _compiled_cache.items():
-        if cache_key[0] is pipeline_with_simple_scan.__wrapped__:
-            node = _find_node_by_executor_type(graph, ScanExecutor)
-            if node:
-                executor = node.executor
-                assert not isinstance(executor.body_fn, Graph), (
-                    "Simple sync function should NOT be traced as Graph"
-                )
-                return
-    pytest.fail("Scan node not found in compiled graph")
+    graph = _graph_for(pipeline_with_simple_scan)
+    node = _find_node_by_executor_type(graph, ScanExecutor)
+    assert node, "Scan node not found in compiled graph"
+    executor = node.executor
+    assert not isinstance(executor.body_fn, Graph), (
+        "Simple sync function should NOT be traced as Graph"
+    )
 
 
 # =============================================================================
@@ -242,16 +244,13 @@ async def test_captured_value_in_cond_branch():
     assert result.value == 8  # 5 + 3
 
     # Verify captured values in graph
-    for cache_key, graph in _compiled_cache.items():
-        if cache_key[0] is pipeline_with_captured_value.__wrapped__:
-            node = _find_node_by_executor_type(graph, CondExecutor)
-            if node and isinstance(node.executor.true_branch, Graph):
-                branch_graph = node.executor.true_branch
-                assert len(branch_graph.captured_inputs) > 0, (
-                    "Should have captured values"
-                )
-                return
-    pytest.fail("Cond node with Graph not found")
+    graph = _graph_for(pipeline_with_captured_value)
+    node = _find_node_by_executor_type(graph, CondExecutor)
+    assert node and isinstance(node.executor.true_branch, Graph), (
+        "Cond node with Graph not found"
+    )
+    branch_graph = node.executor.true_branch
+    assert len(branch_graph.captured_inputs) > 0, "Should have captured values"
 
 
 @pytest.mark.asyncio
@@ -305,14 +304,13 @@ async def test_captured_value_with_nested_tracing():
     result = await pipeline(State(value=2, threshold=4))
     assert result.value == 6
 
-    for cache_key, graph in _compiled_cache.items():
-        if cache_key[0] is pipeline.__wrapped__:
-            node = _find_node_by_executor_type(graph, CondExecutor)
-            if node and isinstance(node.executor.true_branch, Graph):
-                branch_graph = node.executor.true_branch
-                assert branch_graph.captured_inputs, "Expected captured inputs"
-                return
-    pytest.fail("Cond node with Graph not found")
+    graph = _graph_for(pipeline)
+    node = _find_node_by_executor_type(graph, CondExecutor)
+    assert node and isinstance(node.executor.true_branch, Graph), (
+        "Cond node with Graph not found"
+    )
+    branch_graph = node.executor.true_branch
+    assert branch_graph.captured_inputs, "Expected captured inputs"
 
 
 @pytest.mark.asyncio
@@ -371,12 +369,9 @@ async def test_explicit_output_return_input():
 
     assert await return_input(7) == 7
 
-    for cache_key, graph in _compiled_cache.items():
-        if cache_key[0] is return_input.__wrapped__:
-            assert graph.output_ref.kind is OutputKind.INPUT
-            assert graph.output_ref.value == 0
-            return
-    pytest.fail("return_input graph not found")
+    graph = _graph_for(return_input)
+    assert graph.output_ref.kind is OutputKind.INPUT
+    assert graph.output_ref.value == 0
 
 
 @pytest.mark.asyncio
@@ -389,12 +384,9 @@ async def test_explicit_output_return_literal():
 
     assert await return_literal(7) == 42
 
-    for cache_key, graph in _compiled_cache.items():
-        if cache_key[0] is return_literal.__wrapped__:
-            assert graph.output_ref.kind is OutputKind.LITERAL
-            assert graph.output_ref.value == 42
-            return
-    pytest.fail("return_literal graph not found")
+    graph = _graph_for(return_literal)
+    assert graph.output_ref.kind is OutputKind.LITERAL
+    assert graph.output_ref.value == 42
 
 
 @pytest.mark.asyncio
@@ -408,12 +400,9 @@ async def test_explicit_output_return_node():
 
     assert await return_node(7) == 8
 
-    for cache_key, graph in _compiled_cache.items():
-        if cache_key[0] is return_node.__wrapped__:
-            assert graph.output_ref.kind is OutputKind.NODE
-            assert graph.output_ref.value in {node.node_id for node in graph.nodes}
-            return
-    pytest.fail("return_node graph not found")
+    graph = _graph_for(return_node)
+    assert graph.output_ref.kind is OutputKind.NODE
+    assert graph.output_ref.value in {node.node_id for node in graph.nodes}
 
 
 # =============================================================================
@@ -530,7 +519,6 @@ async def test_graph_caching_works_with_captured_values():
 @pytest.mark.asyncio
 async def test_dynamic_kwargs_affect_execution():
     """Dynamic kwargs should be treated as inputs and update at runtime."""
-    _compiled_cache.clear()
 
     @thinkagain.node
     async def add_bias(x: int, bias: int) -> int:
@@ -553,7 +541,6 @@ async def test_dynamic_kwargs_affect_execution():
 @pytest.mark.asyncio
 async def test_static_kwargs_force_recompile():
     """Static kwargs should trigger recompilation when values change."""
-    _compiled_cache.clear()
 
     @thinkagain.node
     async def multiply(x: int, scale: int) -> int:
@@ -576,7 +563,6 @@ async def test_static_kwargs_force_recompile():
 @pytest.mark.asyncio
 async def test_static_kwargs_require_hashable_values():
     """Static kwargs must be hashable to participate in cache keys."""
-    _compiled_cache.clear()
 
     @thinkagain.jit(static_argnames=("config",))
     async def uses_config(x: int, *, config: list[int]) -> int:
@@ -594,7 +580,6 @@ async def test_static_kwargs_require_hashable_values():
 @pytest.mark.asyncio
 async def test_cond_rejects_mismatched_output_kinds():
     """cond should reject branches with incompatible output patterns."""
-    _compiled_cache.clear()
 
     async def return_input(x: int) -> int:
         return x
@@ -613,7 +598,6 @@ async def test_cond_rejects_mismatched_output_kinds():
 @pytest.mark.asyncio
 async def test_scan_rejects_invalid_tuple_shape():
     """scan should reject bodies that do not return (carry, output)."""
-    _compiled_cache.clear()
 
     @thinkagain.node
     async def bad_scan(carry: int, item: int) -> int:
@@ -631,7 +615,6 @@ async def test_scan_rejects_invalid_tuple_shape():
 @pytest.mark.asyncio
 async def test_rejects_non_traceable_capture_in_cond():
     """Non-traceable callables that capture TracedValue should be rejected."""
-    _compiled_cache.clear()
 
     @thinkagain.jit
     async def pipeline(state: State) -> int:
@@ -647,10 +630,85 @@ async def test_rejects_non_traceable_capture_in_cond():
         await pipeline(State(value=1, threshold=2))
 
 
+# =============================================================================
+# Traceable Container Tests
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_frozen_dataclass_traceable():
+    """Frozen dataclasses can be used as @trace containers."""
+
+    @thinkagain.trace
+    @dataclass(frozen=True)
+    class FrozenState:
+        value: int
+        tag: str = ""
+
+    @thinkagain.jit
+    async def pipeline(x: int) -> FrozenState:
+        y = await add_one(x)
+        return FrozenState(value=y, tag="ok")
+
+    result = await pipeline(1)
+    assert result == FrozenState(2, "ok")
+
+
+@pytest.mark.asyncio
+async def test_traceable_subclass_protocol():
+    """Subclass of a traceable base should be rejected unless registered."""
+
+    @thinkagain.trace
+    class Box:
+        def __init__(self, value: int):
+            self.value = value
+
+        def decompose(self) -> tuple[list[int], None]:
+            return [self.value], None
+
+        @classmethod
+        def compose(cls, aux: None, children: list[int]) -> "Box":
+            return cls(children[0])
+
+    class FancyBox(Box):
+        pass
+
+    @thinkagain.jit
+    async def pipeline(x: int) -> FancyBox:
+        y = await add_one(x)
+        return FancyBox(y)
+
+    with pytest.raises(TracingError, match="non-@trace container"):
+        await pipeline(1)
+
+
+@pytest.mark.asyncio
+async def test_reject_traced_value_in_dict_key():
+    """TracedValue should be rejected in dict keys."""
+
+    @thinkagain.jit
+    async def pipeline(x: int) -> dict:
+        return {x: 1}
+
+    with pytest.raises(TypeError, match="dict keys"):
+        await pipeline(1)
+
+
+@pytest.mark.asyncio
+async def test_reject_traced_value_in_set():
+    """TracedValue should be rejected in sets."""
+
+    @thinkagain.jit
+    async def pipeline(x: int) -> set[int]:
+        return {x}
+
+    with pytest.raises(TypeError, match="sets"):
+        await pipeline(1)
+
+
 @pytest.mark.asyncio
 async def test_parent_values_param_is_allowed():
     """parent_values is no longer reserved since it isn't injected at runtime."""
-    _compiled_cache.clear()
 
     @thinkagain.node
     async def node_with_parent_values(x: int, parent_values: dict | None = None) -> int:
@@ -666,7 +724,6 @@ async def test_parent_values_param_is_allowed():
 @pytest.mark.asyncio
 async def test_nested_jit_is_inlined_into_outer_trace():
     """Nested @jit should be a no-op and inline into the outer trace."""
-    _compiled_cache.clear()
 
     @thinkagain.jit
     async def inner(x: int) -> int:
@@ -679,21 +736,17 @@ async def test_nested_jit_is_inlined_into_outer_trace():
     result = await outer(2)
     assert result == 3
 
-    for cache_key, graph in _compiled_cache.items():
-        if cache_key[0] is outer.__wrapped__:
-            for node in graph.nodes:
-                if isinstance(node.executor, CallExecutor):
-                    # The executor should NOT be for inner or inner.__wrapped__
-                    assert node.executor.fn is not inner.__wrapped__
-                    assert node.executor.fn is not inner
-            return
-    pytest.fail("outer graph not found")
+    graph = _graph_for(outer)
+    for node in graph.nodes:
+        if isinstance(node.executor, CallExecutor):
+            # The executor should NOT be for inner or inner.__wrapped__
+            assert node.executor.fn is not inner.__wrapped__
+            assert node.executor.fn is not inner
 
 
 @pytest.mark.asyncio
 async def test_cond_predicate_rejects_captured_traced_value():
     """cond predicate should not capture TracedValues."""
-    _compiled_cache.clear()
 
     @thinkagain.jit
     async def pipeline(state: State) -> State:
@@ -712,7 +765,6 @@ async def test_cond_predicate_rejects_captured_traced_value():
 @pytest.mark.asyncio
 async def test_while_predicate_rejects_captured_traced_value():
     """while_loop predicate should not capture TracedValues."""
-    _compiled_cache.clear()
 
     @thinkagain.jit
     async def pipeline(state: State) -> State:
@@ -735,7 +787,6 @@ async def test_while_predicate_rejects_captured_traced_value():
 @pytest.mark.asyncio
 async def test_switch_branches_traced_as_subgraphs():
     """Test that @node functions in switch branches are traced as Graphs."""
-    _compiled_cache.clear()
 
     @thinkagain.jit
     async def pipeline_with_switch(state: State) -> State:
@@ -752,16 +803,13 @@ async def test_switch_branches_traced_as_subgraphs():
     assert result.value == 8
 
     # Verify graph tracing
-    for cache_key, graph in _compiled_cache.items():
-        if cache_key[0] is pipeline_with_switch.__wrapped__:
-            node = _find_node_by_executor_type(graph, SwitchExecutor)
-            if node:
-                executor = node.executor
-                assert len(executor.branches) == 2
-                for branch in executor.branches:
-                    assert isinstance(branch, Graph)
-                return
-    pytest.fail("Switch node not found in compiled graph")
+    graph = _graph_for(pipeline_with_switch)
+    node = _find_node_by_executor_type(graph, SwitchExecutor)
+    assert node, "Switch node not found in compiled graph"
+    executor = node.executor
+    assert len(executor.branches) == 2
+    for branch in executor.branches:
+        assert isinstance(branch, Graph)
 
 
 @pytest.mark.asyncio
@@ -775,7 +823,6 @@ async def test_switch_index_out_of_bounds():
 @pytest.mark.asyncio
 async def test_switch_rejects_mismatched_output_kinds():
     """switch should reject branches with incompatible output patterns."""
-    _compiled_cache.clear()
 
     async def return_input(x: int) -> int:
         return x
@@ -794,7 +841,6 @@ async def test_switch_rejects_mismatched_output_kinds():
 @pytest.mark.asyncio
 async def test_switch_index_fn_rejects_captured_traced_value():
     """switch index_fn should not capture TracedValues."""
-    _compiled_cache.clear()
 
     @thinkagain.jit
     async def pipeline(state: State) -> State:
@@ -817,7 +863,6 @@ async def test_switch_index_fn_rejects_captured_traced_value():
 @pytest.mark.asyncio
 async def test_node_decorator_on_class():
     """Test that @node works on classes with async __call__."""
-    _compiled_cache.clear()
 
     @thinkagain.node
     class Multiplier:
@@ -844,7 +889,6 @@ async def test_node_decorator_on_class():
 @pytest.mark.asyncio
 async def test_node_decorator_on_class_in_control_flow():
     """Test that @node decorated class works in control flow operators."""
-    _compiled_cache.clear()
 
     @thinkagain.node
     class Adder:
@@ -879,7 +923,6 @@ async def test_node_decorator_on_class_in_control_flow():
 @pytest.mark.asyncio
 async def test_node_decorator_on_class_with_while_loop():
     """Test @node decorated class in while_loop."""
-    _compiled_cache.clear()
 
     @thinkagain.node
     class Incrementer:
@@ -909,7 +952,6 @@ async def test_node_decorator_on_class_with_while_loop():
 @pytest.mark.asyncio
 async def test_node_decorator_on_class_with_scan():
     """Test @node decorated class in scan."""
-    _compiled_cache.clear()
 
     @thinkagain.node
     class Processor:
@@ -985,7 +1027,6 @@ async def test_node_decorated_class_has_node_markers():
 @pytest.mark.asyncio
 async def test_node_decorated_class_with_state_mutation():
     """Test that @node decorated class can maintain state across calls."""
-    _compiled_cache.clear()
 
     @thinkagain.node
     class StatefulCounter:
@@ -1016,7 +1057,6 @@ async def test_node_decorated_class_with_state_mutation():
 @pytest.mark.asyncio
 async def test_node_decorated_class_multiple_instances():
     """Test that multiple instances of @node decorated class work correctly."""
-    _compiled_cache.clear()
 
     @thinkagain.node
     class Adder:

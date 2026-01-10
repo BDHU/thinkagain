@@ -8,6 +8,8 @@ from typing import Any
 
 from ..errors import TracingError
 from ..graph.graph import InputRef, Node, NodeRef, TracedValue
+from ..traceable import map_traceable_refs
+from .utils import contains_traced_value
 
 _trace_ctx_var: contextvars.ContextVar["TraceContext | None"] = contextvars.ContextVar(
     "trace_context", default=None
@@ -43,7 +45,13 @@ class TraceContext:
     def _normalize(self, value: Any) -> Any:
         """Convert TracedValue to appropriate reference type."""
         if not isinstance(value, TracedValue):
-            return value
+            normalized = map_traceable_refs(value, (TracedValue,), self._normalize)
+            if contains_traced_value(normalized, self, depth=4):
+                raise TracingError(
+                    "TracedValue is hidden inside a non-@trace container. "
+                    "Register the type with @trace or refactor to use built-in containers."
+                )
+            return normalized
         if value in self.input_values:
             return InputRef(self.input_values[value])
         if value.trace_ctx is self:

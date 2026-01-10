@@ -15,6 +15,7 @@ from ..graph.graph import (
     TracedValue,
 )
 from ..graph.literal_refs import resolve_literal_refs
+from ..traceable import map_traceable_refs
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +68,7 @@ class ExecutionContext:
             return self._resolve_node_value(value.node_id, "NodeRef", strict=False)
         if isinstance(value, InputRef):
             return self._resolve_input(value.index)
-        return value
+        return map_traceable_refs(value, (TracedValue, NodeRef, InputRef), self.resolve)
 
     def resolve_many(self, values: tuple | dict) -> tuple | dict:
         """Resolve a collection of values (args tuple or kwargs dict)."""
