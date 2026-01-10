@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import pickle
+import cloudpickle as pickle
 import traceback
 from typing import Any
 
@@ -68,7 +68,7 @@ async def serve(instance: Any, port: int = 8000):
         port: Port to listen on (default: 8000)
 
     Example:
-        >>> @replicate(gpus=1, backend="grpc")
+        >>> @replica(gpus=1, backend="grpc")
         >>> class LLMServer:
         >>>     def __init__(self):
         >>>         self.model = load_model()

@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .errors import NodeExecutionError
-from .graph import (
+from ..errors import NodeExecutionError
+from ..graph.graph import (
     Graph,
     InputRef,
     Node,
@@ -14,6 +14,7 @@ from .graph import (
     OutputKind,
     TracedValue,
 )
+from ..graph.literal_refs import resolve_literal_refs
 
 
 # ---------------------------------------------------------------------------
@@ -41,29 +42,31 @@ class ExecutionContext:
             self.parent_values if self.parent_values is not None else self.node_values
         )
 
+    def _resolve_input(self, index: int) -> Any:
+        if index < 0 or index >= len(self.inputs):
+            raise RuntimeError(f"InputRef(index={index}) out of range")
+        return self.inputs[index]
+
+    def _resolve_node_value(self, node_id: int, ref_type: str, *, strict: bool) -> Any:
+        if node_id not in self.node_ids:
+            raise RuntimeError(f"{ref_type}(node_id={node_id}) not in this graph")
+        if strict:
+            if node_id in self.node_values:
+                return self.node_values[node_id]
+            raise RuntimeError(f"Cannot resolve {ref_type}(node_id={node_id})")
+        return self.node_values[node_id]
+
     def resolve(self, value: Any) -> Any:
         """Resolve a reference (TracedValue/InputRef/NodeRef) to a concrete value."""
         if isinstance(value, TracedValue):
             captured = self.graph.captured_inputs
             if captured and value.node_id in captured:
-                return self.inputs[captured[value.node_id]]
-            if value.node_id not in self.node_ids:
-                raise RuntimeError(
-                    f"TracedValue(node_id={value.node_id}) not in this graph"
-                )
-            if value.node_id in self.node_values:
-                return self.node_values[value.node_id]
-            raise RuntimeError(f"Cannot resolve TracedValue(node_id={value.node_id})")
+                return self._resolve_input(captured[value.node_id])
+            return self._resolve_node_value(value.node_id, "TracedValue", strict=True)
         if isinstance(value, NodeRef):
-            if value.node_id not in self.node_ids:
-                raise RuntimeError(
-                    f"NodeRef(node_id={value.node_id}) not in this graph"
-                )
-            return self.node_values[value.node_id]
+            return self._resolve_node_value(value.node_id, "NodeRef", strict=False)
         if isinstance(value, InputRef):
-            if value.index < 0 or value.index >= len(self.inputs):
-                raise RuntimeError(f"InputRef(index={value.index}) out of range")
-            return self.inputs[value.index]
+            return self._resolve_input(value.index)
         return value
 
     def resolve_many(self, values: tuple | dict) -> tuple | dict:
@@ -74,40 +77,28 @@ class ExecutionContext:
 
     def prepare_subgraph_args(self, graph: Graph, operand_args: tuple) -> list:
         """Append captured values from the parent context to operand args."""
-        args = list(operand_args)
-        capture_values = self.capture_values
-        for parent_id in sorted(graph.captured_inputs, key=graph.captured_inputs.get):
-            args.append(capture_values[parent_id])
-        return args
+        return graph.append_captures(operand_args, self.capture_values)
+
+    async def execute_node(
+        self,
+        node: Node,
+        node_name: str,
+        *,
+        profiler: Any,
+        profile_context: Any,
+    ) -> Any:
+        resolved_args = self.resolve_many(node.args)
+        resolved_kwargs = self.resolve_many(node.kwargs)
+
+        if profiler is None:
+            return await node.executor.execute(resolved_args, resolved_kwargs, self)
+        with profile_context(node_name):
+            return await node.executor.execute(resolved_args, resolved_kwargs, self)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _resolve_literal_output(value: Any, ctx: ExecutionContext) -> Any:
-    """Recursively resolve refs (InputRef/NodeRef) in a literal output value.
-
-    This handles cases where a @jit function returns a literal container
-    (dict, list, tuple) that contains InputRef or NodeRef objects as elements.
-    These need to be resolved to their actual computed values.
-    """
-    if isinstance(value, (InputRef, NodeRef)):
-        # Resolve ref to its computed value
-        return ctx.resolve(value)
-    elif isinstance(value, dict):
-        # Recursively resolve dict values
-        return {k: _resolve_literal_output(v, ctx) for k, v in value.items()}
-    elif isinstance(value, list):
-        # Recursively resolve list elements
-        return [_resolve_literal_output(v, ctx) for v in value]
-    elif isinstance(value, tuple):
-        # Recursively resolve tuple elements
-        return tuple(_resolve_literal_output(v, ctx) for v in value)
-    else:
-        # Primitive value, return as-is
-        return value
 
 
 def _node_name(node: Node) -> str:
@@ -142,6 +133,8 @@ async def execute_graph(
     """
     if len(args) != graph.input_count:
         raise ValueError(f"Expected {graph.input_count} inputs, got {len(args)}")
+    if graph.output_ref is None:
+        raise ValueError("Graph output_ref is not set.")
 
     ctx = ExecutionContext(
         graph=graph,
@@ -152,36 +145,25 @@ async def execute_graph(
     executed: list[str] = []
 
     # Import profiling module once if needed
-    from . import profiling
+    from .. import profiling
 
     profiler = profiling._profiler  # Direct access avoids function call overhead
 
     for node in graph.nodes:
-        resolved_args = ctx.resolve_many(node.args)
-        resolved_kwargs = ctx.resolve_many(node.kwargs)
+        node_name = _node_name(node)
 
         try:
-            # Fast path: no profiling overhead when disabled
-            if profiler is None:
-                result = await node.executor.execute(
-                    resolved_args, resolved_kwargs, ctx
-                )
-            else:
-                # Profiling enabled - use context manager
-                node_name = _node_name(node)
-                with profiling.node_context(node_name):
-                    result = await node.executor.execute(
-                        resolved_args, resolved_kwargs, ctx
-                    )
+            result = await ctx.execute_node(
+                node,
+                node_name,
+                profiler=profiler,
+                profile_context=profiling.node_context,
+            )
         except Exception as exc:
-            node_name = _node_name(node)
             raise NodeExecutionError(node_name, executed, exc) from exc
 
         ctx.node_values[node.node_id] = result
-        if profiler is not None:
-            executed.append(node_name if "node_name" in locals() else _node_name(node))
-        else:
-            executed.append(_node_name(node))
+        executed.append(node_name)
 
     # Resolve output
     out = graph.output_ref
@@ -190,5 +172,5 @@ async def execute_graph(
     if out.kind is OutputKind.INPUT:
         return args[out.value]
 
-    # LITERAL - need to resolve any TracedValues in the literal
-    return _resolve_literal_output(out.value, ctx)
+    # LITERAL - resolve any InputRef/NodeRef in the literal
+    return resolve_literal_refs(out.value, ctx.resolve)

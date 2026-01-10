@@ -5,8 +5,8 @@ These operators trace control flow (conditionals, loops) into the computation gr
 
 from typing import Callable, TypeVar
 
-from .errors import TracingError
-from .executors import (
+from ..errors import TracingError
+from ..execution.executors import (
     CallExecutor,
     CondExecutor,
     ScanExecutor,
@@ -14,10 +14,10 @@ from .executors import (
     WhileExecutor,
 )
 from .graph import Graph, TracedValue
-from .runtime import maybe_await
-from .tracing import (
-    _captures_traced_value,
-    _get_source_location,
+from ..execution.runtime import maybe_await
+from ..tracing import (
+    captures_traced_value,
+    get_source_location,
     get_trace_context,
     is_traceable,
     trace_branch,
@@ -33,7 +33,7 @@ U = TypeVar("U")
 
 def _check_no_capture(fn: Callable, ctx, name: str) -> None:
     """Ensure a predicate/condition function doesn't capture traced values."""
-    if _captures_traced_value(fn, ctx):
+    if captures_traced_value(fn, ctx):
         raise TracingError(
             f"{name} closes over TracedValue; predicates run at runtime "
             "and must not capture traced values."
@@ -42,7 +42,7 @@ def _check_no_capture(fn: Callable, ctx, name: str) -> None:
 
 def _check_body_capture(fn: Callable, ctx, name: str) -> None:
     """Ensure a body function either is traceable or doesn't capture traced values."""
-    if not is_traceable(fn) and _captures_traced_value(fn, ctx):
+    if not is_traceable(fn) and captures_traced_value(fn, ctx):
         raise TracingError(
             f"{name} closes over TracedValue but is not traceable; "
             "use async @node or async function instead."
@@ -109,7 +109,7 @@ async def cond(
         true_branch=true_branch,
         false_branch=false_branch,
     )
-    node_id = ctx.add_node(executor, (operand,), {}, _get_source_location(pred_fn))
+    node_id = ctx.add_node(executor, (operand,), {}, get_source_location(pred_fn))
     return TracedValue(node_id, ctx)
 
 
@@ -157,7 +157,7 @@ async def while_loop(
     validate_while_body(body)
 
     executor = WhileExecutor(cond_fn=cond_fn, body_fn=body)
-    node_id = ctx.add_node(executor, (init,), {}, _get_source_location(cond_fn))
+    node_id = ctx.add_node(executor, (init,), {}, get_source_location(cond_fn))
     return TracedValue(node_id, ctx)
 
 
@@ -203,7 +203,7 @@ async def scan(
     validate_scan_body(body)
 
     executor = ScanExecutor(body_fn=body)
-    scan_id = ctx.add_node(executor, (init, xs), {}, _get_source_location(fn))
+    scan_id = ctx.add_node(executor, (init, xs), {}, get_source_location(fn))
 
     # Create extraction nodes for the tuple elements
     extract_carry = CallExecutor(fn=lambda t: t[0])
@@ -275,5 +275,5 @@ async def switch(
     validate_switch_branches(traced_branches)
 
     executor = SwitchExecutor(index_fn=index_fn, branches=tuple(traced_branches))
-    node_id = ctx.add_node(executor, (operand,), {}, _get_source_location(index_fn))
+    node_id = ctx.add_node(executor, (operand,), {}, get_source_location(index_fn))
     return TracedValue(node_id, ctx)

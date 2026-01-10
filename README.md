@@ -7,13 +7,13 @@
 [![CodSpeed Badge](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/BDHU/thinkagain?utm_source=badge)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 
-A minimal framework for building distributed AI pipelines with JAX-style graph compilation. Write async functions, compose them with `@jit`, and scale them across clusters with `@replicate` – all with transparent profiling and optimization.
+A minimal framework for building distributed AI pipelines with JAX-style graph compilation. Write async functions, compose them with `@jit`, and scale them across clusters with `@replica` – all with transparent profiling and optimization.
 
 ## Why ThinkAgain?
 
 - **JAX-inspired API** – Familiar `@jit` compilation with `cond`, `while_loop`, and `scan` for control flow
 - **Graph compilation** – Functions are traced into static computation graphs for efficient execution
-- **Transparent distribution** – `@replicate` marks functions for distributed execution, `Mesh` defines resources
+- **Transparent distribution** – `@replica` marks classes for distributed execution, `Mesh` defines resources
 - **Clean separation** – Single `@jit` decorator for local and distributed, mesh determines execution mode
 - **Built-in profiling** – Automatic dependency tracking and performance metrics
 - **Minimal** – ~500 LOC core, no complex schedulers or DSLs
@@ -22,7 +22,7 @@ A minimal framework for building distributed AI pipelines with JAX-style graph c
 
 - **`@node`** – Decorator for async functions that can be composed in graphs
 - **`@jit`** – JAX-style tracing that compiles async functions into static graphs
-- **`@replicate`** – Marks functions for distributed execution across multiple instances
+- **`@replica`** – Decorator for stateful classes that can be distributed across multiple instances
 - **`Mesh`** – Explicit resource topology (GPUs, CPUs, nodes) for distributed execution
 - **`cond`, `while_loop`, `scan`, `switch`** – Control flow primitives for traced functions
 
@@ -95,7 +95,7 @@ result = await pipeline(0, 10)
 
 ## Distributed Execution
 
-### Define a Mesh and Replicate Functions
+### Define a Mesh and Use Replicas
 
 ```python
 import thinkagain as ta
@@ -106,22 +106,34 @@ mesh = ta.Mesh([
     ta.MeshNode("server2", gpus=8, cpus=32),
 ])
 
-# CPU-only replication (clean!)
-@ta.replicate()
-async def retrieve(query: str) -> list[str]:
-    # Retrieval logic - scales freely on CPU
-    return ["doc1", "doc2", "doc3"]
+# CPU-only replica
+@ta.replica()
+class Retriever:
+    def __init__(self):
+        pass
 
-# GPU-accelerated replication
-@ta.replicate(gpus=4)  # 4 GPUs per instance
-async def generate(query: str, docs: list[str]) -> str:
-    # LLM generation - requires GPUs
-    return f"Answer based on {len(docs)} documents"
+    async def retrieve(self, query: str) -> list[str]:
+        # Retrieval logic - scales freely on CPU
+        return ["doc1", "doc2", "doc3"]
+
+# GPU-accelerated replica
+@ta.replica(gpus=4)  # 4 GPUs per instance
+class Generator:
+    def __init__(self):
+        self.model = load_llm()
+
+    async def generate(self, query: str, docs: list[str]) -> str:
+        # LLM generation - requires GPUs
+        return f"Answer based on {len(docs)} documents"
+
+# Create handles outside @jit
+retriever = Retriever.init()
+generator = Generator.init()
 
 @ta.jit
 async def rag_pipeline(query: str) -> str:
-    docs = await retrieve(query)
-    return await generate(query, docs)
+    docs = await retriever.retrieve(query)
+    return await generator.generate(query, docs)
 
 # Execute with mesh context
 with mesh:
@@ -129,7 +141,7 @@ with mesh:
     print(result)
 ```
 
-### Stateful Replicated Functions
+### Stateful Replicas with Setup
 
 ```python
 import thinkagain as ta
@@ -138,16 +150,26 @@ def setup_model():
     """Called once per instance to initialize state."""
     return {"model": load_llm(), "cache": {}}
 
-@ta.replicate(gpus=2, setup=setup_model)
-async def inference(state, prompt: str) -> str:
-    """State from setup is passed as first argument."""
-    model = state["model"]
-    return await model.generate(prompt)
+@ta.replica(gpus=2, setup=setup_model)
+class LLM:
+    def __init__(self, model_name: str):
+        self.model_name = model_name
 
-mesh = ta.Mesh([ta.GPU(0), ta.GPU(1)])
+    async def inference(self, prompt: str) -> str:
+        """State from setup is available in actual execution."""
+        return f"Generated response for {prompt}"
+
+# Create handle
+llm = LLM.init("llama-70b")
+
+@ta.jit
+async def pipeline(prompt: str) -> str:
+    return await llm.inference(prompt)
+
+mesh = ta.Mesh([ta.GpuDevice(0), ta.GpuDevice(1)])
 
 with mesh:
-    result = await inference("Hello world")
+    result = await pipeline("Hello world")
 ```
 
 ## Transparent Profiling
@@ -157,15 +179,21 @@ Profiling runs automatically in the background and can be queried at any time:
 ```python
 import thinkagain as ta
 
-@ta.replicate()
-async def process(x: int) -> int:
-    return x * 2
+@ta.replica()
+class Processor:
+    def __init__(self):
+        pass
+
+    async def process(self, x: int) -> int:
+        return x * 2
+
+processor = Processor.init()
 
 @ta.jit
 async def pipeline(x: int) -> int:
-    return await process(x)
+    return await processor.process(x)
 
-mesh = ta.Mesh([ta.CPU(4)])
+mesh = ta.Mesh([ta.CpuDevice(4)])
 
 with ta.profile() as profiler:
     with mesh:
@@ -245,7 +273,7 @@ mesh = ta.Mesh([cpu])
 
 ThinkAgain follows JAX's philosophy of explicit resource management and transparent compilation:
 
-1. **Explicit is better than implicit** – You define the mesh, mark functions for replication
+1. **Explicit is better than implicit** – You define the mesh, mark classes for replication
 2. **Compilation separates concerns** – Write local logic, compile to distributed execution
 3. **Tracing enables optimization** – Static graphs allow for profiling and optimization
 4. **Minimal magic** – No auto-scaling, no hidden deployments, everything is explicit
@@ -255,7 +283,7 @@ ThinkAgain follows JAX's philosophy of explicit resource management and transpar
 ### Core Decorators
 - `@ta.node` – Mark async functions for graph composition
 - `@ta.jit` – Compile functions into static computation graphs
-- `@ta.replicate(gpus=None, setup=None)` – Mark functions for distributed execution
+- `@ta.replica(gpus=None, setup=None)` – Mark classes for distributed execution
 
 ### Control Flow
 - `ta.cond(pred_fn, true_fn, false_fn, operand)` – Conditional branching
@@ -265,11 +293,10 @@ ThinkAgain follows JAX's philosophy of explicit resource management and transpar
 
 ### Resource Management
 - `ta.Mesh(devices)` – Define cluster topology
-- `ta.GPU(id, host="localhost")` – GPU device
-- `ta.CPU(count, host="localhost")` – CPU resources
+- `ta.GpuDevice(id)` – GPU device
+- `ta.CpuDevice(count)` – CPU resources
 - `ta.MeshNode(name, gpus=0, cpus=0)` – Multi-GPU/CPU node
 - `ta.devices()` – Auto-detect GPUs
-- `ta.cpus()` – Auto-detect CPUs
 
 ### Profiling
 - `ta.profile()` – Context manager for profiling
@@ -279,8 +306,9 @@ ThinkAgain follows JAX's philosophy of explicit resource management and transpar
 ## Examples
 
 See [examples/](examples/) for working demos:
-- `new_distributed_api_demo.py` – Complete RAG pipeline with distributed execution
-- `demo.py` – Control flow patterns with @jit
+- `demo.py` – Core @jit API with control flow (cond, while_loop, scan)
+- `new_distributed_api_demo.py` – Distributed execution with @replica and Mesh
+- `grpc_remote_example.py` – Remote execution with gRPC backend (multi-server)
 
 ## Documentation
 

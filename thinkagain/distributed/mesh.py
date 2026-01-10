@@ -24,37 +24,6 @@ def _get_mesh_stack() -> list["Mesh"]:
 
 
 # ---------------------------------------------------------------------------
-# Service Pool
-# ---------------------------------------------------------------------------
-
-
-class _ServicePool:
-    """Pool of service instances for load balancing.
-
-    Simple round-robin load balancer for service replicas.
-    """
-
-    def __init__(self, instances: list):
-        """Initialize pool with service instances.
-
-        Args:
-            instances: List of service instances
-        """
-        self.instances = instances
-        self._current = 0
-
-    def get_next(self):
-        """Get next instance (round-robin).
-
-        Returns:
-            Next service instance
-        """
-        instance = self.instances[self._current]
-        self._current = (self._current + 1) % len(self.instances)
-        return instance
-
-
-# ---------------------------------------------------------------------------
 # MeshNode
 # ---------------------------------------------------------------------------
 
@@ -70,15 +39,9 @@ class MeshNode:
 
     def expand(self) -> list[Device]:
         """Expand into individual devices."""
-        devices = []
-        for i in range(self.gpus):
-            devices.append(
-                GpuDevice(id=i)
-            )  # Note: May need host/endpoint tracking in future
+        devices = [GpuDevice(id=i) for i in range(self.gpus)]
         if self.cpus > 0:
-            devices.append(
-                CpuDevice(id=0)
-            )  # Note: May need host/endpoint tracking in future
+            devices.append(CpuDevice(id=0))
         return devices
 
     def __repr__(self):
@@ -128,20 +91,21 @@ class Mesh:
         """
         self.backend = backend
         self._nodes = []  # Store original MeshNodes for endpoint tracking
-        self._service_pools = {}  # hash(handle) -> ServicePool
 
-        # Expand nodes to devices if needed
-        expanded = []
-        for d in devices:
-            if isinstance(d, MeshNode):
-                self._nodes.append(d)
-                expanded.extend(d.expand())
-            else:
-                expanded.append(d)
-
+        expanded = self._expand_devices(devices)
         self.devices = expanded
-        self._gpus = [d for d in expanded if isinstance(d, GpuDevice)]
-        self._cpus = [d for d in expanded if isinstance(d, CpuDevice)]
+        self._gpus = [d for d in self.devices if isinstance(d, GpuDevice)]
+        self._cpus = [d for d in self.devices if isinstance(d, CpuDevice)]
+
+    def _expand_devices(self, devices: list[Device | MeshNode]) -> list[Device]:
+        expanded: list[Device] = []
+        for device in devices:
+            if isinstance(device, MeshNode):
+                self._nodes.append(device)
+                expanded.extend(device.expand())
+            else:
+                expanded.append(device)
+        return expanded
 
     @property
     def total_gpus(self) -> int:
@@ -173,11 +137,7 @@ class Mesh:
             List of endpoint addresses (e.g., ["server1:8000", "server2:8000"])
             Empty list if no endpoints configured
         """
-        endpoints = []
-        for node in self._nodes:
-            if node.endpoint:
-                endpoints.append(node.endpoint)
-        return endpoints
+        return [node.endpoint for node in self._nodes if node.endpoint]
 
     async def _ensure_deployed(self, handle):
         """Ensure service is deployed (auto-deploy with n=1 if needed).
@@ -187,15 +147,10 @@ class Mesh:
 
         This is called automatically when a service is first used in a pipeline.
         """
-        handle_id = hash(handle)
+        from .replication.pool import ensure_deployed, get_or_create_handle_pool
 
-        if handle_id not in self._service_pools:
-            # Auto-deploy with single instance
-            replica_class = handle.resolve_class()
-            instance = replica_class(*handle.init_args, **dict(handle.init_kwargs))
-
-            pool = _ServicePool([instance])
-            self._service_pools[handle_id] = pool
+        pool = get_or_create_handle_pool(handle, self)
+        await ensure_deployed(pool)
 
     def get_service_replica(self, handle):
         """Get next available replica for a service (round-robin).
@@ -206,14 +161,16 @@ class Mesh:
         Returns:
             Service instance
         """
-        handle_id = hash(handle)
-        if handle_id not in self._service_pools:
+        from .replication.pool import get_or_create_handle_pool
+
+        pool = get_or_create_handle_pool(handle, self)
+        if not pool._deployed:
             raise RuntimeError(
                 f"Service {handle.replica_class_name} not deployed. "
                 f"This should not happen (auto-deploy failed)."
             )
 
-        return self._service_pools[handle_id].get_next()
+        return pool.get_next()
 
     def __enter__(self):
         """Enter mesh context.

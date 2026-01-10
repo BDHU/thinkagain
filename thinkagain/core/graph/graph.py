@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Any, TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from .tracing import TraceContext
+    from ..tracing.context import TraceContext
 
 
 class OutputKind(Enum):
@@ -143,6 +143,24 @@ class TracedValue:
             "Use lambda functions for attribute access in control flow."
         )
 
+    async def __call__(self, *args, **kwargs):
+        """Support calling TracedValue as a replica handle.
+
+        This allows replica handles passed as parameters to be called.
+        """
+        from ..execution.replica import _get_replica_hook, BoundReplicaMethod
+
+        hook = _get_replica_hook()
+        if hook is not None:
+            # This TracedValue represents a ReplicaHandle parameter
+            bound_method = BoundReplicaMethod(self)
+            return await bound_method(*args, **kwargs)
+
+        self._error(
+            "Cannot call TracedValue during tracing unless it's a replica handle. "
+            "Make sure you're calling inside a @jit function with a mesh context."
+        )
+
     def __bool__(self):
         self._error(
             "Cannot evaluate TracedValue as boolean during tracing. "
@@ -188,6 +206,7 @@ class Graph:
     resource_list: list = field(
         default_factory=list
     )  # Resources (handles, etc.) used in graph
+    dynamic_kw_names: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self):
         if self.output_ref is None:
@@ -195,6 +214,20 @@ class Graph:
                 self.output_ref = OutputRef(OutputKind.NODE, self.nodes[-1].node_id)
             else:
                 raise ValueError("Empty graph requires explicit output_ref.")
+
+    def bind_inputs(self, args: tuple, kwargs: dict) -> tuple:
+        """Bind runtime inputs to the graph's input order."""
+        dynamic_kw = [kwargs[name] for name in self.dynamic_kw_names]
+        return (*args, *dynamic_kw, *self.resource_list)
+
+    def append_captures(
+        self, operand_args: tuple, capture_values: dict[int, Any]
+    ) -> list:
+        """Append captured values in graph order for subgraph execution."""
+        args = list(operand_args)
+        for parent_id in sorted(self.captured_inputs, key=self.captured_inputs.get):
+            args.append(capture_values[parent_id])
+        return args
 
     async def execute(
         self,
@@ -212,7 +245,7 @@ class Graph:
         Returns:
             Graph output value
         """
-        from .executor import execute_graph
+        from ..execution.executor import execute_graph
 
         return await execute_graph(
             self, *args, parent_values=parent_values, service_provider=service_provider

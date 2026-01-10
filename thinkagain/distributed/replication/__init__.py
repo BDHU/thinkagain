@@ -8,11 +8,8 @@ from .pool import (
     get_or_create_pool,
     shutdown_all,
 )
-from .replicate import DistributionConfig, replicate
 
 __all__ = [
-    "replicate",
-    "DistributionConfig",
     "Replica",
     "LocalReplica",
     "RemoteReplica",
