@@ -15,7 +15,7 @@ from ..errors import TracingError
 from ..graph.graph import Graph, OutputKind, OutputRef, TracedValue
 from ..graph.literal_refs import normalize_traced_literal
 from .context import TraceContext, _trace_ctx_var
-from .utils import captures_traced_value, get_source_location
+from .utils import captures_traced_value, contains_traced_value, get_source_location
 
 _captures_traced_value = captures_traced_value
 _get_source_location = get_source_location
@@ -180,6 +180,11 @@ def _make_output_ref(
         raise TracingError("TracedValue from wrong context.")
     # Normalize any TracedValues inside literal containers
     normalized = normalize_traced_literal(result, inputs, ctx)
+    if contains_traced_value(normalized, ctx, depth=4):
+        raise TracingError(
+            "TracedValue is hidden inside a non-@trace container. "
+            "Register the type with @trace or refactor to use built-in containers."
+        )
     return OutputRef(OutputKind.LITERAL, normalized)
 
 

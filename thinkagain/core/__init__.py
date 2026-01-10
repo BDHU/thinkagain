@@ -10,12 +10,14 @@ from .execution import (
     unregister_hook,
 )
 from .graph import Graph, cond, scan, switch, while_loop
+from .traceable import trace
 from .tracing import clear_compiled_cache, get_cache_info, jit, node
 
 __all__ = [
     # Decorators
     "jit",
     "node",
+    "trace",
     "replica",
     # Control flow
     "cond",

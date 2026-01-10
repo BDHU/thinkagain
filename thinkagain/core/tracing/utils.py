@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import functools
 import inspect
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
 
 from ..graph.graph import Graph, TracedValue
-from .context import TraceContext
+
+if TYPE_CHECKING:
+    from .context import TraceContext
 
 
 def get_source_location(obj: Any) -> str | None:
@@ -56,6 +58,11 @@ def _contains_traced_value(
     if hasattr(value, "__dict__"):
         return _contains_traced_value(vars(value), ctx, _seen=_seen, _depth=_depth - 1)
     return False
+
+
+def contains_traced_value(value: Any, ctx: TraceContext, *, depth: int = 4) -> bool:
+    """Check if a value contains TracedValue from the given context."""
+    return _contains_traced_value(value, ctx, _seen=set(), _depth=depth)
 
 
 def captures_traced_value(fn: Callable, ctx: TraceContext | None) -> bool:
