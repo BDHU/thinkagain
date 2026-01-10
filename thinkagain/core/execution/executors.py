@@ -16,6 +16,33 @@ if TYPE_CHECKING:
     from .executor import ExecutionContext
 
 
+async def _execute_branch(
+    branch: Any, ctx: ExecutionContext, operand_args: tuple
+) -> Any:
+    from ..graph.graph import Graph
+
+    if isinstance(branch, Graph):
+        graph_args = ctx.prepare_subgraph_args(branch, operand_args)
+        return await branch.execute(
+            *graph_args,
+            parent_values=ctx.capture_values,
+            service_provider=ctx.service_provider,
+        )
+    return await maybe_await(branch, *operand_args)
+
+
+def _expect_pair(result: Any, *, context: str) -> tuple[Any, Any]:
+    if not isinstance(result, tuple) or len(result) != 2:
+        raise RuntimeError(f"{context} must return (carry, output), got {result!r}")
+    return result
+
+
+def _select_branch(index: Any, branches: tuple) -> Any:
+    if not isinstance(index, int) or index < 0 or index >= len(branches):
+        raise IndexError(f"switch index {index} out of range [0, {len(branches)})")
+    return branches[index]
+
+
 # ---------------------------------------------------------------------------
 # Call Executor
 # ---------------------------------------------------------------------------
@@ -57,20 +84,11 @@ class CondExecutor:
     false_branch: Any  # Graph | Callable
 
     async def execute(self, args: tuple, kwargs: dict, ctx: ExecutionContext) -> Any:
-        from .graph import Graph
-
         operand = args[0]
         pred_result = await maybe_await(self.pred_fn, operand)
         branch = self.true_branch if pred_result else self.false_branch
 
-        if isinstance(branch, Graph):
-            graph_args = ctx.prepare_subgraph_args(branch, (operand,))
-            return await branch.execute(
-                *graph_args,
-                parent_values=ctx.capture_values,
-                service_provider=ctx.service_provider,
-            )
-        return await maybe_await(branch, operand)
+        return await _execute_branch(branch, ctx, (operand,))
 
     def display_name(self) -> str:
         return "cond"
@@ -89,20 +107,10 @@ class WhileExecutor:
     body_fn: Any  # Graph | Callable
 
     async def execute(self, args: tuple, kwargs: dict, ctx: ExecutionContext) -> Any:
-        from .graph import Graph
-
         operand = args[0]
 
         while await maybe_await(self.cond_fn, operand):
-            if isinstance(self.body_fn, Graph):
-                graph_args = ctx.prepare_subgraph_args(self.body_fn, (operand,))
-                operand = await self.body_fn.execute(
-                    *graph_args,
-                    parent_values=ctx.capture_values,
-                    service_provider=ctx.service_provider,
-                )
-            else:
-                operand = await maybe_await(self.body_fn, operand)
+            operand = await _execute_branch(self.body_fn, ctx, (operand,))
         return operand
 
     def display_name(self) -> str:
@@ -121,27 +129,12 @@ class ScanExecutor:
     body_fn: Any  # Graph | Callable
 
     async def execute(self, args: tuple, kwargs: dict, ctx: ExecutionContext) -> Any:
-        from .graph import Graph
-
         carry, xs = args[0], args[1]
         outputs = []
 
         for x in xs:
-            if isinstance(self.body_fn, Graph):
-                graph_args = ctx.prepare_subgraph_args(self.body_fn, (carry, x))
-                result = await self.body_fn.execute(
-                    *graph_args,
-                    parent_values=ctx.capture_values,
-                    service_provider=ctx.service_provider,
-                )
-            else:
-                result = await maybe_await(self.body_fn, carry, x)
-
-            if not isinstance(result, tuple) or len(result) != 2:
-                raise RuntimeError(
-                    f"scan body must return (carry, output) tuple, got {result!r}"
-                )
-            carry, output = result
+            result = await _execute_branch(self.body_fn, ctx, (carry, x))
+            carry, output = _expect_pair(result, context="scan body")
             outputs.append(output)
 
         return (carry, outputs)
@@ -163,26 +156,10 @@ class SwitchExecutor:
     branches: tuple  # tuple[Graph | Callable, ...] - tuple for frozen dataclass
 
     async def execute(self, args: tuple, kwargs: dict, ctx: ExecutionContext) -> Any:
-        from .graph import Graph
-
         operand = args[0]
         index = await maybe_await(self.index_fn, operand)
-
-        if not isinstance(index, int) or index < 0 or index >= len(self.branches):
-            raise IndexError(
-                f"switch index {index} out of range [0, {len(self.branches)})"
-            )
-
-        branch = self.branches[index]
-
-        if isinstance(branch, Graph):
-            graph_args = ctx.prepare_subgraph_args(branch, (operand,))
-            return await branch.execute(
-                *graph_args,
-                parent_values=ctx.capture_values,
-                service_provider=ctx.service_provider,
-            )
-        return await maybe_await(branch, operand)
+        branch = _select_branch(index, self.branches)
+        return await _execute_branch(branch, ctx, (operand,))
 
     def display_name(self) -> str:
         return "switch"

@@ -1,6 +1,6 @@
-"""Distributed execution hook for replicated functions.
+"""Distributed execution hook for replicated classes.
 
-This module provides the hook that intercepts calls to @replicate functions
+This module provides the hook that intercepts calls to @replica classes
 and routes them through the replica pool system when a mesh context is active.
 """
 
@@ -16,34 +16,34 @@ async def distributed_execution_hook(
     kwargs: dict,
     node_id: int | None = None,
 ) -> tuple[bool, Any]:
-    """Hook to handle distributed execution of replicated functions.
+    """Hook to handle distributed execution of replicated classes.
 
     Args:
-        fn: Function being executed
+        fn: Class being executed
         args: Positional arguments
         kwargs: Keyword arguments
         node_id: Optional node ID
 
     Returns:
         (handled, result) tuple:
-        - If fn has _distribution_config and mesh is active: (True, result)
+        - If fn has _replica_config and mesh is active: (True, result)
         - Otherwise: (False, None) to continue with normal execution
     """
-    # Check if function is replicated
-    if not hasattr(fn, "_distribution_config"):
+    # Check if class is a replica
+    if not hasattr(fn, "_replica_config"):
         return (False, None)
 
     from .mesh import get_current_mesh
     from .replication.pool import ensure_deployed, get_or_create_pool
 
-    config = fn._distribution_config
+    config = fn._replica_config
     mesh = get_current_mesh()
 
     if mesh is None:
         # No mesh context - execute locally
         return (False, None)
 
-    # Get or create pool for this function
+    # Get or create pool for this replica class
     pool = get_or_create_pool(fn, config, mesh)
 
     # Ensure deployed (auto-deploy with n=1 if needed)

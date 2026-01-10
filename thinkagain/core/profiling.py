@@ -1,6 +1,6 @@
 """Transparent profiling for distributed execution.
 
-Tracks execution metrics for @jit functions and @replicate calls to enable
+Tracks execution metrics for @jit functions and @replica calls to enable
 automatic optimization and capacity planning.
 """
 
@@ -24,10 +24,10 @@ _profiler_lock = threading.Lock()
 
 
 class ExecutionProfiler:
-    """Tracks execution patterns for @jit and @replicate functions.
+    """Tracks execution patterns for @jit and @replica functions.
 
     This profiler captures:
-    1. Which @jit functions call which @replicate functions
+    1. Which @jit functions call which @replica functions
     2. Fanout ratios (average calls per execution)
     3. Execution times for nodes and replicated functions
     4. Call counts for capacity planning
@@ -60,7 +60,7 @@ class ExecutionProfiler:
         self._lock = threading.Lock()
 
         # Start time
-        self._start_time = time.time()
+        self._start_time = time.perf_counter()
 
     def record_node_start(self, node_name: str) -> None:
         """Record that a node started executing."""
@@ -86,7 +86,7 @@ class ExecutionProfiler:
         """Record a replicated function call.
 
         Args:
-            replicate_name: Name of the @replicate function
+            replicate_name: Name of the @replica function
             caller_node: Name of the calling @jit function (None if external)
             duration: Optional execution time in seconds
         """
@@ -102,7 +102,7 @@ class ExecutionProfiler:
                 self._execution_times[replicate_name].append(duration)
 
     def get_dependency_graph(self) -> dict[str, set[str]]:
-        """Get the @jit -> @replicate dependency graph.
+        """Get the @jit -> @replica dependency graph.
 
         Returns:
             Dict mapping node names to the set of replicate functions they call
@@ -179,7 +179,7 @@ class ExecutionProfiler:
 
     def get_elapsed_time(self) -> float:
         """Get elapsed time since profiler started (seconds)."""
-        return time.time() - self._start_time
+        return time.perf_counter() - self._start_time
 
     def reset(self) -> None:
         """Reset all profiling data."""
@@ -189,7 +189,7 @@ class ExecutionProfiler:
             self._node_executions.clear()
             self._execution_times.clear()
             self._replicate_calls.clear()
-            self._start_time = time.time()
+            self._start_time = time.perf_counter()
 
     def summary(self) -> dict[str, Any]:
         """Get a complete summary of profiling data."""
@@ -234,12 +234,14 @@ def disable_profiling() -> None:
 
 def is_profiling_enabled() -> bool:
     """Check if profiling is currently enabled."""
-    return _profiler is not None
+    with _profiler_lock:
+        return _profiler is not None
 
 
 def get_profiler() -> ExecutionProfiler | None:
     """Get the active profiler instance, if any."""
-    return _profiler
+    with _profiler_lock:
+        return _profiler
 
 
 @contextmanager
@@ -279,12 +281,12 @@ def node_context(node_name: str):
 
     token = _current_node.set(node_name)
     profiler.record_node_start(node_name)
-    start_time = time.time()
+    start_time = time.perf_counter()
 
     try:
         yield
     finally:
-        duration = time.time() - start_time
+        duration = time.perf_counter() - start_time
         profiler.record_node_end(node_name, duration)
         _current_node.reset(token)
 

@@ -5,15 +5,16 @@ from dataclasses import dataclass
 
 import thinkagain
 from thinkagain.core.errors import TracingError
-from thinkagain.core.graph import Node, OutputKind
-from thinkagain.core.executors import (
+from thinkagain.core.graph.graph import Node, OutputKind
+from thinkagain.core.execution.executors import (
     CallExecutor,
     CondExecutor,
     WhileExecutor,
     ScanExecutor,
     SwitchExecutor,
 )
-from thinkagain.core.tracing import _compiled_cache, Graph
+from thinkagain.core.tracing.tracer import _compiled_cache
+from thinkagain.core.graph.graph import Graph
 
 
 # =============================================================================

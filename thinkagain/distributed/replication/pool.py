@@ -7,17 +7,17 @@ import warnings
 from abc import ABC, abstractmethod
 from typing import Any, Callable
 
-from ...core.runtime import maybe_await
+from ...core.execution.replica import ReplicaConfig
+from ...core.execution.runtime import maybe_await
 from ..mesh import Mesh
-from .replicate import DistributionConfig
 
 
 # Thread-local storage for active pools
 _pools = threading.local()
 
 
-def _get_pools() -> dict[tuple[int, int], "ReplicaPool"]:
-    """Get thread-local pool registry keyed by (mesh_id, fn_id)."""
+def _get_pools() -> dict[tuple[object, ...], "ReplicaPool"]:
+    """Get thread-local pool registry keyed by a pool-specific tuple."""
     if not hasattr(_pools, "registry"):
         _pools.registry = {}
     return _pools.registry
@@ -98,13 +98,23 @@ class RemoteReplica(Replica):
 class ReplicaPool:
     """Pool of replicas for load-balanced execution."""
 
-    def __init__(self, fn: Callable, config: DistributionConfig, mesh: Mesh):
+    def __init__(
+        self,
+        fn: Callable,
+        config: ReplicaConfig,
+        mesh: Mesh,
+        *,
+        create_local: Callable[[], Replica] | None = None,
+        create_remote: Callable[[str], Replica] | None = None,
+    ):
         """Initialize replica pool.
 
         Args:
             fn: Function to replicate
             config: Distribution configuration
             mesh: Mesh providing resources
+            create_local: Optional factory to create a local replica instance
+            create_remote: Optional factory to create a remote replica instance
         """
         self.fn = fn
         self.config = config
@@ -113,6 +123,8 @@ class ReplicaPool:
         self._current_index = 0
         self._endpoint_index = 0
         self._deployed = False
+        self._create_local = create_local
+        self._create_remote = create_remote
 
     def _get_next_endpoint(self) -> str:
         """Get next available endpoint from mesh (round-robin).
@@ -134,6 +146,30 @@ class ReplicaPool:
         endpoint = endpoints[self._endpoint_index % len(endpoints)]
         self._endpoint_index += 1
         return endpoint
+
+    async def _create_local_replica(self) -> Replica:
+        if self._create_local is not None:
+            return await maybe_await(self._create_local)
+        if self.config.setup:
+            state = await maybe_await(self.config.setup)
+            return LocalReplica(self.fn, state)
+        return LocalReplica(self.fn, None)
+
+    async def _create_remote_replica(self) -> Replica:
+        endpoint = self._get_next_endpoint()
+        if self._create_remote is not None:
+            return await maybe_await(self._create_remote, endpoint)
+        return RemoteReplica(endpoint)
+
+    async def _create_replica(self) -> Replica:
+        if self.config.backend == "local":
+            return await self._create_local_replica()
+        if self.config.backend == "grpc":
+            return await self._create_remote_replica()
+        raise ValueError(
+            f"Unknown backend: {self.config.backend}. "
+            f"Supported backends: 'local', 'grpc'"
+        )
 
     async def deploy(self, n: int = 1):
         """Deploy n instances of the function.
@@ -163,30 +199,8 @@ class ReplicaPool:
                 f"Mesh has {self.mesh.total_gpus} GPUs total, max {max_n} instances."
             )
 
-        # Create instances based on backend
-        for i in range(n):
-            if self.config.backend == "local":
-                # Local execution
-                if self.config.setup:
-                    # Run setup to create state
-                    state = await maybe_await(self.config.setup)
-                    replica = LocalReplica(self.fn, state)
-                else:
-                    # No setup, stateless replica
-                    replica = LocalReplica(self.fn, None)
-
-            elif self.config.backend == "grpc":
-                # Remote execution via gRPC
-                # Note: setup() is run on the server side, not here
-                endpoint = self._get_next_endpoint()
-                replica = RemoteReplica(endpoint)
-
-            else:
-                raise ValueError(
-                    f"Unknown backend: {self.config.backend}. "
-                    f"Supported backends: 'local', 'grpc'"
-                )
-
+        for _ in range(n):
+            replica = await self._create_replica()
             self.replicas.append(replica)
 
         self._deployed = True
@@ -228,9 +242,7 @@ class ReplicaPool:
         return f"ReplicaPool({fn_name}, {self.instance_count} instances, {status})"
 
 
-def get_or_create_pool(
-    fn: Callable, config: DistributionConfig, mesh: Mesh
-) -> ReplicaPool:
+def get_or_create_pool(fn: Callable, config: ReplicaConfig, mesh: Mesh) -> ReplicaPool:
     """Get existing pool or create new one.
 
     Args:
@@ -246,6 +258,38 @@ def get_or_create_pool(
 
     if pool_key not in pools:
         pool = ReplicaPool(fn, config, mesh)
+        pools[pool_key] = pool
+
+    return pools[pool_key]
+
+
+def get_or_create_handle_pool(handle: Any, mesh: Mesh) -> ReplicaPool:
+    """Get existing pool or create a new pool for a replica handle.
+
+    Args:
+        handle: ReplicaHandle to execute
+        mesh: Mesh providing resources
+
+    Returns:
+        ReplicaPool for the handle
+    """
+    pools = _get_pools()
+    pool_key = (id(mesh), hash(handle), "handle")
+
+    if pool_key not in pools:
+
+        def _create_local() -> Replica:
+            instance = handle.replica_class(
+                *handle.init_args, **dict(handle.init_kwargs)
+            )
+            return LocalReplica(instance, None)
+
+        pool = ReplicaPool(
+            fn=handle.replica_class,
+            config=handle.config,
+            mesh=mesh,
+            create_local=_create_local,
+        )
         pools[pool_key] = pool
 
     return pools[pool_key]

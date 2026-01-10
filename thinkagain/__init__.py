@@ -23,7 +23,6 @@ from .core.profiling import (
     profile,
 )
 from .distributed import Mesh, MeshNode, get_current_mesh
-from .distributed.replication import replicate
 
 __version__ = "0.3.0"
 
@@ -52,8 +51,6 @@ __all__ = [
     "Mesh",
     "MeshNode",
     "get_current_mesh",
-    # Distributed - Replication
-    "replicate",
     # Profiling
     "enable_profiling",
     "disable_profiling",

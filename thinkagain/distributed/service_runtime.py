@@ -13,9 +13,9 @@ from typing import TYPE_CHECKING, Any
 from ..core.tracing import register_tracing_plugin
 
 if TYPE_CHECKING:
-    from ..core.executor import ExecutionContext
-    from ..core.replica import ReplicaHandle
-    from ..core.tracing import TraceContext
+    from ..core.execution.executor import ExecutionContext
+    from ..core.execution.replica import ReplicaHandle
+    from ..core.tracing.context import TraceContext
 
 
 # ---------------------------------------------------------------------------
@@ -25,37 +25,48 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class ServiceCallExecutor:
-    """Executor for service method calls.
+    """Executor for service calls.
 
     This executor is defined in the distributed module, not in core,
     demonstrating that new node types can be added without modifying
     the core execution infrastructure.
+
+    The handle is passed as the first argument, and all replicas are
+    invoked via their __call__ method.
     """
 
-    handle_input_index: int
-    method_name: str
-
     async def execute(self, args: tuple, kwargs: dict, ctx: ExecutionContext) -> Any:
-        """Execute a service method call."""
+        """Execute a service call.
+
+        Args:
+            args: (handle, *call_args) - handle is first arg, rest are call args
+            kwargs: Keyword arguments for the call
+            ctx: Execution context
+
+        Returns:
+            Result from the service
+        """
         # Get the service provider from context
         if ctx.service_provider is None:
-            handle = ctx.inputs[self.handle_input_index]
+            handle = args[0] if args else None
+            service_desc = f"{handle.replica_class_name}" if handle else "service"
             raise RuntimeError(
-                f"Service call to {handle.replica_class_name}.{self.method_name} "
+                f"Service call to {service_desc} "
                 f"requires service provider. Execute pipelines with services "
                 f"inside 'with mesh:' block."
             )
 
-        # Get the replica handle from inputs
-        handle = ctx.inputs[self.handle_input_index]
+        # Extract handle from first arg, rest are call args
+        handle = args[0]
+        call_args = args[1:]
 
         # Delegate to service provider (decoupled from mesh)
         return await ctx.service_provider.execute_service_call(
-            handle, self.method_name, args, kwargs
+            handle, call_args, kwargs
         )
 
     def display_name(self) -> str:
-        return f"service.{self.method_name}"
+        return "service"
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +78,7 @@ class ServiceTracingHook:
     """Hook that integrates service calls into graph tracing.
 
     This class implements the TracingHook protocol and is registered globally
-    when a mesh context is active, allowing service method calls to be properly
+    when a mesh context is active, allowing service calls to be properly
     recorded in the computation graph.
     """
 
@@ -79,34 +90,40 @@ class ServiceTracingHook:
         """
         self.trace_ctx = trace_ctx
 
-    async def record_call(
-        self, method_name: str, args: tuple, kwargs: dict, handle: ReplicaHandle
-    ) -> Any:
-        """Record a service method call during tracing.
+    async def record_call(self, args: tuple, kwargs: dict, handle) -> Any:
+        """Record a service call during tracing.
 
         Args:
-            method_name: Name of the method being called
-            args: Positional arguments
-            kwargs: Keyword arguments
-            handle: Replica handle being called
+            args: Positional arguments for __call__
+            kwargs: Keyword arguments for __call__
+            handle: Handle being called (ReplicaHandle or TracedValue)
 
         Returns:
             TracedValue representing the future result of this call
         """
-        # Get or register the handle's input index
-        handle_idx = self.get_resource_index(handle)
+        # Import here to avoid circular dependency
+        from ..core.graph.graph import TracedValue
+
+        # Handle can be either a ReplicaHandle (closure) or TracedValue (parameter)
+        # In either case, it gets normalized to a ref by add_node
+        if isinstance(handle, TracedValue):
+            # Handle is a traced input - will be normalized to InputRef or NodeRef
+            handle_ref = handle
+        else:
+            # Handle is a ReplicaHandle (closure) - register as resource
+            # We need to pass it as-is to add_node, which will call _normalize
+            # But for the executor, we need just the ReplicaHandle itself
+            handle_ref = handle
 
         # Create executor for this service call
-        executor = ServiceCallExecutor(
-            handle_input_index=handle_idx,
-            method_name=method_name,
-        )
+        # The executor will store the handle as first positional arg
+        executor = ServiceCallExecutor()
+
+        # Prepend handle to args so it's normalized properly
+        full_args = (handle_ref,) + args
 
         # Record the node in the graph using the universal add_node
-        node_id = self.trace_ctx.add_node(executor, args, kwargs)
-
-        # Import here to avoid circular dependency
-        from ..core.graph import TracedValue
+        node_id = self.trace_ctx.add_node(executor, full_args, kwargs)
 
         return TracedValue(node_id, self.trace_ctx)
 
@@ -131,7 +148,7 @@ class ServiceExecutionProvider:
     """Provider that executes service calls via mesh infrastructure.
 
     This class implements the ServiceProvider protocol and handles the actual
-    execution of service method calls by routing them to deployed service
+    execution of service calls by routing them to deployed service
     instances on the mesh.
     """
 
@@ -144,18 +161,17 @@ class ServiceExecutionProvider:
         self.mesh = mesh
 
     async def execute_service_call(
-        self, handle: ReplicaHandle, method_name: str, args: tuple, kwargs: dict
+        self, handle: ReplicaHandle, args: tuple, kwargs: dict
     ) -> Any:
-        """Execute a service method call.
+        """Execute a service call.
 
         Args:
             handle: Replica handle identifying the service
-            method_name: Name of method to call
-            args: Positional arguments
-            kwargs: Keyword arguments
+            args: Positional arguments for __call__
+            kwargs: Keyword arguments for __call__
 
         Returns:
-            Result from the service method
+            Result from the service
 
         Raises:
             RuntimeError: If called outside mesh context
@@ -167,11 +183,9 @@ class ServiceExecutionProvider:
         replica = self.mesh.get_service_replica(handle)
 
         # Import here to avoid circular dependency at module level
-        from ..core.runtime import maybe_await
 
-        # Call the method
-        method = getattr(replica, method_name)
-        return await maybe_await(method, *args, **kwargs)
+        # Call the replica's execute method for consistent interface
+        return await replica.execute(*args, **kwargs)
 
 
 # ---------------------------------------------------------------------------

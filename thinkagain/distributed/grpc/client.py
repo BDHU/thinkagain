@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import pickle
+import cloudpickle as pickle
 from typing import Any
 
 import grpc

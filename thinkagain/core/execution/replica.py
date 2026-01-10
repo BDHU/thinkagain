@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import cloudpickle
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -18,6 +19,7 @@ class ReplicaConfig:
 
     gpus: int | None = None
     backend: str = "local"
+    setup: Any | None = None  # Optional setup function for initialization
 
 
 # ---------------------------------------------------------------------------
@@ -32,44 +34,83 @@ class ReplicaHandle:
     A handle is a lightweight reference to a replica class and its initialization
     arguments. The actual replica instances are created lazily when the handle is
     deployed on a mesh.
+
+    The class is stored directly (not by name), allowing locally-defined classes
+    to work seamlessly. Serialization uses cloudpickle for full class definition
+    capture.
     """
 
-    replica_class_module: str
-    replica_class_name: str
+    replica_class: type
     init_args: tuple
-    init_kwargs: tuple  # tuple of tuples for hashability
+    init_kwargs: tuple[tuple[str, Any], ...]  # tuple of tuples for hashability
     config: ReplicaConfig
     _uuid: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     def __hash__(self):
-        """Hash by content and UUID for unique identity."""
-        return hash(
+        """Hash by UUID for unique identity.
+
+        Note: We use UUID only since the class itself isn't hashable.
+        This means different handles to the same class with same args
+        will have different hashes, which is correct for replica identity.
+        """
+        return hash(self._uuid)
+
+    @property
+    def replica_class_name(self) -> str:
+        """Get the class name for debugging/error messages."""
+        return self.replica_class.__qualname__
+
+    def __reduce__(self):
+        """Custom pickle protocol using cloudpickle for the class.
+
+        This allows serialization of locally-defined classes, closures,
+        and other Python constructs that standard pickle cannot handle.
+        """
+        return (
+            _reconstruct_handle,
             (
-                self.replica_class_module,
-                self.replica_class_name,
+                cloudpickle.dumps(self.replica_class),
                 self.init_args,
                 self.init_kwargs,
+                self.config,
                 self._uuid,
-            )
+            ),
         )
 
-    def resolve_class(self) -> type:
-        """Resolve class reference at runtime.
+    async def __call__(self, *args, **kwargs):
+        """Call the replica directly via its __call__ method.
 
-        Returns:
-            The actual replica class
+        This allows handles to be used like: result = await handle(input)
+        which delegates to the replica's __call__ method.
         """
-        import importlib
+        bound_method = BoundReplicaMethod(self)
+        return await bound_method(*args, **kwargs)
 
-        module = importlib.import_module(self.replica_class_module)
-        return getattr(module, self.replica_class_name)
 
-    def __getattr__(self, method_name: str):
-        """Access replica methods.
+def _reconstruct_handle(class_bytes, init_args, init_kwargs, config, uuid_str):
+    """Reconstruct ReplicaHandle after unpickling.
 
-        Returns a BoundReplicaMethod that can be called during tracing or execution.
-        """
-        return BoundReplicaMethod(self, method_name)
+    This function is called by pickle when deserializing a ReplicaHandle.
+    It uses cloudpickle to restore the class definition.
+
+    Args:
+        class_bytes: Cloudpickled class definition
+        init_args: Initialization arguments
+        init_kwargs: Initialization keyword arguments
+        config: ReplicaConfig
+        uuid_str: UUID string for handle identity
+
+    Returns:
+        Reconstructed ReplicaHandle
+    """
+    replica_class = cloudpickle.loads(class_bytes)
+    return ReplicaHandle(
+        replica_class=replica_class,
+        init_args=init_args,
+        init_kwargs=init_kwargs,
+        config=config,
+        _uuid=uuid_str,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -78,32 +119,34 @@ class ReplicaHandle:
 
 
 class BoundReplicaMethod:
-    """A bound method on a replica handle.
+    """A bound __call__ method on a replica handle.
 
-    This is returned when accessing a method on a ReplicaHandle (e.g., llm.generate).
+    This is returned when calling a ReplicaHandle (e.g., await llm(prompt)).
     When called, it delegates to the registered tracing hook if one exists.
     """
 
-    def __init__(self, handle: ReplicaHandle, method_name: str):
+    def __init__(self, handle: ReplicaHandle):
         self.handle = handle
-        self.method_name = method_name
 
     async def __call__(self, *args, **kwargs):
-        """Call the replica method.
+        """Call the replica's __call__ method.
 
         Delegates to the registered tracing hook, which may be provided by
         the distributed module or other replica runtimes.
+
+        The handle can be either a ReplicaHandle (when used as closure/global)
+        or a TracedValue (when passed as a function parameter).
         """
         hook = _get_replica_hook()
         if hook is None:
             raise RuntimeError(
-                f"Replica method {self.method_name} called without replica runtime. "
-                f"Either:\n"
-                f"  1. Call inside @jit function executed within 'with mesh:' block\n"
-                f"  2. Register a replica runtime via register_replica_hook()"
+                "Replica called without replica runtime. "
+                "Either:\n"
+                "  1. Call inside @jit function executed within 'with mesh:' block\n"
+                "  2. Register a replica runtime via register_replica_hook()"
             )
 
-        return await hook.record_call(self.method_name, args, kwargs, self.handle)
+        return await hook.record_call(args, kwargs, self.handle)
 
 
 # ---------------------------------------------------------------------------
@@ -143,24 +186,35 @@ def _get_replica_hook() -> Any:
 # ---------------------------------------------------------------------------
 
 
-def replica(gpus: int | None = None, backend: str = "local"):
+def replica(
+    gpus: int | None = None,
+    backend: str = "local",
+    setup: Any | None = None,
+):
     """Decorator to mark a class as a stateful replica.
 
     Replicas are long-lived, stateful components that can be instantiated across
     multiple instances for parallel execution. They are deployed on a mesh and
-    called from @jit pipelines.
+    called from @jit pipelines, or served directly with python -m thinkagain.serve.
+
+    The replica class MUST define a __call__ method that serves as the execution
+    entry point. This standardizes the interface: handle(input) calls the __call__ method.
 
     Args:
         gpus: Number of GPUs required per replica instance (None for CPU-only)
         backend: Execution backend ("local" or "grpc")
+        setup: Optional function to initialize state per instance.
+               If provided, the setup function is called once per instance,
+               and its return value is passed as the first argument to the
+               replicated function.
 
-    Example:
+    Example (stateful class with .init()):
         @replica(gpus=1)
         class LLM:
             def __init__(self, model: str):
                 self.engine = load_model(model)
 
-            async def generate(self, prompt: str) -> str:
+            async def __call__(self, prompt: str) -> str:
                 return await self.engine.generate(prompt)
 
         # Create handle
@@ -169,15 +223,28 @@ def replica(gpus: int | None = None, backend: str = "local"):
         # Use in pipeline
         @jit
         async def pipeline(query: str) -> str:
-            return await llm.generate(query)
+            return await llm(query)
 
         # Execute with mesh (auto-deploys)
         with mesh:
             result = await pipeline("hello")
+
+    Example (direct serving):
+        @replica(backend="grpc")
+        class TextProcessor:
+            def __init__(self):
+                self.count = 0
+
+            async def __call__(self, text: str) -> str:
+                self.count += 1
+                return text.upper()
+
+        # Serve it:
+        # python -m thinkagain.serve my_module:TextProcessor --port 8000
     """
 
     def decorator(cls):
-        config = ReplicaConfig(gpus=gpus, backend=backend)
+        config = ReplicaConfig(gpus=gpus, backend=backend, setup=setup)
 
         @classmethod
         def init(cls_, *args, **kwargs) -> ReplicaHandle:
@@ -194,8 +261,8 @@ def replica(gpus: int | None = None, backend: str = "local"):
                 outside and pass them as pipeline inputs or closures.
             """
             # Check if we're inside tracing (import here to avoid circular dep)
-            from .tracing import is_tracing
-            from .errors import TracingError
+            from ..tracing import is_tracing
+            from ..errors import TracingError
 
             if is_tracing():
                 raise TracingError(
@@ -204,8 +271,7 @@ def replica(gpus: int | None = None, backend: str = "local"):
                 )
 
             return ReplicaHandle(
-                replica_class_module=cls_.__module__,
-                replica_class_name=cls_.__qualname__,
+                replica_class=cls_,
                 init_args=args,
                 init_kwargs=tuple(sorted(kwargs.items())),
                 config=config,
