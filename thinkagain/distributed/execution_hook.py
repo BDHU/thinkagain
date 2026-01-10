@@ -7,11 +7,11 @@ and routes them through the replica pool system when a mesh context is active.
 from __future__ import annotations
 
 import time
-from typing import Any, Callable
+from typing import Any
 
 
 async def distributed_execution_hook(
-    fn: Callable,
+    fn: Any,  # Can be a replica class or regular callable
     args: tuple,
     kwargs: dict,
     node_id: int | None = None,

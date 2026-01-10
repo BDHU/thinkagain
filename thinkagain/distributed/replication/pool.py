@@ -17,7 +17,12 @@ _pools = threading.local()
 
 
 def _get_pools() -> dict[tuple[object, ...], "ReplicaPool"]:
-    """Get thread-local pool registry keyed by a pool-specific tuple."""
+    """Get thread-local pool registry keyed by pool-specific tuple.
+
+    Keys can be:
+    - (mesh_id, fn_id): 2-tuple for function pools
+    - (mesh_id, handle_hash, "handle"): 3-tuple for replica handle pools
+    """
     if not hasattr(_pools, "registry"):
         _pools.registry = {}
     return _pools.registry
@@ -100,7 +105,7 @@ class ReplicaPool:
 
     def __init__(
         self,
-        fn: Callable,
+        fn: Any,  # Can be a function or replica class
         config: ReplicaConfig,
         mesh: Mesh,
         *,
@@ -242,7 +247,7 @@ class ReplicaPool:
         return f"ReplicaPool({fn_name}, {self.instance_count} instances, {status})"
 
 
-def get_or_create_pool(fn: Callable, config: ReplicaConfig, mesh: Mesh) -> ReplicaPool:
+def get_or_create_pool(fn: Any, config: ReplicaConfig, mesh: Mesh) -> ReplicaPool:
     """Get existing pool or create new one.
 
     Args:
@@ -306,11 +311,12 @@ async def ensure_deployed(pool: ReplicaPool):
         await pool.deploy(n=1)
 
 
-def get_all_pools() -> dict[tuple[int, int], ReplicaPool]:
+def get_all_pools() -> dict[tuple[object, ...], ReplicaPool]:
     """Get all active pools (for debugging/monitoring).
 
     Returns:
-        Dictionary of (mesh_id, fn_id) -> ReplicaPool
+        Dictionary of pool_key -> ReplicaPool
+        Keys can be (mesh_id, fn_id) or (mesh_id, handle_hash, "handle")
     """
     return _get_pools().copy()
 

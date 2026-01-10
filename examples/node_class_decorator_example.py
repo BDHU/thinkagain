@@ -70,7 +70,7 @@ async def pipeline_with_conditional(state: State) -> State:
     add_large = Adder(20)
 
     # Use different adders based on state value
-    return await thinkagain.cond(
+    return await thinkagain.cond(  # type: ignore[return-value]
         lambda s: s.value < 10,
         add_large,  # Add more to small values
         add_small,  # Add less to large values

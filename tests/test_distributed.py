@@ -134,7 +134,7 @@ def test_replica_basic():
     assert BasicProcessor._replica_config.backend == "local"
 
     # Create handle
-    handle = BasicProcessor.init(2)
+    handle = BasicProcessor.init(2)  # type: ignore[attr-defined]
     assert isinstance(handle, ta.ReplicaHandle)
 
 
@@ -144,7 +144,7 @@ def test_replica_with_gpus():
     assert config.gpus == 4
 
     # Create handle
-    handle = GpuProcessor.init("test prompt")
+    handle = GpuProcessor.init("test prompt")  # type: ignore[attr-defined]
     assert isinstance(handle, ta.ReplicaHandle)
     assert handle.config.gpus == 4
 
@@ -165,7 +165,7 @@ def test_replica_class_with_call():
     assert GrpcProcessor._replica_config.backend == "grpc"
 
     # Create handle
-    handle = GrpcProcessor.init()
+    handle = GrpcProcessor.init()  # type: ignore[attr-defined]  # type: ignore[attr-defined]
     assert isinstance(handle, ta.ReplicaHandle)
 
 
@@ -173,7 +173,7 @@ def test_replica_class_with_call():
 async def test_replica_class_in_jit_pipeline():
     """Test that @replica decorated classes can be used inside @jit pipelines."""
     # Create handle outside @jit
-    processor = BasicProcessor.init(2)
+    processor = BasicProcessor.init(2)  # type: ignore[attr-defined]
 
     @ta.jit
     async def pipeline(x: int) -> int:
@@ -192,7 +192,7 @@ async def test_replica_class_in_jit_pipeline():
 @pytest.mark.asyncio
 async def test_replica_execution():
     """Test basic replica execution with mesh."""
-    processor = BasicProcessor.init()
+    processor = BasicProcessor.init()  # type: ignore[attr-defined]  # type: ignore[attr-defined]
 
     @ta.jit
     async def pipeline(x: int) -> int:
@@ -209,7 +209,7 @@ async def test_replica_execution():
 @pytest.mark.asyncio
 async def test_replica_without_mesh():
     """Test replica works without mesh (fallback to local)."""
-    processor = BasicProcessor.init()
+    processor = BasicProcessor.init()  # type: ignore[attr-defined]  # type: ignore[attr-defined]
 
     @ta.jit
     async def pipeline(x: int) -> int:
@@ -225,7 +225,7 @@ async def test_replica_without_mesh():
 @pytest.mark.asyncio
 async def test_replica_multiple_calls():
     """Test multiple calls to replica."""
-    processor = BasicProcessor.init()
+    processor = BasicProcessor.init()  # type: ignore[attr-defined]  # type: ignore[attr-defined]
 
     @ta.jit
     async def pipeline(x: int) -> int:
@@ -242,7 +242,7 @@ async def test_replica_multiple_calls():
 @pytest.mark.asyncio
 async def test_replica_with_stateful_setup():
     """Test replica with setup (stateful execution)."""
-    processor = BasicProcessor.init(1)  # multiplier=1
+    processor = BasicProcessor.init(1)  # type: ignore[attr-defined]  # multiplier=1
 
     @ta.jit
     async def pipeline(x: int) -> int:
@@ -262,7 +262,7 @@ async def test_replica_with_stateful_setup():
 @pytest.mark.asyncio
 async def test_replica_async_setup():
     """Test replica with async methods."""
-    processor = BasicProcessor.init(2)
+    processor = BasicProcessor.init(2)  # type: ignore[attr-defined]
 
     @ta.jit
     async def pipeline(x: int) -> int:
@@ -284,7 +284,7 @@ async def test_mixed_replicas_and_regular_nodes():
     async def preprocess(x: int) -> int:
         return x + 1
 
-    processor = BasicProcessor.init(2)
+    processor = BasicProcessor.init(2)  # type: ignore[attr-defined]
 
     @ta.node
     async def postprocess(x: int) -> int:
@@ -321,7 +321,7 @@ async def test_profiling_context_manager():
 @pytest.mark.asyncio
 async def test_profiling_with_replica():
     """Test that profiling tracks execution with replicas."""
-    processor = ProfilingProcessor.init()
+    processor = ProfilingProcessor.init()  # type: ignore[attr-defined]  # type: ignore[attr-defined]
 
     @ta.jit
     async def pipeline(x: int) -> int:
@@ -366,7 +366,7 @@ async def test_locally_defined_replica():
             return self.count
 
     # Create handle
-    counter = LocalCounter.init(start=10)
+    counter = LocalCounter.init(start=10)  # type: ignore[attr-defined]
 
     # Use in pipeline
     @ta.jit
@@ -398,7 +398,7 @@ async def test_locally_defined_replica_serialization():
             return f"{self.prefix}: {text}"
 
     # Create handle
-    processor = LocalProcessor.init(prefix="TEST")
+    processor = LocalProcessor.init(prefix="TEST")  # type: ignore[attr-defined]
 
     # Serialize and deserialize
     serialized = pickle.dumps(processor)
@@ -425,7 +425,7 @@ async def test_locally_defined_replica_serialization():
 @pytest.mark.asyncio
 async def test_replica_handle_as_positional_arg():
     """Test that replica handles can be passed as positional arguments to @jit functions."""
-    processor = BasicProcessor.init(3)  # multiplier=3
+    processor = BasicProcessor.init(3)  # type: ignore[attr-defined]  # multiplier=3
 
     @ta.jit
     async def pipeline(handle, x: int) -> int:
@@ -442,7 +442,7 @@ async def test_replica_handle_as_positional_arg():
 @pytest.mark.asyncio
 async def test_replica_handle_as_kwarg():
     """Test that replica handles can be passed as keyword arguments to @jit functions."""
-    processor = BasicProcessor.init(4)  # multiplier=4
+    processor = BasicProcessor.init(4)  # type: ignore[attr-defined]  # multiplier=4
 
     @ta.jit
     async def pipeline(x: int, handle=None) -> int:
@@ -459,8 +459,8 @@ async def test_replica_handle_as_kwarg():
 @pytest.mark.asyncio
 async def test_multiple_replica_handles_as_args():
     """Test passing multiple replica handles as arguments."""
-    processor1 = BasicProcessor.init(2)  # multiplier=2
-    processor2 = BasicProcessor.init(3)  # multiplier=3
+    processor1 = BasicProcessor.init(2)  # type: ignore[attr-defined]  # multiplier=2
+    processor2 = BasicProcessor.init(3)  # type: ignore[attr-defined]  # multiplier=3
 
     @ta.jit
     async def pipeline(h1, h2, x: int) -> int:
@@ -480,7 +480,7 @@ async def test_multiple_replica_handles_as_args():
 @pytest.mark.asyncio
 async def test_replica_handle_mixed_closure_and_param():
     """Test mixing closure-captured handle with parameter handle."""
-    closure_processor = BasicProcessor.init(2)
+    closure_processor = BasicProcessor.init(2)  # type: ignore[attr-defined]
 
     @ta.jit
     async def pipeline(param_handle, x: int) -> int:
@@ -489,7 +489,7 @@ async def test_replica_handle_mixed_closure_and_param():
         result = await param_handle(result)
         return result
 
-    param_processor = BasicProcessor.init(5)
+    param_processor = BasicProcessor.init(5)  # type: ignore[attr-defined]
     mesh = ta.Mesh([ta.CpuDevice(4)])
 
     with mesh:
@@ -501,8 +501,8 @@ async def test_replica_handle_mixed_closure_and_param():
 @pytest.mark.asyncio
 async def test_replica_handle_caching_with_different_handles():
     """Test that graph caching works correctly with different handles passed as args."""
-    processor1 = BasicProcessor.init(2)
-    processor2 = BasicProcessor.init(10)
+    processor1 = BasicProcessor.init(2)  # type: ignore[attr-defined]
+    processor2 = BasicProcessor.init(10)  # type: ignore[attr-defined]
 
     @ta.jit
     async def pipeline(handle, x: int) -> int:

@@ -3,7 +3,7 @@
 These operators trace control flow (conditionals, loops) into the computation graph.
 """
 
-from typing import Callable, TypeVar
+from typing import Awaitable, Callable, TypeVar, Union
 
 from ..errors import TracingError
 from ..execution.executors import (
@@ -62,11 +62,11 @@ async def _maybe_trace(fn: Callable, input_count: int, ctx) -> Graph | Callable:
 
 
 async def cond(
-    pred_fn: Callable[[T], bool],
-    true_fn: Callable[[T], U],
-    false_fn: Callable[[T], U],
+    pred_fn: Union[Callable[[T], bool], Callable[[T], Awaitable[bool]]],
+    true_fn: Union[Callable[[T], U], Callable[[T], Awaitable[U]]],
+    false_fn: Union[Callable[[T], U], Callable[[T], Awaitable[U]]],
     operand: T,
-) -> U:
+) -> Union[U, TracedValue]:
     """Conditional execution for computation graphs.
 
     Inside @jit: Traced as a graph node
@@ -114,10 +114,10 @@ async def cond(
 
 
 async def while_loop(
-    cond_fn: Callable[[T], bool],
-    body_fn: Callable[[T], T],
+    cond_fn: Union[Callable[[T], bool], Callable[[T], Awaitable[bool]]],
+    body_fn: Union[Callable[[T], T], Callable[[T], Awaitable[T]]],
     init: T,
-) -> T:
+) -> Union[T, TracedValue]:
     """While loop for computation graphs.
 
     Inside @jit: Traced as a graph node
@@ -162,10 +162,10 @@ async def while_loop(
 
 
 async def scan(
-    fn: Callable[[T, U], tuple[T, U]],
+    fn: Union[Callable[[T, U], tuple[T, U]], Callable[[T, U], Awaitable[tuple[T, U]]]],
     init: T,
     xs: list[U],
-) -> tuple[T, list[U]]:
+) -> Union[tuple[T, list[U]], tuple[TracedValue, TracedValue]]:
     """Scan over a sequence (like reduce but returns all outputs).
 
     Most efficient control flow since iteration count is known at trace time.
@@ -216,10 +216,10 @@ async def scan(
 
 
 async def switch(
-    index_fn: Callable[[T], int],
-    branches: list[Callable[[T], U]],
+    index_fn: Union[Callable[[T], int], Callable[[T], Awaitable[int]]],
+    branches: list[Union[Callable[[T], U], Callable[[T], Awaitable[U]]]],
     operand: T,
-) -> U:
+) -> Union[U, TracedValue]:
     """Multi-way branch selection for computation graphs.
 
     Inside @jit: Traced as a graph node

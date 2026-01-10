@@ -11,7 +11,7 @@ This demonstrates the new design where:
 """
 
 import asyncio
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 # New JAX-style imports
 import thinkagain
@@ -22,15 +22,11 @@ class RAGState:
     """State for RAG pipeline - plain dataclass, no Context wrapper!"""
 
     query: str
-    documents: list[str] = None
+    documents: list[str] = field(default_factory=list)
     answer: str = ""
     quality: float = 0.0
     retrieval_attempt: int = 0
     refinements: int = 0
-
-    def __post_init__(self):
-        if self.documents is None:
-            self.documents = []
 
 
 # ============================================================================
@@ -186,7 +182,7 @@ async def jit_pipeline(state: RAGState) -> RAGState:
     state = await retrieve_docs(state)
 
     # Must use cond() inside @jit, not Python if
-    state = await thinkagain.cond(
+    state = await thinkagain.cond(  # type: ignore[assignment]
         lambda s: len(s.documents) > 2,  # Predicate
         rerank_docs,  # True branch
         lambda s: s,  # False branch (identity)
@@ -224,7 +220,7 @@ async def self_correcting_rag_jit(state: RAGState) -> RAGState:
         s = await critique_answer(s)
         return s
 
-    state = await thinkagain.while_loop(should_continue, retry_body, state)
+    state = await thinkagain.while_loop(should_continue, retry_body, state)  # type: ignore[assignment]
     return state
 
 
@@ -278,7 +274,7 @@ async def batch_process(queries: list[str]) -> list[str]:
         return count, result
 
     final_count, results = await thinkagain.scan(process_one, init=0, xs=queries)
-    return results
+    return results  # type: ignore[return-value]
 
 
 # ============================================================================

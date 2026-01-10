@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import thinkagain
 from thinkagain.core.errors import TracingError
-from thinkagain.core.graph.graph import Node, OutputKind
+from thinkagain.core.graph.graph import Node
 from thinkagain.core.execution.executors import (
     CallExecutor,
     CondExecutor,
@@ -112,7 +112,7 @@ async def test_cond_branches_traced_as_subgraphs():
 
     @thinkagain.jit
     async def pipeline_with_cond(state: State) -> State:
-        state = await thinkagain.cond(
+        state = await thinkagain.cond(  # type: ignore[assignment]
             lambda s: s.value < 10,
             increment,  # Should be traced as Graph
             double,  # Should be traced as Graph
@@ -141,7 +141,7 @@ async def test_while_loop_body_traced_as_subgraph():
 
     @thinkagain.jit
     async def pipeline_with_while(state: State) -> State:
-        state = await thinkagain.while_loop(
+        state = await thinkagain.while_loop(  # type: ignore[assignment]
             lambda s: s.value < 5,
             increment,  # Should be traced as Graph
             state,
@@ -172,7 +172,7 @@ async def test_scan_body_traced_as_subgraph():
             init=0,
             xs=items,
         )
-        return results
+        return results  # type: ignore[return-value]
 
     # Test execution
     results = await pipeline_with_scan(["a", "b", "c"])
@@ -198,7 +198,7 @@ async def test_simple_sync_functions_not_traced():
             return carry + 1, f"Item: {item}"
 
         final, results = await thinkagain.scan(simple_process, 0, items)
-        return results
+        return results  # type: ignore[return-value]
 
     results = await pipeline_with_simple_scan(["x", "y"])
     assert len(results) == 2
@@ -231,7 +231,7 @@ async def test_captured_value_in_cond_branch():
             # Captures 'threshold' from parent context
             return await increment_by_threshold(s, threshold)
 
-        state = await thinkagain.cond(
+        state = await thinkagain.cond(  # type: ignore[assignment]
             lambda s: s.value < 10,
             high_branch,  # Captures threshold
             increment,
@@ -266,7 +266,7 @@ async def test_captured_value_in_while_loop():
             # Captures 'threshold' from parent context
             return await increment_by_threshold(s, threshold)
 
-        state = await thinkagain.while_loop(
+        state = await thinkagain.while_loop(  # type: ignore[assignment]
             lambda s: s.value < 15,
             body_with_capture,  # Captures threshold
             state,
@@ -294,7 +294,7 @@ async def test_captured_value_with_nested_tracing():
         async def branch(s: State) -> State:
             return await inner_pipeline(s, threshold)
 
-        return await thinkagain.cond(
+        return await thinkagain.cond(  # type: ignore[return-value]
             lambda s: s.value < 10,
             branch,
             branch,
@@ -325,7 +325,7 @@ async def test_branch_returns_captured_value_directly():
         async def return_capture(_: State) -> int:
             return threshold
 
-        return await thinkagain.cond(
+        return await thinkagain.cond(  # type: ignore[return-value]
             lambda s: s.value < 10, return_capture, return_capture, state
         )
 
@@ -345,7 +345,7 @@ async def test_branch_returns_literal_object():
         async def return_literal(_: State) -> State:
             return literal_state
 
-        return await thinkagain.cond(
+        return await thinkagain.cond(  # type: ignore[return-value]
             lambda s: s.value < 10, return_literal, return_literal, state
         )
 
@@ -370,8 +370,8 @@ async def test_explicit_output_return_input():
     assert await return_input(7) == 7
 
     graph = _graph_for(return_input)
-    assert graph.output_ref.kind is OutputKind.INPUT
-    assert graph.output_ref.value == 0
+    assert graph.output_ref.kind  # type: ignore[union-attr] is OutputKind.INPUT
+    assert graph.output_ref.value  # type: ignore[union-attr] == 0
 
 
 @pytest.mark.asyncio
@@ -385,8 +385,8 @@ async def test_explicit_output_return_literal():
     assert await return_literal(7) == 42
 
     graph = _graph_for(return_literal)
-    assert graph.output_ref.kind is OutputKind.LITERAL
-    assert graph.output_ref.value == 42
+    assert graph.output_ref.kind  # type: ignore[union-attr] is OutputKind.LITERAL
+    assert graph.output_ref.value  # type: ignore[union-attr] == 42
 
 
 @pytest.mark.asyncio
@@ -401,8 +401,8 @@ async def test_explicit_output_return_node():
     assert await return_node(7) == 8
 
     graph = _graph_for(return_node)
-    assert graph.output_ref.kind is OutputKind.NODE
-    assert graph.output_ref.value in {node.node_id for node in graph.nodes}
+    assert graph.output_ref.kind  # type: ignore[union-attr] is OutputKind.NODE
+    assert graph.output_ref.value  # type: ignore[union-attr] in {node.node_id for node in graph.nodes}
 
 
 # =============================================================================
@@ -416,7 +416,7 @@ async def test_validation_while_missing_return():
 
     @thinkagain.jit
     async def pipeline(state: State) -> State:
-        state = await thinkagain.while_loop(
+        state = await thinkagain.while_loop(  # type: ignore[assignment]
             lambda s: s.value < 5,
             no_return,  # Returns None - should fail
             state,
@@ -442,7 +442,7 @@ async def test_validation_scan_missing_return():
             0,
             items,
         )
-        return results
+        return results  # type: ignore[return-value]
 
     with pytest.raises(Exception):
         await pipeline(["a", "b"])
