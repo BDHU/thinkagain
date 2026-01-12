@@ -281,9 +281,7 @@ def jit(
     Example:
         @jit
         async def pipeline(state):
-            state = await step1(state)
-            state = await cond(pred, branch_a, branch_b, state)
-            return state
+            return await process(state)
     """
     if fn is None:
         return lambda f: jit(f, static_argnames=static_argnames)
@@ -340,12 +338,7 @@ def node(fn: Callable[..., T]) -> Callable[..., T]:
 
     Only works with async functions. For stateful objects, use @replica instead.
 
-    Examples:
-        @node
-        async def retrieve_docs(state):
-            docs = await db.search(state.query)
-            return replace(state, documents=docs)
-
+    Example:
         @node
         async def process(state, factor: int):
             return replace(state, value=state.value * factor)

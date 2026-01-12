@@ -85,14 +85,10 @@ class ExecutionContext:
         node: Node,
         node_name: str,
         *,
-        profiler: Any,
         profile_context: Any,
     ) -> Any:
         resolved_args = self.resolve_many(node.args)
         resolved_kwargs = self.resolve_many(node.kwargs)
-
-        if profiler is None:
-            return await node.executor.execute(resolved_args, resolved_kwargs, self)
         with profile_context(node_name):
             return await node.executor.execute(resolved_args, resolved_kwargs, self)
 
@@ -148,8 +144,6 @@ async def execute_graph(
     # Import profiling module once if needed
     from .. import profiling
 
-    profiler = profiling._profiler  # Direct access avoids function call overhead
-
     for node in graph.nodes:
         node_name = _node_name(node)
 
@@ -157,7 +151,6 @@ async def execute_graph(
             result = await ctx.execute_node(
                 node,
                 node_name,
-                profiler=profiler,
                 profile_context=profiling.node_context,
             )
         except Exception as exc:

@@ -7,7 +7,21 @@ and routes them through the replica pool system when a mesh context is active.
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, Awaitable, Callable
+
+
+async def _execute_with_profile(name: str, call: Callable[[], Awaitable[Any]]) -> Any:
+    from ..core import profiling
+
+    if profiling.get_profiler() is None:
+        return await call()
+
+    start_time = time.perf_counter()
+    try:
+        return await call()
+    finally:
+        duration = time.perf_counter() - start_time
+        profiling.record_replicate_call(name, duration=duration)
 
 
 async def distributed_execution_hook(
@@ -53,20 +67,8 @@ async def distributed_execution_hook(
     replica = pool.get_next()
 
     # Execute on replica with optional profiling
-    from ..core import profiling
-
-    profiler = profiling.get_profiler()
-
-    if profiler is None:
-        # Fast path: no profiling
-        result = await replica.execute(*args, **kwargs)
-    else:
-        # Track execution time for profiling
-        start_time = time.perf_counter()
-        try:
-            result = await replica.execute(*args, **kwargs)
-        finally:
-            duration = time.perf_counter() - start_time
-            profiling.record_replicate_call(fn.__name__, duration=duration)
+    result = await _execute_with_profile(
+        fn.__name__, lambda: replica.execute(*args, **kwargs)
+    )
 
     return (True, result)

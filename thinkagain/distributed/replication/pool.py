@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import threading
+import contextvars
 import warnings
 from abc import ABC, abstractmethod
 from typing import Any, Callable
@@ -12,20 +12,24 @@ from ...core.execution.runtime import maybe_await
 from ..mesh import Mesh
 
 
-# Thread-local storage for active pools
-_pools = threading.local()
+# Context-local storage for active pools
+_pools: contextvars.ContextVar[dict[tuple[object, ...], "ReplicaPool"] | None] = (
+    contextvars.ContextVar("replica_pools", default=None)
+)
 
 
 def _get_pools() -> dict[tuple[object, ...], "ReplicaPool"]:
-    """Get thread-local pool registry keyed by pool-specific tuple.
+    """Get context-local pool registry keyed by pool-specific tuple.
 
     Keys can be:
     - (mesh_id, fn_id): 2-tuple for function pools
     - (mesh_id, handle_hash, "handle"): 3-tuple for replica handle pools
     """
-    if not hasattr(_pools, "registry"):
-        _pools.registry = {}
-    return _pools.registry
+    pools = _pools.get()
+    if pools is None:
+        pools = {}
+        _pools.set(pools)
+    return pools
 
 
 class Replica(ABC):
@@ -167,14 +171,13 @@ class ReplicaPool:
         return RemoteReplica(endpoint)
 
     async def _create_replica(self) -> Replica:
-        if self.config.backend == "local":
-            return await self._create_local_replica()
-        if self.config.backend == "grpc":
-            return await self._create_remote_replica()
-        raise ValueError(
-            f"Unknown backend: {self.config.backend}. "
-            f"Supported backends: 'local', 'grpc'"
-        )
+        creator = _BACKENDS.get(self.config.backend)
+        if creator is None:
+            raise ValueError(
+                f"Unknown backend: {self.config.backend}. "
+                f"Supported backends: {', '.join(sorted(_BACKENDS))}"
+            )
+        return await creator(self)
 
     async def deploy(self, n: int = 1):
         """Deploy n instances of the function.
@@ -245,6 +248,12 @@ class ReplicaPool:
         fn_name = self.fn.__name__
         status = "deployed" if self._deployed else "not deployed"
         return f"ReplicaPool({fn_name}, {self.instance_count} instances, {status})"
+
+
+_BACKENDS: dict[str, Callable[[ReplicaPool], Any]] = {
+    "local": ReplicaPool._create_local_replica,
+    "grpc": ReplicaPool._create_remote_replica,
+}
 
 
 def get_or_create_pool(fn: Any, config: ReplicaConfig, mesh: Mesh) -> ReplicaPool:

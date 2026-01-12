@@ -3,17 +3,20 @@
 import asyncio
 from dataclasses import dataclass
 
+import pytest
+
 import thinkagain as ta
 
 
 @ta.trace
 @dataclass
-class TestInputs:
+class SampleInputs:
     query: str
     db: str
     limit: int
 
 
+@pytest.mark.asyncio
 async def test_unpack_basic():
     """Test basic unpacking of Bundle."""
     print("Test 1: Basic unpacking from Bundle")
@@ -27,6 +30,7 @@ async def test_unpack_basic():
     print(f"  ✓ Unpacked: query={query}, db={db}")
 
 
+@pytest.mark.asyncio
 async def test_unpack_order():
     """Test that unpacking preserves order."""
     print("\nTest 2: Order preservation")
@@ -39,6 +43,7 @@ async def test_unpack_order():
     print(f"  ✓ Order preserved: d={d}, b={b}, a={a}")
 
 
+@pytest.mark.asyncio
 async def test_unpack_single():
     """Test unpacking single value (should still return tuple)."""
     print("\nTest 3: Single value unpacking")
@@ -50,6 +55,7 @@ async def test_unpack_single():
     print(f"  ✓ Single value: {value}")
 
 
+@pytest.mark.asyncio
 async def test_unpack_all():
     """Test unpacking all values."""
     print("\nTest 4: Unpack all values")
@@ -61,10 +67,11 @@ async def test_unpack_all():
     print(f"  ✓ All values: x={x}, y={y}, z={z}")
 
 
+@pytest.mark.asyncio
 async def test_unpack_dataclass():
     """Test unpacking from traced dataclass."""
     print("\nTest 5: Unpacking from dataclass")
-    inputs = TestInputs(query="test", db="mysql", limit=5)
+    inputs = SampleInputs(query="test", db="mysql", limit=5)
 
     query, limit = await ta.bundle.unpack(inputs, "query", "limit")
 
@@ -73,6 +80,7 @@ async def test_unpack_dataclass():
     print(f"  ✓ Dataclass unpack: query={query}, limit={limit}")
 
 
+@pytest.mark.asyncio
 async def test_unpack_missing_key():
     """Test error handling for missing keys."""
     print("\nTest 6: Missing key error handling")
@@ -92,6 +100,7 @@ async def test_unpack_missing_key():
         return True
 
 
+@pytest.mark.asyncio
 async def test_unpack_creates_graph_node():
     """Test that unpack creates a graph node."""
     print("\nTest 7: Graph node creation")
