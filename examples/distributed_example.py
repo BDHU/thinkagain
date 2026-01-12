@@ -217,32 +217,30 @@ async def rag_pipeline(query: str) -> str:
 
 
 @ta.jit
-async def text_processing_pipeline(text: str) -> dict:
+async def text_processing_pipeline(text: str, operations: list[str]) -> dict:
     """Multi-operation text processing pipeline.
 
     This pipeline demonstrates:
     - Parallel operations (all transformations can run concurrently)
     - Using __call__ method on replicas
-    - Combining results with a node
+    - Explicit operation parameters (clean API!)
+
+    Args:
+        text: Input text to process
+        operations: List of operations to apply (e.g., ["upper", "lower", "title"])
 
     Flow:
     1. Apply multiple text transformations in parallel
-    2. Combine all results
+    2. Collect all results
     """
-    # These operations can potentially run in parallel
-    upper = await text_processor(text, operation="upper")
-    lower = await text_processor(text, operation="lower")
-    title = await text_processor(text, operation="title")
-    reverse = await text_processor(text, operation="reverse")
+    # Create result dict starting with original
+    result = {"original": text}
 
-    # Combine results
-    return {
-        "original": text,
-        "upper": upper,
-        "lower": lower,
-        "title": title,
-        "reverse": reverse,
-    }
+    # Apply each operation (can potentially run in parallel)
+    for operation in operations:
+        result[operation] = await text_processor(text, operation=operation)
+
+    return result
 
 
 @ta.jit
@@ -304,7 +302,8 @@ async def run_local_example():
         # Example 1c: Text processing pipeline
         print("\n[1c] Text Processing Pipeline:")
         text = "Hello Distributed World"
-        result = await text_processing_pipeline(text)
+        operations = ["upper", "lower", "title", "reverse"]
+        result = await text_processing_pipeline(text, operations)
         print(f"  Original: {result['original']}")
         print(f"  Upper: {result['upper']}")
         print(f"  Lower: {result['lower']}")
@@ -356,7 +355,8 @@ async def run_remote_example():
             # Example 2b: Text processing with remote service
             print("\n[2b] Text Processing (remote execution):")
             text = "Remote Processing Test"
-            result = await text_processing_pipeline(text)
+            operations = ["upper", "lower", "reverse"]
+            result = await text_processing_pipeline(text, operations)
             print(f"  Original: {result['original']}")
             print(f"  Upper: {result['upper']}")
             print(f"  Lower: {result['lower']}")

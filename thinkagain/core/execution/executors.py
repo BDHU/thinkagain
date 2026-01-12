@@ -64,6 +64,8 @@ class CallExecutor:
                 if handled:
                     return result
 
+        # Execute the function directly
+        # Service bindings (if any) are captured via normal Python closures
         return await maybe_await(self.fn, *args, **kwargs)
 
     def display_name(self) -> str:

@@ -5,7 +5,9 @@ from __future__ import annotations
 import cloudpickle
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterable
+
+from .runtime import maybe_await
 
 
 # ---------------------------------------------------------------------------
@@ -131,22 +133,49 @@ class BoundReplicaMethod:
     async def __call__(self, *args, **kwargs):
         """Call the replica's __call__ method.
 
-        Delegates to the registered tracing hook, which may be provided by
-        the distributed module or other replica runtimes.
-
-        The handle can be either a ReplicaHandle (when used as closure/global)
-        or a TracedValue (when passed as a function parameter).
+        Replicas must be called from within @node functions, not directly in @jit.
+        During execution (when @node body runs), the call is routed through the
+        mesh's service provider.
         """
-        hook = _get_replica_hook()
-        if hook is None:
-            raise RuntimeError(
-                "Replica called without replica runtime. "
-                "Either:\n"
-                "  1. Call inside @jit function executed within 'with mesh:' block\n"
-                "  2. Register a replica runtime via register_replica_hook()"
+        from ..tracing import is_tracing
+
+        # Replicas should only be called during execution, not during tracing
+        # If we're tracing, it means replica was called directly in @jit (Pattern A - wrong)
+        # Correct pattern is to call from @node (Pattern B), where body executes later
+        if is_tracing():
+            from ..errors import TracingError
+            from ..graph.graph import TracedValue
+
+            # Get replica name safely (handle might be TracedValue if passed as arg)
+            replica_name = (
+                self.handle.replica_class_name
+                if not isinstance(self.handle, TracedValue)
+                else "replica"
             )
 
-        return await hook.record_call(args, kwargs, self.handle)
+            raise TracingError(
+                f"Replica '{replica_name}' must be called from within a @node function.\n"
+                f"Use this pattern:\n\n"
+                f"  @ta.bind_service(svc=handle)\n"
+                f"  @ta.node\n"
+                f"  async def my_node(x):\n"
+                f"      return await svc(x)\n\n"
+                f"  @ta.jit\n"
+                f"  async def pipeline(x):\n"
+                f"      return await my_node(x)"
+            )
+
+        # During execution: route through mesh's service provider
+        from ...distributed import get_current_mesh
+
+        mesh = get_current_mesh()
+        if mesh is None:
+            raise RuntimeError(
+                f"Replica '{self.handle.replica_class_name}' requires a mesh context. "
+                "Use 'with Mesh([...]):' to create a mesh before calling."
+            )
+        provider = mesh.get_service_provider()
+        return await provider.execute_service_call(self.handle, args, kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +211,74 @@ def _get_replica_hook() -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Replica State Helpers
+# ---------------------------------------------------------------------------
+
+
+def _iter_slots(cls: type) -> Iterable[str]:
+    for base in cls.__mro__:
+        slots = getattr(base, "__slots__", ())
+        if isinstance(slots, str):
+            slots = (slots,)
+        for slot in slots:
+            if slot not in ("__dict__", "__weakref__"):
+                yield slot
+
+
+def _copy_replica_state(target: Any, source: Any) -> None:
+    if type(target) is not type(source):
+        raise TypeError(
+            "Replica compose() must return the same class as the target replica."
+        )
+
+    if hasattr(target, "__dict__"):
+        target.__dict__.clear()
+        target.__dict__.update(source.__dict__)
+
+    for slot in _iter_slots(type(target)):
+        if hasattr(source, slot):
+            setattr(target, slot, getattr(source, slot))
+
+
+async def apply_replica(replica_obj: Any, fn: Any, *args, **kwargs) -> Any:
+    """Apply a @jit-compatible state update to a replica via decompose/compose.
+
+    The replica must implement:
+      - decompose(self) -> (children: list[Any] | tuple[Any, ...], aux: Any)
+      - compose(cls, aux, children) -> replica instance
+
+    The function must return (new_children, output), where new_children matches
+    the structure of decompose()'s children.
+    """
+    if not hasattr(replica_obj, "decompose") or not hasattr(
+        replica_obj.__class__, "compose"
+    ):
+        raise TypeError(
+            "Replica must define decompose() and compose() to use apply_replica()."
+        )
+
+    children, aux = replica_obj.decompose()
+    if not isinstance(children, (list, tuple)):
+        raise TypeError("decompose() must return a list/tuple of children.")
+
+    result = await maybe_await(fn, *children, *args, **kwargs)
+    if not (isinstance(result, tuple) and len(result) == 2):
+        raise TypeError("Expected (new_children, output) from replica update.")
+
+    new_children, output = result
+    if not isinstance(new_children, (list, tuple)):
+        new_children = [new_children]
+    if len(new_children) != len(children):
+        raise ValueError(
+            "Updated children count must match decompose() children count."
+        )
+
+    updated = type(replica_obj).compose(aux, list(new_children))
+    _copy_replica_state(replica_obj, updated)
+    return output
+
+
+# ---------------------------------------------------------------------------
 # Service Decorator
 # ---------------------------------------------------------------------------
 
@@ -199,6 +296,32 @@ def replica(
 
     The replica class MUST define a __call__ method that serves as the execution
     entry point. This standardizes the interface: handle(input) calls the __call__ method.
+
+    Serialization for Distributed Execution:
+        Replica handles use Python's standard pickle protocol (__reduce__) for
+        serialization. By default, replica classes are serialized using cloudpickle,
+        which handles locally-defined classes and closures.
+
+        For custom serialization behavior (e.g., excluding large models or runtime
+        state), implement __reduce__ or __getstate__/__setstate__:
+
+        Example (custom serialization):
+            @replica(gpus=1)
+            class LLM:
+                def __init__(self, model_path: str):
+                    self.model_path = model_path
+                    self.engine = load_model(model_path)  # Heavy!
+
+                def __reduce__(self):
+                    # Only serialize the path, not the loaded engine
+                    return (LLM, (self.model_path,))
+
+                async def __call__(self, prompt: str) -> str:
+                    return await self.engine.generate(prompt)
+
+        Important: Replica classes should be stateless or serialize their full state.
+        State divergence across workers can lead to inconsistent results. If you need
+        shared mutable state, use a distributed state store instead.
 
     Args:
         gpus: Number of GPUs required per replica instance (None for CPU-only)
