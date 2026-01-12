@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import fields, is_dataclass
-from typing import Any, Callable, NamedTuple
+from dataclasses import dataclass, fields, is_dataclass
+from typing import Any, Callable
 
 from .graph.graph import TracedValue
 
 
-class TraceSpec(NamedTuple):
+@dataclass(frozen=True)
+class TraceSpec:
     cls: type
     decompose: Callable[[Any], tuple[list[Any], Any]]
     compose: Callable[[Any, list[Any]], Any]
@@ -81,11 +82,14 @@ def trace(cls: type) -> type:
             )
 
         # Wrap the methods to match the registry signature
+        decompose_fn = getattr(cls, "decompose")
+        compose_fn = getattr(cls, "compose")
+
         def _decompose(obj: Any) -> tuple[list[Any], Any]:
-            return obj.decompose()
+            return decompose_fn(obj)
 
         def _compose(aux: Any, children: list[Any]) -> Any:
-            return cls.compose(aux, children)
+            return compose_fn(aux, children)
 
         register_traceable(cls, decompose=_decompose, compose=_compose)
         return cls

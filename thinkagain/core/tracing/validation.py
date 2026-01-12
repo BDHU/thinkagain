@@ -25,6 +25,8 @@ def validate_cond_branches(
     _validate_graph(true_branch, "cond true branch")
     _validate_graph(false_branch, "cond false branch")
     if isinstance(true_branch, Graph) and isinstance(false_branch, Graph):
+        assert true_branch.output_ref is not None  # validated above
+        assert false_branch.output_ref is not None  # validated above
         if true_branch.output_ref.kind is not false_branch.output_ref.kind:
             raise TracingError(
                 f"cond branches must return same pattern: "
@@ -41,10 +43,14 @@ def validate_while_body(body: Graph | Callable) -> None:
 def validate_scan_body(body: Graph | Callable) -> None:
     """Validate scan body."""
     _validate_graph(body, "scan body")
-    if isinstance(body, Graph) and body.output_ref.kind is OutputKind.LITERAL:
-        val = body.output_ref.value
-        if not isinstance(val, tuple) or len(val) != 2:
-            raise TracingError(f"scan body must return (carry, output), got {val!r}")
+    if isinstance(body, Graph):
+        assert body.output_ref is not None  # validated above
+        if body.output_ref.kind is OutputKind.LITERAL:
+            val = body.output_ref.value
+            if not isinstance(val, tuple) or len(val) != 2:
+                raise TracingError(
+                    f"scan body must return (carry, output), got {val!r}"
+                )
 
 
 def validate_switch_branches(branches: list[Graph | Callable]) -> None:
@@ -57,8 +63,10 @@ def validate_switch_branches(branches: list[Graph | Callable]) -> None:
 
     graph_branches = [b for b in branches if isinstance(b, Graph)]
     if len(graph_branches) > 1:
+        assert graph_branches[0].output_ref is not None  # validated above
         first_kind = graph_branches[0].output_ref.kind
         for i, branch in enumerate(graph_branches[1:], start=1):
+            assert branch.output_ref is not None  # validated above
             if branch.output_ref.kind is not first_kind:
                 raise TracingError(
                     f"switch branches must return same pattern: "

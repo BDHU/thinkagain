@@ -2,12 +2,26 @@
 
 This example demonstrates the Bundle API for managing pipeline inputs:
 - Bundle: Lightweight traced container for grouping related values
-- ta.bundle.*: Runtime operations that create graph nodes
+- ta.*: Runtime Bundle operations that create graph nodes
 - make_inputs: Type-safe input factory
 """
 
 import asyncio
+from typing import TYPE_CHECKING
+
 import thinkagain as ta
+
+if TYPE_CHECKING:
+    from dataclasses import dataclass
+
+    @dataclass
+    class RagInputs:
+        """Type for RagInputs bundle."""
+
+        query: str
+        llm: str
+        db: str
+        temperature: float
 
 
 # === Example 1: Basic Bundle Usage ===
@@ -26,19 +40,17 @@ async def generate_answer(query: str, docs: list[str], llm: str) -> str:
     return f"[{llm}] Answer for '{query}' using: {docs_str}"
 
 
-@ta.jit
 async def basic_rag_pipeline(inputs: ta.Bundle) -> str:
-    """Simple RAG pipeline using Bundle operations."""
-    # Extract query and db for retrieval
-    retrieval_inputs = await ta.bundle.subset(inputs, "query", "db")
-    query = await ta.bundle.get(retrieval_inputs, "query")
-    db = await ta.bundle.get(retrieval_inputs, "db")
+    """Simple RAG pipeline using Bundle operations.
+
+    Note: We use @ta.node instead of @ta.jit to enable clean tuple unpacking.
+    With @ta.jit, you'd need multiple ta.get() calls instead.
+    """
+    # Unpack fields directly - clean and Pythonic!
+    query, db, llm = await ta.unpack(inputs, "query", "db", "llm")
 
     # Retrieve documents
     docs = await retrieve_docs(query, db)
-
-    # Get LLM from inputs
-    llm = await ta.bundle.get(inputs, "llm")
 
     # Generate answer
     answer = await generate_answer(query, docs, llm)
@@ -61,34 +73,29 @@ async def rerank_docs(docs: list[str], model: str) -> list[str]:
     return [f"reranked({model}): {doc}" for doc in docs]
 
 
-@ta.jit
 async def advanced_rag_pipeline(inputs: ta.Bundle) -> str:
     """Advanced RAG pipeline with Bundle transformations."""
     # Step 1: Enrich query with user context
-    query = await ta.bundle.get(inputs, "query")
-    user_context = await ta.bundle.get(inputs, "user_context")
+    query, user_context = await ta.unpack(inputs, "query", "user_context")
     enriched_query = await enrich_query(query, user_context)
 
     # Step 2: Update inputs with enriched query
-    inputs_v2 = await ta.bundle.replace(inputs, query=enriched_query)
+    inputs_v2 = await ta.replace(inputs, query=enriched_query)
 
     # Step 3: Retrieve documents
-    q = await ta.bundle.get(inputs_v2, "query")
-    db = await ta.bundle.get(inputs_v2, "db")
-    docs = await retrieve_docs(q, db)
+    query, db = await ta.unpack(inputs_v2, "query", "db")
+    docs = await retrieve_docs(query, db)
 
     # Step 4: Rerank documents
-    rerank_model = await ta.bundle.get(inputs, "rerank_model")
+    (rerank_model,) = await ta.unpack(inputs, "rerank_model")
     reranked_docs = await rerank_docs(docs, rerank_model)
 
     # Step 5: Extend inputs with reranked docs
-    generation_inputs = await ta.bundle.extend(inputs_v2, docs=reranked_docs)
+    generation_inputs = await ta.extend(inputs_v2, docs=reranked_docs)
 
     # Step 6: Generate answer
-    query_final = await ta.bundle.get(generation_inputs, "query")
-    docs_final = await ta.bundle.get(generation_inputs, "docs")
-    llm = await ta.bundle.get(generation_inputs, "llm")
-    answer = await generate_answer(query_final, docs_final, llm)
+    query, docs, llm = await ta.unpack(generation_inputs, "query", "docs", "llm")
+    answer = await generate_answer(query, docs, llm)
 
     return answer
 
@@ -97,24 +104,21 @@ async def advanced_rag_pipeline(inputs: ta.Bundle) -> str:
 
 
 # Define a typed input class
-RagInputs = ta.make_inputs(
-    query=str,
-    llm=str,
-    db=str,
-    temperature=float,
-)
+if not TYPE_CHECKING:
+    RagInputs = ta.make_inputs(
+        query=str,
+        llm=str,
+        db=str,
+        temperature=float,
+    )
 
 
-@ta.jit
 async def typed_pipeline(inputs: RagInputs) -> str:
     """Pipeline with type-safe inputs."""
     # Bundle operations work the same with typed inputs
-    q = await ta.bundle.get(inputs, "query")
-    db = await ta.bundle.get(inputs, "db")
-    docs = await retrieve_docs(q, db)
-
-    llm = await ta.bundle.get(inputs, "llm")
-    answer = await generate_answer(q, docs, llm)
+    query, db, llm = await ta.unpack(inputs, "query", "db", "llm")
+    docs = await retrieve_docs(query, db)
+    answer = await generate_answer(query, docs, llm)
 
     return answer
 
@@ -124,9 +128,12 @@ async def typed_pipeline(inputs: RagInputs) -> str:
 
 @ta.jit
 async def mixed_operations_pipeline(query: str, llm: str, db: str) -> str:
-    """Demonstrates mixing compile-time and runtime Bundle operations."""
+    """Demonstrates @ta.jit usage (doesn't support unpack).
+
+    With @ta.jit, you must use ta.get() for individual fields since
+    tuple unpacking doesn't work during JIT tracing.
+    """
     # Compile-time: Create bundle from TracedValues
-    # This happens during tracing, no graph node created
     big_bundle = ta.Bundle(
         query=query,
         llm=llm,
@@ -135,22 +142,17 @@ async def mixed_operations_pipeline(query: str, llm: str, db: str) -> str:
         metadata={"version": "1.0"},
     )
 
-    # Runtime: Subset operation creates a graph node
-    # This allows the subsetted bundle to be traced through the graph
-    small_bundle = await ta.bundle.subset(big_bundle, "query", "db")
+    # With @ta.jit, use ta.get() instead of unpack
+    query = await ta.get(big_bundle, "query")
+    db = await ta.get(big_bundle, "db")
+    docs = await retrieve_docs(query, db)
 
-    # Use the bundle
-    q = await ta.bundle.get(small_bundle, "query")
-    d = await ta.bundle.get(small_bundle, "db")
-    docs = await retrieve_docs(q, d)
-
-    # Runtime: Extend creates another graph node
-    gen_bundle = await ta.bundle.extend(small_bundle, llm=llm, docs=docs)
-
-    q2 = await ta.bundle.get(gen_bundle, "query")
-    docs2 = await ta.bundle.get(gen_bundle, "docs")
-    llm2 = await ta.bundle.get(gen_bundle, "llm")
-    answer = await generate_answer(q2, docs2, llm2)
+    # Extend and extract
+    gen_bundle = await ta.extend(big_bundle, docs=docs)
+    query = await ta.get(gen_bundle, "query")
+    docs = await ta.get(gen_bundle, "docs")
+    llm = await ta.get(gen_bundle, "llm")
+    answer = await generate_answer(query, docs, llm)
 
     return answer
 
@@ -209,18 +211,24 @@ async def main():
     print("""
 Key Points:
 - Bundle: Lightweight traced container for pipeline inputs
-- ta.bundle.subset(): Extract specific fields (creates graph node)
-- ta.bundle.extend(): Add new fields (creates graph node)
-- ta.bundle.replace(): Update existing fields (creates graph node)
-- ta.bundle.get(): Get a single field (creates graph node)
+- ta.unpack(): Extract multiple fields as tuple (Pythonic!)
+  * Works with regular async functions and @ta.node
+  * NOT supported in @ta.jit (use ta.get() instead)
+- ta.get(): Get a single field (works everywhere)
+- ta.subset(): Extract fields as new Bundle (for passing around)
+- ta.extend(): Add new fields (creates graph node)
+- ta.replace(): Update existing fields (creates graph node)
 - make_inputs(): Create type-safe input classes
 
 Benefits:
-✅ Clean API - No TracedValue hacks
+✅ Clean API - Pythonic unpacking with ta.unpack()
 ✅ Pure functions - Explicit data flow
 ✅ Type-safe - Works with IDE autocomplete
 ✅ Serializable - Graph operations are traceable
 ✅ Flexible - Works in control flow and with replicas
+
+Note: Examples 1-3 use regular async functions to showcase ta.unpack().
+      Example 4 uses @ta.jit to show the ta.get() pattern.
     """)
 
 

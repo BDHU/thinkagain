@@ -12,6 +12,10 @@ from .state import AgentState, Message, ToolCall
 from .tools import _function_to_schema
 
 
+def _callable_name(fn: Callable) -> str:
+    return getattr(fn, "__name__", fn.__class__.__name__)
+
+
 def _message_to_dict(msg: Message) -> dict[str, Any]:
     """Convert internal message to provider dict."""
     data: dict[str, Any] = {"role": msg.role, "content": msg.content}
@@ -43,7 +47,7 @@ def _build_tool_map(tools: list[Callable] | None) -> dict[str, Callable]:
 
     tool_map = {}
     for fn in tools:
-        name = getattr(fn, "__tool_name__", fn.__name__)
+        name = getattr(fn, "__tool_name__", _callable_name(fn))
         if name in tool_map:
             raise ValueError(f"Duplicate tool name: {name}")
         tool_map[name] = fn
@@ -143,8 +147,6 @@ async def execute_tools(
     Returns:
         Updated agent state with all tool results
     """
-    from thinkagain import Context
-
     last_message = state.messages[-1]
 
     if not last_message.tool_calls:
@@ -170,9 +172,7 @@ async def execute_tools(
         else:
             # Create a context for this tool execution
             tool_fn = tool_map[tool_call.name]
-            ctx = execute_tool_call(
-                Context(state), tool_call=tool_call, tool_fn=tool_fn
-            )
+            ctx = execute_tool_call(state, tool_call=tool_call, tool_fn=tool_fn)
             contexts.append(ctx)
 
     # Execute all tool calls (ThinkAgain handles parallelism)

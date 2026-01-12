@@ -20,7 +20,7 @@ class GrpcClient:
             endpoint: Server address (e.g., "localhost:8000" or "server1:8000")
         """
         self.endpoint = endpoint
-        self.channel = grpc.aio.insecure_channel(endpoint)
+        self.channel = grpc.aio.insecure_channel(endpoint)  # type: ignore[attr-defined]
         self.stub = replica_pb2_grpc.ReplicaServiceStub(self.channel)
 
     async def execute(self, *args, **kwargs) -> Any:

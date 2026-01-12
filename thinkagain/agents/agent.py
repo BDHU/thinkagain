@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from thinkagain import Context
-
 from .agent_nodes import call_llm, execute_tools
 from .llms import OpenAI
 from .protocols import LLM
@@ -117,7 +115,7 @@ async def run_agent(
     for _ in range(max_iterations):
         state.metadata["iterations"] = state.metadata.get("iterations", 0) + 1
 
-        ctx = call_llm(Context(state), provider=provider, tools=tools, **llm_kwargs)
+        ctx = call_llm(state, provider=provider, tools=tools, **llm_kwargs)
         state = await ctx
 
         has_tool_calls = bool(state.messages[-1].tool_calls)

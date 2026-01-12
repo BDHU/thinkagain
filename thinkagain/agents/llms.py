@@ -38,11 +38,14 @@ class OpenAIBase:
     ) -> dict[str, Any]:
         """Generate completion using OpenAI-compatible API."""
         try:
-            from openai import AsyncOpenAI
-        except ImportError:
+            import importlib
+
+            openai_module = importlib.import_module("openai")
+            AsyncOpenAI = getattr(openai_module, "AsyncOpenAI")
+        except Exception as exc:
             raise ImportError(
                 "openai package required. Install with: pip install openai"
-            )
+            ) from exc
 
         client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
 

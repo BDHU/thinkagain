@@ -454,7 +454,7 @@ async def test_validation_cond_missing_return_runtime():
 
     @thinkagain.jit
     async def pipeline(state: State) -> State:
-        state = await thinkagain.cond(
+        state = await thinkagain.cond(  # type: ignore[assignment]
             lambda s: s.value < 10,
             increment,  # Returns State
             no_return,  # Returns None - traced as SubGraph but fails at runtime
@@ -490,7 +490,7 @@ async def test_graph_caching_works_with_captured_values():
         async def high_branch(s: State) -> State:
             return await increment_by_threshold(s, threshold)
 
-        state = await thinkagain.cond(
+        state = await thinkagain.cond(  # type: ignore[assignment]
             lambda s: s.value < 10, high_branch, increment, state
         )
         return state
@@ -589,7 +589,7 @@ async def test_cond_rejects_mismatched_output_kinds():
 
     @thinkagain.jit
     async def pipeline(x: int) -> int:
-        return await thinkagain.cond(lambda _: True, return_input, return_literal, x)
+        return await thinkagain.cond(lambda _: True, return_input, return_literal, x)  # type: ignore[return-value]
 
     with pytest.raises(TracingError):
         await pipeline(3)
@@ -606,7 +606,7 @@ async def test_scan_rejects_invalid_tuple_shape():
     @thinkagain.jit
     async def pipeline(xs: list[int]) -> list[int]:
         _, results = await thinkagain.scan(bad_scan, 0, xs)
-        return results
+        return results  # type: ignore[return-value]
 
     with pytest.raises(thinkagain.NodeExecutionError):
         await pipeline([1, 2, 3])
@@ -619,7 +619,7 @@ async def test_rejects_non_traceable_capture_in_cond():
     @thinkagain.jit
     async def pipeline(state: State) -> int:
         threshold = await get_threshold(state)
-        return await thinkagain.cond(
+        return await thinkagain.cond(  # type: ignore[return-value]
             lambda s: s.value > 0,
             lambda _: threshold,
             lambda _: threshold,
@@ -740,7 +740,7 @@ async def test_nested_jit_is_inlined_into_outer_trace():
     for node in graph.nodes:
         if isinstance(node.executor, CallExecutor):
             # The executor should NOT be for inner or inner.__wrapped__
-            assert node.executor.fn is not inner.__wrapped__
+            assert node.executor.fn is not inner.__wrapped__  # type: ignore[attr-defined]
             assert node.executor.fn is not inner
 
 
@@ -751,7 +751,7 @@ async def test_cond_predicate_rejects_captured_traced_value():
     @thinkagain.jit
     async def pipeline(state: State) -> State:
         threshold = await get_threshold(state)
-        return await thinkagain.cond(
+        return await thinkagain.cond(  # type: ignore[return-value]
             lambda s: s.value < threshold,
             increment,
             increment,
@@ -769,7 +769,7 @@ async def test_while_predicate_rejects_captured_traced_value():
     @thinkagain.jit
     async def pipeline(state: State) -> State:
         threshold = await get_threshold(state)
-        return await thinkagain.while_loop(
+        return await thinkagain.while_loop(  # type: ignore[return-value]
             lambda s: s.value < threshold,
             increment,
             state,
@@ -793,7 +793,7 @@ async def test_switch_branches_traced_as_subgraphs():
         def get_tier(s: State) -> int:
             return 0 if s.value < 10 else 1
 
-        return await thinkagain.switch(
+        return await thinkagain.switch(  # type: ignore[return-value]
             get_tier,
             [increment, double],
             state,
@@ -832,7 +832,7 @@ async def test_switch_rejects_mismatched_output_kinds():
 
     @thinkagain.jit
     async def pipeline(x: int) -> int:
-        return await thinkagain.switch(lambda _: 0, [return_input, return_literal], x)
+        return await thinkagain.switch(lambda _: 0, [return_input, return_literal], x)  # type: ignore[return-value]
 
     with pytest.raises(TracingError, match="switch branches must return same pattern"):
         await pipeline(5)
@@ -845,7 +845,7 @@ async def test_switch_index_fn_rejects_captured_traced_value():
     @thinkagain.jit
     async def pipeline(state: State) -> State:
         threshold = await get_threshold(state)
-        return await thinkagain.switch(
+        return await thinkagain.switch(  # type: ignore[return-value]
             lambda s: 0 if s.value < threshold else 1,
             [increment, double],
             state,
