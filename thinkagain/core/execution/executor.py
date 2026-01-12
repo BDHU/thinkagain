@@ -78,7 +78,7 @@ class ExecutionContext:
 
     def prepare_subgraph_args(self, graph: Graph, operand_args: tuple) -> list:
         """Append captured values from the parent context to operand args."""
-        return graph.append_captures(operand_args, self.capture_values)
+        return graph.append_captures(operand_args, self.node_values)
 
     async def execute_node(
         self,

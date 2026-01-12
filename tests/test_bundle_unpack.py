@@ -117,6 +117,27 @@ async def test_unpack_creates_graph_node():
     print(f"  ✓ Works in graph context: {result}")
 
 
+@pytest.mark.asyncio
+async def test_unpack_with_jit():
+    """Test that unpack works with @ta.jit decorator."""
+    print("\nTest 8: Unpack with @ta.jit")
+
+    @ta.node
+    async def concat(a: str, b: str) -> str:
+        return f"{a}:{b}"
+
+    @ta.jit
+    async def jit_unpack_pipeline(inputs):
+        query, db = await ta.unpack(inputs, "query", "db")
+        return await concat(query, db)
+
+    inputs = ta.Bundle(query="fetch", db="mongodb")
+    result = await jit_unpack_pipeline(inputs)
+
+    assert result == "fetch:mongodb", f"Expected 'fetch:mongodb', got {result}"
+    print(f"  ✓ Works with @ta.jit: {result}")
+
+
 async def main():
     """Run all tests."""
     print("=" * 60)
@@ -131,6 +152,7 @@ async def main():
         await test_unpack_dataclass()
         await test_unpack_missing_key()
         await test_unpack_creates_graph_node()
+        await test_unpack_with_jit()
 
         print("\n" + "=" * 60)
         print("All tests passed! ✓")

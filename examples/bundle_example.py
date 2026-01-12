@@ -40,12 +40,9 @@ async def generate_answer(query: str, docs: list[str], llm: str) -> str:
     return f"[{llm}] Answer for '{query}' using: {docs_str}"
 
 
+@ta.jit
 async def basic_rag_pipeline(inputs: ta.Bundle) -> str:
-    """Simple RAG pipeline using Bundle operations.
-
-    Note: We use @ta.node instead of @ta.jit to enable clean tuple unpacking.
-    With @ta.jit, you'd need multiple ta.get() calls instead.
-    """
+    """Simple RAG pipeline using Bundle operations."""
     # Unpack fields directly - clean and Pythonic!
     query, db, llm = await ta.unpack(inputs, "query", "db", "llm")
 
@@ -73,6 +70,7 @@ async def rerank_docs(docs: list[str], model: str) -> list[str]:
     return [f"reranked({model}): {doc}" for doc in docs]
 
 
+@ta.jit
 async def advanced_rag_pipeline(inputs: ta.Bundle) -> str:
     """Advanced RAG pipeline with Bundle transformations."""
     # Step 1: Enrich query with user context
@@ -113,6 +111,7 @@ if not TYPE_CHECKING:
     )
 
 
+@ta.jit
 async def typed_pipeline(inputs: RagInputs) -> str:
     """Pipeline with type-safe inputs."""
     # Bundle operations work the same with typed inputs
@@ -128,12 +127,9 @@ async def typed_pipeline(inputs: RagInputs) -> str:
 
 @ta.jit
 async def mixed_operations_pipeline(query: str, llm: str, db: str) -> str:
-    """Demonstrates @ta.jit usage (doesn't support unpack).
-
-    With @ta.jit, you must use ta.get() for individual fields since
-    tuple unpacking doesn't work during JIT tracing.
-    """
+    """Demonstrates mixing compile-time and runtime Bundle operations."""
     # Compile-time: Create bundle from TracedValues
+    # This happens during tracing, no graph node created
     big_bundle = ta.Bundle(
         query=query,
         llm=llm,
@@ -142,16 +138,15 @@ async def mixed_operations_pipeline(query: str, llm: str, db: str) -> str:
         metadata={"version": "1.0"},
     )
 
-    # With @ta.jit, use ta.get() instead of unpack
-    query = await ta.get(big_bundle, "query")
-    db = await ta.get(big_bundle, "db")
+    # Runtime: Unpack fields directly
+    query, db = await ta.unpack(big_bundle, "query", "db")
     docs = await retrieve_docs(query, db)
 
-    # Extend and extract
+    # Runtime: Extend creates a graph node
     gen_bundle = await ta.extend(big_bundle, docs=docs)
-    query = await ta.get(gen_bundle, "query")
-    docs = await ta.get(gen_bundle, "docs")
-    llm = await ta.get(gen_bundle, "llm")
+
+    # Unpack all fields for final generation
+    query, docs, llm = await ta.unpack(gen_bundle, "query", "docs", "llm")
     answer = await generate_answer(query, docs, llm)
 
     return answer
@@ -211,24 +206,14 @@ async def main():
     print("""
 Key Points:
 - Bundle: Lightweight traced container for pipeline inputs
-- ta.unpack(): Extract multiple fields as tuple (Pythonic!)
-  * Works with regular async functions and @ta.node
-  * NOT supported in @ta.jit (use ta.get() instead)
-- ta.get(): Get a single field (works everywhere)
+- ta.unpack(): Extract multiple fields as tuple (recommended!)
+  * Clean, Pythonic syntax: query, db = await ta.unpack(inputs, "query", "db")
+  * Works everywhere: @ta.jit, @ta.node, and regular async functions
+- ta.get(): Get a single field
 - ta.subset(): Extract fields as new Bundle (for passing around)
 - ta.extend(): Add new fields (creates graph node)
 - ta.replace(): Update existing fields (creates graph node)
 - make_inputs(): Create type-safe input classes
-
-Benefits:
-✅ Clean API - Pythonic unpacking with ta.unpack()
-✅ Pure functions - Explicit data flow
-✅ Type-safe - Works with IDE autocomplete
-✅ Serializable - Graph operations are traceable
-✅ Flexible - Works in control flow and with replicas
-
-Note: Examples 1-3 use regular async functions to showcase ta.unpack().
-      Example 4 uses @ta.jit to show the ta.get() pattern.
     """)
 
 
