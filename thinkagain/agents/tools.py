@@ -6,6 +6,10 @@ import inspect
 from typing import Any, Callable
 
 
+def _callable_name(fn: Callable) -> str:
+    return getattr(fn, "__name__", fn.__class__.__name__)
+
+
 def tool(
     _fn: Callable | None = None,
     *,
@@ -15,7 +19,7 @@ def tool(
     """Decorator to mark a function as a tool and optionally name it."""
 
     def wrapper(fn: Callable) -> Callable:
-        tool_name = name or getattr(fn, "__name__", "tool")
+        tool_name = name or _callable_name(fn)
         setattr(fn, "__tool_name__", tool_name)
         if description is not None:
             setattr(fn, "__tool_description__", description)
@@ -126,9 +130,9 @@ def _function_to_schema(fn: Callable) -> dict[str, Any]:
             if not line:
                 break
             first_para.append(line)
-        description = " ".join(first_para) if first_para else fn.__name__
+        description = " ".join(first_para) if first_para else _callable_name(fn)
     else:
-        description = fn.__name__
+        description = _callable_name(fn)
     description = getattr(fn, "__tool_description__", description)
 
     # Build parameters schema
@@ -154,7 +158,7 @@ def _function_to_schema(fn: Callable) -> dict[str, Any]:
             required.append(param_name)
 
     return {
-        "name": getattr(fn, "__tool_name__", fn.__name__),
+        "name": getattr(fn, "__tool_name__", _callable_name(fn)),
         "description": description,
         "parameters": {
             "type": "object",

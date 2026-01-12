@@ -9,7 +9,7 @@ from __future__ import annotations
 import functools
 import inspect
 from collections import OrderedDict
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, TypeVar, cast
 
 from ..errors import TracingError
 from ..graph.graph import Graph, OutputKind, OutputRef, TracedValue
@@ -22,6 +22,11 @@ _captures_traced_value = captures_traced_value
 _get_source_location = get_source_location
 
 T = TypeVar("T")
+
+
+def _callable_name(fn: Callable) -> str:
+    return getattr(fn, "__name__", fn.__class__.__name__)
+
 
 # ---------------------------------------------------------------------------
 # Cache
@@ -127,13 +132,17 @@ def _prepare_traced_inputs(
 
 def _get_trace_fn(fn: Callable, parent_ctx: TraceContext | None) -> Callable:
     """Get the actual function to trace (unwrap @node if needed)."""
-    if hasattr(fn, "_node_fn") and captures_traced_value(fn._node_fn, parent_ctx):
-        return fn._node_fn
+    node_fn = getattr(fn, "_node_fn", None)
+    if callable(node_fn) and captures_traced_value(node_fn, parent_ctx):
+        return node_fn
     # For callable instances with async __call__, trace the __call__ method if it captures values
-    if inspect.iscoroutinefunction(
-        getattr(fn, "__call__", None)
-    ) and captures_traced_value(fn.__call__, parent_ctx):
-        return fn.__call__
+    call = getattr(fn, "__call__", None)
+    if (
+        call is not None
+        and inspect.iscoroutinefunction(call)
+        and captures_traced_value(call, parent_ctx)
+    ):
+        return call
     return fn
 
 
@@ -287,7 +296,7 @@ def jit(
         return lambda f: jit(f, static_argnames=static_argnames)
 
     if not inspect.iscoroutinefunction(fn):
-        raise TypeError(f"@jit requires async function, got {fn.__name__}")
+        raise TypeError(f"@jit requires async function, got {_callable_name(fn)}")
 
     @functools.wraps(fn)
     async def wrapper(*args, **kwargs):
@@ -326,8 +335,8 @@ def jit(
             service_provider=service_provider,
         )
 
-    wrapper._is_jit = True
-    return wrapper
+    wrapper._is_jit = True  # type: ignore[attr-defined]
+    return wrapper  # type: ignore[return-value]
 
 
 def node(fn: Callable[..., T]) -> Callable[..., T]:
@@ -348,7 +357,7 @@ def node(fn: Callable[..., T]) -> Callable[..., T]:
     # Only accept async functions
     if not inspect.iscoroutinefunction(fn):
         raise TypeError(
-            f"@node requires an async function, got {fn.__name__}. "
+            f"@node requires an async function, got {_callable_name(fn)}. "
             f"For stateful objects, use @replica instead."
         )
 
@@ -366,8 +375,8 @@ def node(fn: Callable[..., T]) -> Callable[..., T]:
             return TracedValue(node_id, ctx)
         return await fn(*args, **kwargs)
 
-    wrapper._is_node = True
-    wrapper._node_fn = fn
+    setattr(wrapper, "_is_node", True)
+    setattr(wrapper, "_node_fn", fn)
     if hasattr(fn, "_service_bindings"):
-        wrapper._service_bindings = fn._service_bindings  # type: ignore[attr-defined]
-    return wrapper
+        setattr(wrapper, "_service_bindings", fn._service_bindings)
+    return cast(Callable[..., T], wrapper)

@@ -61,6 +61,11 @@ __all__ = [
     # Core - Input bundling
     "Bundle",
     "bundle",
+    "subset",
+    "extend",
+    "replace",
+    "get",
+    "unpack",
     "make_inputs",
     # Core - Errors
     "NodeExecutionError",
@@ -82,3 +87,10 @@ __all__ = [
     "get_profiler",
     "profile",
 ]
+
+# Top-level Bundle ops for user-facing API.
+subset = bundle.subset
+extend = bundle.extend
+replace = bundle.replace
+get = bundle.get
+unpack = bundle.unpack

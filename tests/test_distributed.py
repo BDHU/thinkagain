@@ -134,13 +134,13 @@ def test_replica_basic():
     assert BasicProcessor._replica_config.backend == "local"
 
     # Create handle
-    handle = BasicProcessor.init(2)  # type: ignore[attr-defined]
+    handle = BasicProcessor.init(2)
     assert isinstance(handle, ta.ReplicaHandle)
 
 
 def test_replica_with_gpus():
     """Test @replica with GPU requirement."""
-    config = GpuProcessor._replica_config
+    config = GpuProcessor._replica_config  # type: ignore[attr-defined]
     assert config.gpus == 4
 
     # Create handle
@@ -152,7 +152,7 @@ def test_replica_with_gpus():
 def test_replica_with_setup():
     """Test @replica with setup function."""
     # Test that GpuProcessor can be initialized with setup params
-    config = GpuProcessor._replica_config
+    config = GpuProcessor._replica_config  # type: ignore[attr-defined]
     assert config.gpus == 4
     # Setup would be configured at replica creation in real usage
 
@@ -165,7 +165,7 @@ def test_replica_class_with_call():
     assert GrpcProcessor._replica_config.backend == "grpc"
 
     # Create handle
-    handle = GrpcProcessor.init()  # type: ignore[attr-defined]  # type: ignore[attr-defined]
+    handle = GrpcProcessor.init()  # type: ignore[attr-defined]
     assert isinstance(handle, ta.ReplicaHandle)
 
 

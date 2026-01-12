@@ -60,11 +60,13 @@ class TraceContext:
             return InputRef(self._register_capture(value))
         raise TracingError("TracedValue from unrelated trace context.")
 
-    def _normalize_many(self, values: tuple | dict) -> tuple | dict:
-        """Normalize a collection of values."""
-        if isinstance(values, dict):
-            return {k: self._normalize(v) for k, v in values.items()}
+    def _normalize_args(self, values: tuple) -> tuple:
+        """Normalize positional arguments."""
         return tuple(self._normalize(v) for v in values)
+
+    def _normalize_kwargs(self, values: dict) -> dict:
+        """Normalize keyword arguments."""
+        return {k: self._normalize(v) for k, v in values.items()}
 
     def _register_capture(self, value: TracedValue) -> int:
         """Register a captured value from parent context."""
@@ -89,8 +91,8 @@ class TraceContext:
         """Add a node to the graph with the given executor."""
         node = Node(
             node_id=self._next_id(),
-            args=self._normalize_many(args),
-            kwargs=self._normalize_many(kwargs),
+            args=self._normalize_args(args),
+            kwargs=self._normalize_kwargs(kwargs),
             executor=executor,
             source_location=source_location,
         )

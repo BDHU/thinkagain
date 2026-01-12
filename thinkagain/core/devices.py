@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from abc import ABC
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 
 
 class Device(ABC):
@@ -66,12 +66,12 @@ def devices(device_type: Literal["cpu", "gpu", "auto"] = "auto") -> list[Device]
         gpus = _detect_gpus()
         if not gpus:
             raise RuntimeError("No GPU devices available")
-        return gpus
+        return cast(list[Device], gpus)
 
     # auto mode: prefer GPU, fallback to CPU
     gpus = _detect_gpus()
     if gpus:
-        return gpus
+        return cast(list[Device], gpus)
     return [CpuDevice(id=0)]
 
 

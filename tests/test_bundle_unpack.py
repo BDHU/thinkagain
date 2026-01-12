@@ -1,4 +1,4 @@
-"""Test script for bundle.unpack() method."""
+"""Test script for ta.unpack() method."""
 
 import asyncio
 from dataclasses import dataclass
@@ -23,7 +23,7 @@ async def test_unpack_basic():
     inputs = ta.Bundle(query="search", db="postgres", limit=10)
 
     # Test unpacking
-    query, db = await ta.bundle.unpack(inputs, "query", "db")
+    query, db = await ta.unpack(inputs, "query", "db")
 
     assert query == "search", f"Expected 'search', got {query}"
     assert db == "postgres", f"Expected 'postgres', got {db}"
@@ -37,7 +37,7 @@ async def test_unpack_order():
     inputs = ta.Bundle(a=1, b=2, c=3, d=4)
 
     # Unpack in different order
-    d, b, a = await ta.bundle.unpack(inputs, "d", "b", "a")
+    d, b, a = await ta.unpack(inputs, "d", "b", "a")
 
     assert d == 4 and b == 2 and a == 1, f"Order not preserved: {d}, {b}, {a}"
     print(f"  ✓ Order preserved: d={d}, b={b}, a={a}")
@@ -49,7 +49,7 @@ async def test_unpack_single():
     print("\nTest 3: Single value unpacking")
     inputs = ta.Bundle(value=42)
 
-    (value,) = await ta.bundle.unpack(inputs, "value")
+    (value,) = await ta.unpack(inputs, "value")
 
     assert value == 42, f"Expected 42, got {value}"
     print(f"  ✓ Single value: {value}")
@@ -61,7 +61,7 @@ async def test_unpack_all():
     print("\nTest 4: Unpack all values")
     inputs = ta.Bundle(x=10, y=20, z=30)
 
-    x, y, z = await ta.bundle.unpack(inputs, "x", "y", "z")
+    x, y, z = await ta.unpack(inputs, "x", "y", "z")
 
     assert x == 10 and y == 20 and z == 30, f"Values: {x}, {y}, {z}"
     print(f"  ✓ All values: x={x}, y={y}, z={z}")
@@ -73,7 +73,7 @@ async def test_unpack_dataclass():
     print("\nTest 5: Unpacking from dataclass")
     inputs = SampleInputs(query="test", db="mysql", limit=5)
 
-    query, limit = await ta.bundle.unpack(inputs, "query", "limit")
+    query, limit = await ta.unpack(inputs, "query", "limit")
 
     assert query == "test", f"Expected 'test', got {query}"
     assert limit == 5, f"Expected 5, got {limit}"
@@ -87,7 +87,7 @@ async def test_unpack_missing_key():
     inputs = ta.Bundle(a=1, b=2)
 
     try:
-        await ta.bundle.unpack(inputs, "a", "missing", "b")
+        await ta.unpack(inputs, "a", "missing", "b")
         print("  ✗ Should have raised KeyError")
         return False
     except KeyError as e:
@@ -107,7 +107,7 @@ async def test_unpack_creates_graph_node():
 
     @ta.node
     async def use_unpack(inputs):
-        query, db = await ta.bundle.unpack(inputs, "query", "db")
+        query, db = await ta.unpack(inputs, "query", "db")
         return f"{query}:{db}"
 
     inputs = ta.Bundle(query="select", db="redis")
@@ -120,7 +120,7 @@ async def test_unpack_creates_graph_node():
 async def main():
     """Run all tests."""
     print("=" * 60)
-    print("Testing ta.bundle.unpack()")
+    print("Testing ta.unpack()")
     print("=" * 60)
 
     try:

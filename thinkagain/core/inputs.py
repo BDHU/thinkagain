@@ -33,9 +33,9 @@ def make_inputs(name: str = "Inputs", **fields) -> type:
 class Bundle:
     """Lightweight traced container for pipeline inputs.
 
-    Use with runtime operations via ta.bundle.* namespace:
-        small = await ta.bundle.subset(inputs, 'query', 'llm')
-        enriched = await ta.bundle.extend(inputs, docs=docs)
+    Use with runtime operations via top-level helpers:
+        small = await ta.subset(inputs, 'query', 'llm')
+        enriched = await ta.extend(inputs, docs=docs)
     """
 
     _data: dict[str, Any] = field(default_factory=dict)
@@ -107,7 +107,7 @@ class BundleOps:
         Raises KeyError if any requested key is missing.
 
         Example:
-            >>> retrieval = await ta.bundle.subset(inputs, 'query', 'db')
+            >>> retrieval = await ta.subset(inputs, 'query', 'db')
         """
         data = _to_dict(bundle)
         missing = [k for k in keys if k not in data]
@@ -127,7 +127,7 @@ class BundleOps:
         Works with both Bundle instances and traced dataclasses.
 
         Example:
-            >>> enriched = await ta.bundle.extend(inputs, docs=docs)
+            >>> enriched = await ta.extend(inputs, docs=docs)
         """
         data = _to_dict(bundle)
         return Bundle(**{**data, **fields})
@@ -140,7 +140,7 @@ class BundleOps:
         Works with both Bundle instances and traced dataclasses.
 
         Example:
-            >>> updated = await ta.bundle.replace(inputs, query="new")
+            >>> updated = await ta.replace(inputs, query="new")
         """
         data = _to_dict(bundle)
         return Bundle(**{**data, **updates})
@@ -153,7 +153,7 @@ class BundleOps:
         Works with both Bundle instances and traced dataclasses.
 
         Example:
-            >>> query = await ta.bundle.get(inputs, 'query')
+            >>> query = await ta.get(inputs, 'query')
         """
         data = _to_dict(bundle)
         return data.get(key, default)
@@ -168,7 +168,7 @@ class BundleOps:
         Raises KeyError if any requested key is missing.
 
         Example:
-            >>> query, db = await ta.bundle.unpack(inputs, 'query', 'db')
+            >>> query, db = await ta.unpack(inputs, 'query', 'db')
         """
         data = _to_dict(bundle)
         missing = [k for k in keys if k not in data]

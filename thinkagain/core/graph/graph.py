@@ -214,7 +214,9 @@ class Graph:
     ) -> list:
         """Append captured values in graph order for subgraph execution."""
         args = list(operand_args)
-        for parent_id in sorted(self.captured_inputs, key=self.captured_inputs.get):
+        for parent_id in sorted(
+            self.captured_inputs, key=lambda pid: self.captured_inputs[pid]
+        ):
             args.append(capture_values[parent_id])
         return args
 

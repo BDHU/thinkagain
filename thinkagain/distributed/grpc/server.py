@@ -31,7 +31,9 @@ class ReplicaServicer(replica_pb2_grpc.ReplicaServiceServicer):
             )
 
     async def Execute(
-        self, request: replica_pb2.ExecuteRequest, context: grpc.aio.ServicerContext
+        self,
+        request: replica_pb2.ExecuteRequest,
+        context: grpc.aio.ServicerContext,  # type: ignore[name-defined]
     ) -> replica_pb2.ExecuteResponse:
         """Execute the function with provided arguments.
 
@@ -78,7 +80,7 @@ async def serve(instance: Any, port: int = 8000):
         >>> instance = LLMServer()
         >>> await serve(instance, port=8000)
     """
-    server = grpc.aio.server()
+    server = grpc.aio.server()  # type: ignore[attr-defined]
     replica_pb2_grpc.add_ReplicaServiceServicer_to_server(
         ReplicaServicer(instance), server
     )
