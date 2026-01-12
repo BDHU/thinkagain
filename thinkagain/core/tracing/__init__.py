@@ -10,7 +10,6 @@ from .tracer import (
     get_cache_info,
     jit,
     node,
-    register_tracing_plugin,
     trace_branch,
 )
 from .utils import captures_traced_value, get_source_location, is_traceable
@@ -35,7 +34,6 @@ __all__ = [
     "get_source_location",
     "is_traceable",
     "captures_traced_value",
-    "register_tracing_plugin",
     "trace_branch",
     # Validation
     "validate_cond_branches",

@@ -114,7 +114,9 @@ class BundleOps:
         if missing:
             missing_list = ", ".join(missing)
             available = ", ".join(sorted(data.keys()))
-            raise KeyError(f"Missing bundle keys: {missing_list}. Available: {available}")
+            raise KeyError(
+                f"Missing bundle keys: {missing_list}. Available: {available}"
+            )
         return Bundle(**{k: data[k] for k in keys})
 
     @staticmethod

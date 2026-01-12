@@ -13,14 +13,8 @@ from .executors import (
     WhileExecutor,
 )
 from .hooks import ExecutionHook, register_hook, unregister_hook
-from .replica import (
-    ReplicaConfig,
-    ReplicaHandle,
-    apply_replica,
-    register_replica_hook,
-    replica,
-    unregister_replica_hook,
-)
+from .replica import ReplicaConfig, ReplicaHandle, replica
+from .replica_state import apply_replica
 from .runtime import maybe_await
 
 __all__ = [
@@ -37,8 +31,6 @@ __all__ = [
     "ReplicaHandle",
     "ReplicaConfig",
     "apply_replica",
-    "register_replica_hook",
-    "unregister_replica_hook",
     # Hooks
     "ExecutionHook",
     "register_hook",

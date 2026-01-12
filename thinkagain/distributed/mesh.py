@@ -176,7 +176,6 @@ class Mesh:
         """Enter mesh context.
 
         Provides service execution capability for graph execution.
-        Service tracing hooks are registered automatically during @jit tracing.
         """
         from .service_runtime import ServiceExecutionProvider
 
