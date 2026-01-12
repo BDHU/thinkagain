@@ -14,6 +14,7 @@ from typing import Any, Callable, TypeVar
 from ..errors import TracingError
 from ..graph.graph import Graph, OutputKind, OutputRef, TracedValue
 from ..graph.literal_refs import normalize_traced_literal
+from ..services import register_service_bindings
 from .context import TraceContext, _trace_ctx_var
 from .utils import captures_traced_value, contains_traced_value, get_source_location
 
@@ -92,32 +93,6 @@ def get_cache_info() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Tracing Plugin Registry
-# ---------------------------------------------------------------------------
-
-# Plugin system to decouple core tracing from distributed modules
-_tracing_plugins: list[Callable[[TraceContext], Any]] = []
-
-
-def register_tracing_plugin(factory: Callable[[TraceContext], Any]) -> None:
-    """Register a plugin factory that creates tracing hooks.
-
-    Args:
-        factory: Callable that takes a TraceContext and returns a hook object
-                with record_call() and get_resource_index() methods (TracingHook protocol)
-
-    Example:
-        register_tracing_plugin(lambda ctx: MyTracingHook(ctx))
-    """
-    _tracing_plugins.append(factory)
-
-
-def unregister_all_tracing_plugins() -> None:
-    """Clear all registered tracing plugins."""
-    _tracing_plugins.clear()
-
-
-# ---------------------------------------------------------------------------
 # Graph Tracing
 # ---------------------------------------------------------------------------
 
@@ -188,18 +163,6 @@ def _make_output_ref(
     return OutputRef(OutputKind.LITERAL, normalized)
 
 
-def _register_replica_hooks(ctx: TraceContext) -> bool:
-    from ..execution.replica import register_replica_hook
-
-    registered = False
-    for plugin_factory in _tracing_plugins:
-        hook = plugin_factory(ctx)
-        if hook is not None:
-            register_replica_hook(hook)
-            registered = True
-    return registered
-
-
 async def _trace_fn(
     fn: Callable,
     input_count: int,
@@ -214,10 +177,6 @@ async def _trace_fn(
     token = _trace_ctx_var.set(ctx)
     kwargs = kwargs or {}
     static_argnames = static_argnames or set()
-    from ..execution.replica import unregister_replica_hook
-
-    replica_hook_registered = _register_replica_hooks(ctx)
-
     try:
         trace_fn = _get_trace_fn(fn, parent_ctx)
 
@@ -246,8 +205,6 @@ async def _trace_fn(
         )
     finally:
         _trace_ctx_var.reset(token)
-        if replica_hook_registered:
-            unregister_replica_hook()
 
 
 async def trace_branch(
@@ -395,12 +352,6 @@ def node(fn: Callable[..., T]) -> Callable[..., T]:
     """
     from ..execution.executors import CallExecutor
 
-    def _register_services(ctx: TraceContext, bindings: dict | None) -> None:
-        if not bindings:
-            return
-        for handle in bindings.values():
-            ctx.get_resource_index(handle)
-
     # Only accept async functions
     if not inspect.iscoroutinefunction(fn):
         raise TypeError(
@@ -413,7 +364,7 @@ def node(fn: Callable[..., T]) -> Callable[..., T]:
     async def wrapper(*args, **kwargs):
         ctx = _trace_ctx_var.get()
         if ctx is not None:
-            _register_services(ctx, getattr(fn, "_service_bindings", None))
+            register_service_bindings(ctx, wrapper)
 
             # Use wrapper as fn so that attributes like _distribution_config are visible
             # to execution hooks (e.g., distributed execution hook)

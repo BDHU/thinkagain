@@ -144,21 +144,10 @@ class TracedValue:
         )
 
     async def __call__(self, *args, **kwargs):
-        """Support calling TracedValue as a replica handle.
-
-        This allows replica handles passed as parameters to be called.
-        """
-        from ..execution.replica import _get_replica_hook, BoundReplicaMethod
-
-        hook = _get_replica_hook()
-        if hook is not None:
-            # This TracedValue represents a ReplicaHandle parameter
-            bound_method = BoundReplicaMethod(self)
-            return await bound_method(*args, **kwargs)
-
+        """Reject calling TracedValue during tracing."""
         self._error(
-            "Cannot call TracedValue during tracing unless it's a replica handle. "
-            "Make sure you're calling inside a @jit function with a mesh context."
+            "Cannot call TracedValue during tracing. If this is a replica handle, "
+            "wrap the call in a @node and bind it with @bind_service."
         )
 
     def __bool__(self):
