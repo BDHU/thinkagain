@@ -13,14 +13,11 @@ class ServiceProvider(Protocol):
     service execution capabilities.
     """
 
-    async def execute_service_call(
-        self, handle: Any, method_name: str, args: tuple, kwargs: dict
-    ) -> Any:
+    async def execute_service_call(self, handle: Any, args: tuple, kwargs: dict) -> Any:
         """Execute a service method call.
 
         Args:
             handle: Service handle (opaque to executor)
-            method_name: Name of method to call
             args: Positional arguments
             kwargs: Keyword arguments
 
@@ -37,20 +34,8 @@ class TracingHook(Protocol):
     in tracing without coupling the core tracing infrastructure to specific concepts.
     """
 
-    async def record_call(
-        self, method_name: str, args: tuple, kwargs: dict, context: Any
-    ) -> Any:
-        """Record a traced operation.
-
-        Args:
-            method_name: Name of the operation being traced
-            args: Positional arguments
-            kwargs: Keyword arguments
-            context: Additional context (e.g., service handle)
-
-        Returns:
-            Traced value representing the operation's result
-        """
+    async def record_call(self, args: tuple, kwargs: dict, handle: Any) -> Any:
+        """Record a traced operation for a service call."""
         ...
 
     def get_resource_index(self, resource: Any) -> int:

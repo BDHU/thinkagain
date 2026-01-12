@@ -101,30 +101,23 @@ class ServiceTracingHook:
         Returns:
             TracedValue representing the future result of this call
         """
-        # Import here to avoid circular dependency
-        from ..core.graph.graph import TracedValue
+        from ..core.execution.replica import ReplicaHandle
+        from ..core.graph.graph import InputRef, TracedValue
 
-        # Handle can be either a ReplicaHandle (closure) or TracedValue (parameter)
-        # In either case, it gets normalized to a ref by add_node
         if isinstance(handle, TracedValue):
-            # Handle is a traced input - will be normalized to InputRef or NodeRef
             handle_ref = handle
+        elif isinstance(handle, ReplicaHandle):
+            handle_ref = InputRef(self.trace_ctx.get_resource_index(handle))
         else:
-            # Handle is a ReplicaHandle (closure) - register as resource
-            # We need to pass it as-is to add_node, which will call _normalize
-            # But for the executor, we need just the ReplicaHandle itself
-            handle_ref = handle
+            from ..core.errors import TracingError
 
-        # Create executor for this service call
-        # The executor will store the handle as first positional arg
+            raise TracingError("Service call requires a ReplicaHandle or traced input.")
+
         executor = ServiceCallExecutor()
 
-        # Prepend handle to args so it's normalized properly
         full_args = (handle_ref,) + args
 
-        # Record the node in the graph using the universal add_node
         node_id = self.trace_ctx.add_node(executor, full_args, kwargs)
-
         return TracedValue(node_id, self.trace_ctx)
 
     def get_resource_index(self, handle: ReplicaHandle) -> int:

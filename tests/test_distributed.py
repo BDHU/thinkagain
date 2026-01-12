@@ -171,15 +171,19 @@ def test_replica_class_with_call():
 
 @pytest.mark.asyncio
 async def test_replica_class_in_jit_pipeline():
-    """Test that @replica decorated classes can be used inside @jit pipelines."""
+    """Test that @replica decorated classes can be used inside @jit pipelines via @node."""
     # Create handle outside @jit
     processor = BasicProcessor.init(2)  # type: ignore[attr-defined]
 
+    # Replicas must be called from @node functions, not directly in @jit
+    @ta.bind_service(processor=processor)
+    @ta.node
+    async def process(x: int) -> int:
+        return await processor(x)
+
     @ta.jit
     async def pipeline(x: int) -> int:
-        # Use handle in pipeline
-        result = await processor(x)
-        return result
+        return await process(x)
 
     # Execute with mesh context
     mesh = ta.Mesh([ta.CpuDevice(4)])
@@ -192,11 +196,16 @@ async def test_replica_class_in_jit_pipeline():
 @pytest.mark.asyncio
 async def test_replica_execution():
     """Test basic replica execution with mesh."""
-    processor = BasicProcessor.init()  # type: ignore[attr-defined]  # type: ignore[attr-defined]
+    processor = BasicProcessor.init()  # type: ignore[attr-defined]
+
+    @ta.bind_service(processor=processor)
+    @ta.node
+    async def process(x: int) -> int:
+        return await processor(x)
 
     @ta.jit
     async def pipeline(x: int) -> int:
-        return await processor(x)
+        return await process(x)
 
     mesh = ta.Mesh([ta.CpuDevice(4)])
 
@@ -209,11 +218,16 @@ async def test_replica_execution():
 @pytest.mark.asyncio
 async def test_replica_without_mesh():
     """Test replica works without mesh (fallback to local)."""
-    processor = BasicProcessor.init()  # type: ignore[attr-defined]  # type: ignore[attr-defined]
+    processor = BasicProcessor.init()  # type: ignore[attr-defined]
+
+    @ta.bind_service(processor=processor)
+    @ta.node
+    async def process(x: int) -> int:
+        return await processor(x)
 
     @ta.jit
     async def pipeline(x: int) -> int:
-        return await processor(x)
+        return await process(x)
 
     # Create a mesh for local execution
     mesh = ta.Mesh([ta.CpuDevice(4)])
@@ -225,11 +239,16 @@ async def test_replica_without_mesh():
 @pytest.mark.asyncio
 async def test_replica_multiple_calls():
     """Test multiple calls to replica."""
-    processor = BasicProcessor.init()  # type: ignore[attr-defined]  # type: ignore[attr-defined]
+    processor = BasicProcessor.init()  # type: ignore[attr-defined]
+
+    @ta.bind_service(processor=processor)
+    @ta.node
+    async def process(x: int) -> int:
+        return await processor(x)
 
     @ta.jit
     async def pipeline(x: int) -> int:
-        return await processor(x)
+        return await process(x)
 
     mesh = ta.Mesh([ta.CpuDevice(4)])
 
@@ -244,9 +263,14 @@ async def test_replica_with_stateful_setup():
     """Test replica with setup (stateful execution)."""
     processor = BasicProcessor.init(1)  # type: ignore[attr-defined]  # multiplier=1
 
+    @ta.bind_service(processor=processor)
+    @ta.node
+    async def process(x: int) -> int:
+        return await processor(x)
+
     @ta.jit
     async def pipeline(x: int) -> int:
-        return await processor(x)
+        return await process(x)
 
     mesh = ta.Mesh([ta.CpuDevice(4)])
 
@@ -264,9 +288,14 @@ async def test_replica_async_setup():
     """Test replica with async methods."""
     processor = BasicProcessor.init(2)  # type: ignore[attr-defined]
 
+    @ta.bind_service(processor=processor)
+    @ta.node
+    async def process(x: int) -> int:
+        return await processor(x)
+
     @ta.jit
     async def pipeline(x: int) -> int:
-        return await processor(x)
+        return await process(x)
 
     mesh = ta.Mesh([ta.CpuDevice(4)])
 
@@ -286,6 +315,11 @@ async def test_mixed_replicas_and_regular_nodes():
 
     processor = BasicProcessor.init(2)  # type: ignore[attr-defined]
 
+    @ta.bind_service(processor=processor)
+    @ta.node
+    async def process(x: int) -> int:
+        return await processor(x)
+
     @ta.node
     async def postprocess(x: int) -> int:
         return x - 1
@@ -293,7 +327,7 @@ async def test_mixed_replicas_and_regular_nodes():
     @ta.jit
     async def pipeline(x: int) -> int:
         x = await preprocess(x)
-        x = await processor(x)
+        x = await process(x)
         x = await postprocess(x)
         return x
 
@@ -321,11 +355,16 @@ async def test_profiling_context_manager():
 @pytest.mark.asyncio
 async def test_profiling_with_replica():
     """Test that profiling tracks execution with replicas."""
-    processor = ProfilingProcessor.init()  # type: ignore[attr-defined]  # type: ignore[attr-defined]
+    processor = ProfilingProcessor.init()  # type: ignore[attr-defined]
+
+    @ta.bind_service(processor=processor)
+    @ta.node
+    async def process(x: int) -> int:
+        return await processor(x)
 
     @ta.jit
     async def pipeline(x: int) -> int:
-        return await processor(x)
+        return await process(x)
 
     mesh = ta.Mesh([ta.CpuDevice(4)])
 
@@ -368,10 +407,15 @@ async def test_locally_defined_replica():
     # Create handle
     counter = LocalCounter.init(start=10)  # type: ignore[attr-defined]
 
-    # Use in pipeline
+    # Use in pipeline with @node
+    @ta.bind_service(counter=counter)
+    @ta.node
+    async def call_counter() -> int:
+        return await counter()
+
     @ta.jit
     async def count_pipeline() -> int:
-        return await counter()
+        return await call_counter()
 
     mesh = ta.Mesh([ta.CpuDevice(1)])
 
@@ -409,9 +453,14 @@ async def test_locally_defined_replica_serialization():
     assert dict(restored.init_kwargs) == {"prefix": "TEST"}
 
     # Test execution with restored handle
+    @ta.bind_service(restored=restored)
+    @ta.node
+    async def process(text: str) -> str:
+        return await restored(text)
+
     @ta.jit
     async def pipeline(text: str) -> str:
-        return await restored(text)
+        return await process(text)
 
     mesh = ta.Mesh([ta.CpuDevice(1)])
 
@@ -424,97 +473,184 @@ async def test_locally_defined_replica_serialization():
 # Handle as parameter tests
 @pytest.mark.asyncio
 async def test_replica_handle_as_positional_arg():
-    """Test that replica handles can be passed as positional arguments to @jit functions."""
+    """Test that replica handles work when passed through pipeline parameters."""
     processor = BasicProcessor.init(3)  # type: ignore[attr-defined]  # multiplier=3
 
+    @ta.bind_service(processor=processor)
+    @ta.node
+    async def call_processor(x: int) -> int:
+        return await processor(x)
+
     @ta.jit
-    async def pipeline(handle, x: int) -> int:
-        return await handle(x)
+    async def pipeline(x: int) -> int:
+        # Replicas are bound to nodes, not passed as parameters in this architecture
+        return await call_processor(x)
 
     mesh = ta.Mesh([ta.CpuDevice(4)])
 
     with mesh:
-        result = await pipeline(processor, 5)
+        result = await pipeline(5)
 
     assert result == 15  # 5 * 3
 
 
 @pytest.mark.asyncio
 async def test_replica_handle_as_kwarg():
-    """Test that replica handles can be passed as keyword arguments to @jit functions."""
+    """Test that replica handles work with keyword argument pattern."""
     processor = BasicProcessor.init(4)  # type: ignore[attr-defined]  # multiplier=4
 
+    @ta.bind_service(processor=processor)
+    @ta.node
+    async def call_processor(x: int) -> int:
+        return await processor(x)
+
     @ta.jit
-    async def pipeline(x: int, handle=None) -> int:
-        return await handle(x)
+    async def pipeline(x: int) -> int:
+        return await call_processor(x)
 
     mesh = ta.Mesh([ta.CpuDevice(4)])
 
     with mesh:
-        result = await pipeline(7, handle=processor)
+        result = await pipeline(7)
 
     assert result == 28  # 7 * 4
 
 
 @pytest.mark.asyncio
 async def test_multiple_replica_handles_as_args():
-    """Test passing multiple replica handles as arguments."""
+    """Test using multiple replica handles in a pipeline."""
     processor1 = BasicProcessor.init(2)  # type: ignore[attr-defined]  # multiplier=2
     processor2 = BasicProcessor.init(3)  # type: ignore[attr-defined]  # multiplier=3
 
-    @ta.jit
-    async def pipeline(h1, h2, x: int) -> int:
-        # Call first handle, pass result to second
-        result = await h1(x)
-        result = await h2(result)
+    @ta.bind_service(processor1=processor1, processor2=processor2)
+    @ta.node
+    async def process_both(x: int) -> int:
+        result = await processor1(x)
+        result = await processor2(result)
         return result
+
+    @ta.jit
+    async def pipeline(x: int) -> int:
+        return await process_both(x)
 
     mesh = ta.Mesh([ta.CpuDevice(4)])
 
     with mesh:
-        result = await pipeline(processor1, processor2, 5)
+        result = await pipeline(5)
 
     assert result == 30  # ((5 * 2) * 3) = 30
 
 
 @pytest.mark.asyncio
 async def test_replica_handle_mixed_closure_and_param():
-    """Test mixing closure-captured handle with parameter handle."""
+    """Test mixing multiple bound services in nodes."""
     closure_processor = BasicProcessor.init(2)  # type: ignore[attr-defined]
+    param_processor = BasicProcessor.init(5)  # type: ignore[attr-defined]
 
-    @ta.jit
-    async def pipeline(param_handle, x: int) -> int:
-        # Call closure handle, then param handle
+    @ta.bind_service(
+        closure_processor=closure_processor, param_processor=param_processor
+    )
+    @ta.node
+    async def process_both(x: int) -> int:
         result = await closure_processor(x)
-        result = await param_handle(result)
+        result = await param_processor(result)
         return result
 
-    param_processor = BasicProcessor.init(5)  # type: ignore[attr-defined]
+    @ta.jit
+    async def pipeline(x: int) -> int:
+        return await process_both(x)
+
     mesh = ta.Mesh([ta.CpuDevice(4)])
 
     with mesh:
-        result = await pipeline(param_processor, 3)
+        result = await pipeline(3)
 
     assert result == 30  # ((3 * 2) * 5) = 30
 
 
 @pytest.mark.asyncio
 async def test_replica_handle_caching_with_different_handles():
-    """Test that graph caching works correctly with different handles passed as args."""
+    """Test that different handles execute correctly when bound to different pipelines."""
     processor1 = BasicProcessor.init(2)  # type: ignore[attr-defined]
     processor2 = BasicProcessor.init(10)  # type: ignore[attr-defined]
 
+    @ta.bind_service(processor1=processor1)
+    @ta.node
+    async def process1(x: int) -> int:
+        return await processor1(x)
+
+    @ta.bind_service(processor2=processor2)
+    @ta.node
+    async def process2(x: int) -> int:
+        return await processor2(x)
+
     @ta.jit
-    async def pipeline(handle, x: int) -> int:
-        return await handle(x)
+    async def pipeline1(x: int) -> int:
+        return await process1(x)
+
+    @ta.jit
+    async def pipeline2(x: int) -> int:
+        return await process2(x)
 
     mesh = ta.Mesh([ta.CpuDevice(4)])
 
     with mesh:
         # First call with processor1
-        result1 = await pipeline(processor1, 5)
-        # Second call with processor2 (should use different graph due to different handle)
-        result2 = await pipeline(processor2, 5)
+        result1 = await pipeline1(5)
+        # Second call with processor2
+        result2 = await pipeline2(5)
 
     assert result1 == 10  # 5 * 2
     assert result2 == 50  # 5 * 10
+
+
+# Service-bound node tests
+@pytest.mark.asyncio
+async def test_service_bound_node():
+    """Test binding a service to a @node function."""
+    processor = BasicProcessor.init(3)  # type: ignore[attr-defined]
+
+    @ta.bind_service(processor=processor)
+    @ta.node
+    async def process(x: int) -> int:
+        return await processor(x)
+
+    @ta.jit
+    async def pipeline(x: int) -> int:
+        return await process(x)
+
+    mesh = ta.Mesh([ta.CpuDevice(4)])
+
+    with mesh:
+        result = await pipeline(7)
+
+    assert result == 21  # 7 * 3
+
+
+@pytest.mark.asyncio
+async def test_multiple_services_bound_to_node():
+    """Test binding multiple services to a @node function."""
+    processor1 = BasicProcessor.init(2)  # type: ignore[attr-defined]
+    processor2 = BasicProcessor.init(5)  # type: ignore[attr-defined]
+
+    @ta.node
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    @ta.bind_service(proc1=processor1, proc2=processor2)
+    @ta.node
+    async def process_with_both(x: int) -> int:
+        result1 = await processor1(x)
+        result2 = await processor2(x)
+        return await add(result1, result2)
+
+    @ta.jit
+    async def pipeline(x: int) -> int:
+        return await process_with_both(x)
+
+    mesh = ta.Mesh([ta.CpuDevice(4)])
+
+    with mesh:
+        result = await pipeline(10)
+
+    assert result == 70  # (10 * 2) + (10 * 5) = 20 + 50

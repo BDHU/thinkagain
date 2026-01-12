@@ -154,7 +154,7 @@ def _get_trace_fn(fn: Callable, parent_ctx: TraceContext | None) -> Callable:
     """Get the actual function to trace (unwrap @node if needed)."""
     if hasattr(fn, "_node_fn") and captures_traced_value(fn._node_fn, parent_ctx):
         return fn._node_fn
-    # For @node decorated classes, trace the __call__ method if it captures values
+    # For callable instances with async __call__, trace the __call__ method if it captures values
     if inspect.iscoroutinefunction(
         getattr(fn, "__call__", None)
     ) and captures_traced_value(fn.__call__, parent_ctx):
@@ -376,15 +376,12 @@ def jit(
 
 
 def node(fn: Callable[..., T]) -> Callable[..., T]:
-    """Decorator to mark an async function or class as a traceable node.
+    """Decorator to mark an async function as a traceable node.
 
     Inside @jit: Returns TracedValue, adds to computation graph
     Outside @jit: Executes normally
 
-    Works with:
-    - Async functions
-    - Classes with async __call__ method
-    - Any callable that returns an awaitable
+    Only works with async functions. For stateful objects, use @replica instead.
 
     Examples:
         @node
@@ -393,51 +390,31 @@ def node(fn: Callable[..., T]) -> Callable[..., T]:
             return replace(state, documents=docs)
 
         @node
-        class LLMNode:
-            def __init__(self, model: str):
-                self.model = model
-
-            async def __call__(self, state):
-                response = await llm.generate(self.model, state.query)
-                return replace(state, answer=response)
+        async def process(state, factor: int):
+            return replace(state, value=state.value * factor)
     """
     from ..execution.executors import CallExecutor
 
-    # Check if it's an async function or a class/callable with async __call__
-    is_async_fn = inspect.iscoroutinefunction(fn)
-    is_async_callable = inspect.iscoroutinefunction(getattr(fn, "__call__", None))
+    def _register_services(ctx: TraceContext, bindings: dict | None) -> None:
+        if not bindings:
+            return
+        for handle in bindings.values():
+            ctx.get_resource_index(handle)
 
-    if not (is_async_fn or is_async_callable):
+    # Only accept async functions
+    if not inspect.iscoroutinefunction(fn):
         raise TypeError(
-            f"@node requires async function or class with async __call__, "
-            f"got {fn.__name__}"
+            f"@node requires an async function, got {fn.__name__}. "
+            f"For stateful objects, use @replica instead."
         )
 
-    # If it's a class with async __call__, wrap the __call__ method
-    if inspect.isclass(fn):
-        original_call = fn.__call__
-
-        async def wrapped_call(self, *args, **kwargs):
-            ctx = _trace_ctx_var.get()
-            if ctx is not None:
-                # Add the instance (self) as the callable node
-                executor = CallExecutor(fn=self)
-                node_id = ctx.add_node(
-                    executor, args, kwargs, get_source_location(self)
-                )
-                return TracedValue(node_id, ctx)
-            return await original_call(self, *args, **kwargs)
-
-        fn.__call__ = wrapped_call
-        fn._is_node = True
-        fn._node_fn = fn
-        return fn
-
-    # For async functions, wrap in tracing logic
+    # Wrap in tracing logic
     @functools.wraps(fn)
     async def wrapper(*args, **kwargs):
         ctx = _trace_ctx_var.get()
         if ctx is not None:
+            _register_services(ctx, getattr(fn, "_service_bindings", None))
+
             # Use wrapper as fn so that attributes like _distribution_config are visible
             # to execution hooks (e.g., distributed execution hook)
             executor = CallExecutor(fn=wrapper)
@@ -447,4 +424,6 @@ def node(fn: Callable[..., T]) -> Callable[..., T]:
 
     wrapper._is_node = True
     wrapper._node_fn = fn
+    if hasattr(fn, "_service_bindings"):
+        wrapper._service_bindings = fn._service_bindings  # type: ignore[attr-defined]
     return wrapper

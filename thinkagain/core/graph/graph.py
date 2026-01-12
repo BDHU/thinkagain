@@ -133,7 +133,7 @@ class TracedValue:
         return f"TracedValue(node_id={self.node_id})"
 
     def _error(self, msg: str) -> None:
-        from .errors import TracingError
+        from ..errors import TracingError
 
         raise TracingError(msg)
 
@@ -248,5 +248,8 @@ class Graph:
         from ..execution.executor import execute_graph
 
         return await execute_graph(
-            self, *args, parent_values=parent_values, service_provider=service_provider
+            self,
+            *args,
+            parent_values=parent_values,
+            service_provider=service_provider,
         )

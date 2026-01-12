@@ -1,14 +1,20 @@
 """thinkagain - Minimal framework for declarative AI pipelines with JAX-style graph building."""
 
 from .core import (
+    Bundle,
     CpuDevice,
     GpuDevice,
     Graph,
     NodeExecutionError,
     ReplicaHandle,
+    TracingError,
+    apply_replica,
+    bind_service,
+    bundle,
     cond,
     devices,
     jit,
+    make_inputs,
     node,
     replica,
     scan,
@@ -30,8 +36,10 @@ __version__ = "0.3.0"
 __all__ = [
     # Core - Node decorator
     "node",
+    "bind_service",
     # Core - Replica decorator
     "replica",
+    "apply_replica",
     # Core - Traceable types
     "trace",
     # Core - Compilation
@@ -44,8 +52,13 @@ __all__ = [
     "switch",
     # Core - Types
     "ReplicaHandle",
+    # Core - Input bundling
+    "Bundle",
+    "bundle",
+    "make_inputs",
     # Core - Errors
     "NodeExecutionError",
+    "TracingError",
     # Core - Devices
     "GpuDevice",
     "CpuDevice",

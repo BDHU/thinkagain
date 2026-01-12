@@ -16,6 +16,7 @@ from .hooks import ExecutionHook, register_hook, unregister_hook
 from .replica import (
     ReplicaConfig,
     ReplicaHandle,
+    apply_replica,
     register_replica_hook,
     replica,
     unregister_replica_hook,
@@ -35,6 +36,7 @@ __all__ = [
     "replica",
     "ReplicaHandle",
     "ReplicaConfig",
+    "apply_replica",
     "register_replica_hook",
     "unregister_replica_hook",
     # Hooks
