@@ -25,7 +25,7 @@ async def _execute_branch(
         graph_args = ctx.prepare_subgraph_args(branch, operand_args)
         return await branch.execute(
             *graph_args,
-            parent_values=ctx.capture_values,
+            parent_values=ctx.node_values,
             service_provider=ctx.service_provider,
         )
     return await maybe_await(branch, *operand_args)

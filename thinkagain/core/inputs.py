@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field, fields, is_dataclass, make_dataclass
 from typing import Any
 
+from .graph.graph import TracedValue
 from .traceable import trace
 from .tracing import node
 
@@ -159,26 +161,36 @@ class BundleOps:
         return data.get(key, default)
 
     @staticmethod
-    @node
     async def unpack(bundle: Any, *keys: str) -> tuple[Any, ...]:
-        """Unpack multiple fields from bundle or dataclass (runtime operation).
+        """Unpack multiple fields from bundle or dataclass.
 
         Returns values as a tuple in the order keys were specified.
         Works with both Bundle instances and traced dataclasses.
         Raises KeyError if any requested key is missing.
 
+        This implementation calls get() for each key, creating separate graph nodes.
+        This allows tuple unpacking to work in @ta.jit contexts.
+
         Example:
             >>> query, db = await ta.unpack(inputs, 'query', 'db')
         """
-        data = _to_dict(bundle)
-        missing = [k for k in keys if k not in data]
-        if missing:
-            missing_list = ", ".join(missing)
-            available = ", ".join(sorted(data.keys()))
-            raise KeyError(
-                f"Missing bundle keys: {missing_list}. Available: {available}"
-            )
-        return tuple(data[k] for k in keys)
+        # During tracing, bundle is a TracedValue - skip validation
+        # The get() calls will handle errors at runtime
+        if not isinstance(bundle, TracedValue):
+            # Validate keys exist when not tracing
+            data = _to_dict(bundle)
+            missing = [k for k in keys if k not in data]
+            if missing:
+                missing_list = ", ".join(missing)
+                available = ", ".join(sorted(data.keys()))
+                raise KeyError(
+                    f"Missing bundle keys: {missing_list}. Available: {available}"
+                )
+
+        # Call get() for each key in parallel - each creates its own graph node
+        # Returns a plain tuple of values (or TracedValues during tracing)
+        results = await asyncio.gather(*(BundleOps.get(bundle, key) for key in keys))
+        return tuple(results)
 
 
 # Create singleton namespace
