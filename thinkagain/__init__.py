@@ -29,7 +29,13 @@ from .core.profiling import (
     is_profiling_enabled,
     profile,
 )
-from .distributed import Mesh, MeshNode, get_current_mesh
+from .distributed import (
+    Mesh,
+    MeshNode,
+    get_current_mesh,
+    register_distributed_hooks,
+    unregister_distributed_hooks,
+)
 
 __version__ = "0.3.0"
 
@@ -67,6 +73,8 @@ __all__ = [
     "Mesh",
     "MeshNode",
     "get_current_mesh",
+    "register_distributed_hooks",
+    "unregister_distributed_hooks",
     # Profiling
     "enable_profiling",
     "disable_profiling",

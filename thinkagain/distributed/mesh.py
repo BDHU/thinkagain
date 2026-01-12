@@ -6,21 +6,20 @@ multiple nodes. Mesh defines available resources and is used as an execution con
 
 from __future__ import annotations
 
-import threading
+import contextvars
 from dataclasses import dataclass
 
 from ..core.devices import CpuDevice, Device, GpuDevice
 
 
-# Thread-local context stack for mesh
-_mesh_stack = threading.local()
+_mesh_stack: contextvars.ContextVar[tuple["Mesh", ...]] = contextvars.ContextVar(
+    "mesh_stack", default=()
+)
 
 
-def _get_mesh_stack() -> list["Mesh"]:
-    """Get thread-local mesh stack."""
-    if not hasattr(_mesh_stack, "stack"):
-        _mesh_stack.stack = []
-    return _mesh_stack.stack
+def _get_mesh_stack() -> tuple["Mesh", ...]:
+    """Get context-local mesh stack."""
+    return _mesh_stack.get()
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +179,7 @@ class Mesh:
         from .service_runtime import ServiceExecutionProvider
 
         stack = _get_mesh_stack()
-        stack.append(self)
+        self._mesh_token = _mesh_stack.set((*stack, self))
 
         # Store service provider for execution
         self._service_provider = ServiceExecutionProvider(self)
@@ -189,8 +188,14 @@ class Mesh:
 
     def __exit__(self, *args):
         """Exit mesh context."""
+        token = getattr(self, "_mesh_token", None)
+        if token is not None:
+            _mesh_stack.reset(token)
+            self._mesh_token = None
+            return
         stack = _get_mesh_stack()
-        stack.pop()
+        if stack:
+            _mesh_stack.set(stack[:-1])
 
     def get_service_provider(self):
         """Get the service provider for this mesh.
