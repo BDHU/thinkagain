@@ -158,6 +158,28 @@ class BundleOps:
         data = _to_dict(bundle)
         return data.get(key, default)
 
+    @staticmethod
+    @node
+    async def unpack(bundle: Any, *keys: str) -> tuple[Any, ...]:
+        """Unpack multiple fields from bundle or dataclass (runtime operation).
+
+        Returns values as a tuple in the order keys were specified.
+        Works with both Bundle instances and traced dataclasses.
+        Raises KeyError if any requested key is missing.
+
+        Example:
+            >>> query, db = await ta.bundle.unpack(inputs, 'query', 'db')
+        """
+        data = _to_dict(bundle)
+        missing = [k for k in keys if k not in data]
+        if missing:
+            missing_list = ", ".join(missing)
+            available = ", ".join(sorted(data.keys()))
+            raise KeyError(
+                f"Missing bundle keys: {missing_list}. Available: {available}"
+            )
+        return tuple(data[k] for k in keys)
+
 
 # Create singleton namespace
 bundle = BundleOps()
