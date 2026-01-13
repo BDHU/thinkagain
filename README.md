@@ -308,6 +308,7 @@ ThinkAgain follows JAX's philosophy of explicit resource management and transpar
 See [examples/](examples/) for working demos:
 - `demo.py` – Core @jit API with control flow (cond, while_loop, scan)
 - `new_distributed_api_demo.py` – Distributed execution with @replica and Mesh
+
 - `grpc_remote_example.py` – Remote execution with gRPC backend (multi-server)
 
 ## Documentation
