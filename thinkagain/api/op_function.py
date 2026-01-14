@@ -1,19 +1,19 @@
-"""RemoteFunction - wrapper that adds .go() method to @node functions."""
+"""OpFunction - wrapper that adds .go() method to @op functions."""
 
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, TypeVar, cast
 from uuid import uuid4
 
 from ..runtime.utils import maybe_await
 from ..runtime.object_ref import ObjectRef
 from ..runtime import get_current_runtime
-from ..runtime.task import Task
+from ..runtime.op import Op
 
-__all__ = ["RemoteFunction", "wrap_as_remote_function"]
+__all__ = ["OpFunction", "wrap_as_op_function"]
 
 T = TypeVar("T")
 
 
-class RemoteFunction:
+class OpFunction:
     """Wrapper that adds .go() method to functions.
 
     This allows functions to be called in two ways:
@@ -21,7 +21,7 @@ class RemoteFunction:
     2. Remote call: fn.go(x) - submits to scheduler, returns ObjectRef
 
     Example:
-        @node
+        @op
         async def process(x: str) -> str:
             return x.upper()
 
@@ -34,27 +34,27 @@ class RemoteFunction:
     """
 
     def __init__(self, fn: Callable):
-        """Initialize the remote function wrapper.
+        """Initialize the remote operation wrapper.
 
         Args:
             fn: The function to wrap
         """
         self._fn = fn
-        self.__name__ = getattr(fn, "__name__", "remote_function")
+        self.__name__ = getattr(fn, "__name__", "op_function")
         self.__doc__ = getattr(fn, "__doc__", None)
-        self.__module__ = getattr(fn, "__module__", None)
-        self.__qualname__ = getattr(fn, "__qualname__", None)
+        self.__module__ = cast(str, getattr(fn, "__module__", "") or "")
+        self.__qualname__ = cast(str, getattr(fn, "__qualname__", "") or "")
 
         # Copy over special attributes from original function
-        if hasattr(fn, "_is_node"):
-            self._is_node = fn._is_node  # type: ignore
-        if hasattr(fn, "_node_fn"):
-            self._node_fn = fn._node_fn  # type: ignore
+        if hasattr(fn, "_is_op"):
+            self._is_op = fn._is_op  # type: ignore[attr-defined]
+        if hasattr(fn, "_op_fn"):
+            self._op_fn = fn._op_fn  # type: ignore[attr-defined]
         if hasattr(fn, "_service_bindings"):
-            self._service_bindings = fn._service_bindings  # type: ignore
+            self._service_bindings = fn._service_bindings  # type: ignore[attr-defined]
 
     def go(self, *args: Any, **kwargs: Any) -> ObjectRef:
-        """Submit this function as a task to the scheduler.
+        """Submit this function as an op to the scheduler.
 
         Returns an ObjectRef immediately without blocking. The function
         will be executed when its dependencies are ready.
@@ -77,16 +77,16 @@ class RemoteFunction:
         runtime = get_current_runtime()
         runtime.ensure_started()
 
-        # Create task
-        task = Task(
-            task_id=uuid4(),
+        # Create op
+        op = Op(
+            op_id=uuid4(),
             fn=self._fn,  # Use underlying function
             args=args,
             kwargs=kwargs,
         )
 
         # Submit and return ObjectRef
-        return runtime.scheduler.submit_task(task)
+        return runtime.scheduler.submit_op(op)
 
     async def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Direct call bypasses scheduler and executes immediately.
@@ -106,16 +106,16 @@ class RemoteFunction:
 
     def __repr__(self) -> str:
         """Human-readable representation."""
-        return f"RemoteFunction({self.__name__})"
+        return f"OpFunction({self.__name__})"
 
 
-def wrap_as_remote_function(fn: Callable[..., T]) -> RemoteFunction:
+def wrap_as_op_function(fn: Callable[..., T]) -> OpFunction:
     """Wrap a function to add .go() method.
 
     Args:
         fn: Function to wrap
 
     Returns:
-        RemoteFunction wrapper with .go() method
+        OpFunction wrapper with .go() method
     """
-    return RemoteFunction(fn)
+    return OpFunction(fn)

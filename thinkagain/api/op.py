@@ -1,4 +1,4 @@
-"""@node decorator for marking functions as remotely executable."""
+"""@op decorator for marking functions as remotely executable operations."""
 
 from __future__ import annotations
 
@@ -9,13 +9,13 @@ from typing import Callable, TypeVar, cast
 T = TypeVar("T")
 
 
-def node(
+def op(
     fn: Callable[..., T] | None = None,
     *,
     name: str | None = None,
     description: str | None = None,
 ) -> Callable[..., T] | Callable[[Callable[..., T]], Callable[..., T]]:
-    """Decorator to mark an async function as a remotely executable node.
+    """Decorator to mark an async function as a remotely executable operation.
 
     The decorated function can be called in two ways:
     1. Direct call: await fn(x) - executes immediately
@@ -23,15 +23,15 @@ def node(
 
     Args:
         fn: The function to decorate (when used without parentheses)
-        name: Optional human-readable name for the node (defaults to function name)
-        description: Optional description of what the node does
+        name: Optional human-readable name for the operation (defaults to function name)
+        description: Optional description of what the operation does
 
     Example:
-        @node
+        @op
         async def process(text: str) -> str:
             return text.upper()
 
-        @node(name="Text Processor", description="Converts text to uppercase")
+        @op(name="Text Processor", description="Converts text to uppercase")
         async def process(text: str) -> str:
             return text.upper()
 
@@ -42,15 +42,15 @@ def node(
         ref = process.go("hello")
         result = await ref
     """
-    from .remote_function import RemoteFunction
+    from .op_function import OpFunction
 
     def decorator(fn: Callable[..., T]) -> Callable[..., T]:
         # Only accept async functions
         if not inspect.iscoroutinefunction(fn):
             fn_name = getattr(fn, "__name__", fn.__class__.__name__)
             raise TypeError(
-                f"@node requires an async function, got {fn_name}. "
-                f"For stateful objects, use @replica instead."
+                f"@op requires an async function, got {fn_name}. "
+                f"For stateful objects, use @service instead."
             )
 
         # Simple wrapper that just executes the function
@@ -58,16 +58,17 @@ def node(
         async def wrapper(*args, **kwargs):
             return await fn(*args, **kwargs)
 
-        setattr(wrapper, "_is_node", True)
-        setattr(wrapper, "_node_fn", fn)
-        setattr(wrapper, "_node_name", name or fn.__name__)
-        setattr(wrapper, "_node_description", description)
+        setattr(wrapper, "_is_op", True)
+        setattr(wrapper, "_op_fn", fn)
+        fn_name = getattr(fn, "__name__", "<anonymous>")
+        setattr(wrapper, "_op_name", name or fn_name)
+        setattr(wrapper, "_op_description", description)
 
-        # Wrap with RemoteFunction to add .go() method
-        remote_fn = RemoteFunction(wrapper)
-        return cast(Callable[..., T], remote_fn)
+        # Wrap with OpFunction to add .go() method
+        op_function = OpFunction(wrapper)
+        return cast(Callable[..., T], op_function)
 
-    # Support both @node and @node(...) syntax
+    # Support both @op and @op(...) syntax
     if fn is not None:
         return decorator(fn)
     return decorator
