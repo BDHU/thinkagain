@@ -10,6 +10,9 @@ from __future__ import annotations
 import time
 from typing import Any, Awaitable, Callable, Protocol
 
+from .context import get_current_execution_context
+from ..resources import get_current_mesh
+
 __all__ = [
     "ExecutionHook",
     "register_hook",
@@ -18,43 +21,37 @@ __all__ = [
     "clear_hooks",
     "register_distributed_hooks",
     "unregister_distributed_hooks",
-    "dynamic_actor_hook",
+    "dynamic_service_hook",
 ]
 
 
 class ExecutionHook(Protocol):
     """Protocol for execution hooks.
 
-    Hooks can intercept function execution and either:
+    Hooks can intercept op execution and either:
     1. Return (True, result) to short-circuit execution with a custom result
     2. Return (False, None) to continue with normal execution
     """
 
     async def __call__(
         self,
-        task: Any | Callable,
+        op: Any,
         args: tuple,
         kwargs: dict,
-        node_id: int | None = None,
     ) -> tuple[bool, Any]:
-        """Intercept function execution.
+        """Intercept op execution.
 
         Args:
-            task: Task object or function being executed
+            op: Op or ServiceOp being executed
             args: Positional arguments
             kwargs: Keyword arguments
-            node_id: Optional node ID for context
 
         Returns:
             (handled, result) tuple:
-            - If handled=True, result is used instead of calling fn
+            - If handled=True, result is used instead of calling op.fn
             - If handled=False, normal execution continues
         """
         ...
-
-
-# Global hook registry (order matters - first match wins)
-_hooks: list[ExecutionHook] = []
 
 
 def register_hook(hook: ExecutionHook) -> None:
@@ -66,8 +63,9 @@ def register_hook(hook: ExecutionHook) -> None:
     Args:
         hook: Hook to register
     """
-    if hook not in _hooks:
-        _hooks.append(hook)
+    hooks = get_current_execution_context().hooks
+    if hook not in hooks:
+        hooks.append(hook)
 
 
 def unregister_hook(hook: ExecutionHook) -> None:
@@ -76,18 +74,19 @@ def unregister_hook(hook: ExecutionHook) -> None:
     Args:
         hook: Hook to remove
     """
-    if hook in _hooks:
-        _hooks.remove(hook)
+    hooks = get_current_execution_context().hooks
+    if hook in hooks:
+        hooks.remove(hook)
 
 
 def get_hooks() -> list[ExecutionHook]:
     """Get all registered hooks (for testing/debugging)."""
-    return _hooks.copy()
+    return get_current_execution_context().hooks.copy()
 
 
 def clear_hooks() -> None:
     """Clear all hooks (for testing)."""
-    _hooks.clear()
+    get_current_execution_context().hooks.clear()
 
 
 # --------------------------------------------------------------------------- #
@@ -107,36 +106,34 @@ async def _execute_with_profile(name: str, call: Callable[[], Awaitable[Any]]) -
         return await call()
     finally:
         duration = time.perf_counter() - start_time
-        profiling.record_replicate_call(name, duration=duration)
+        profiling.record_service_call(name, duration=duration)
 
 
 async def distributed_execution_hook(
-    fn: Any,
+    op: Any,
     args: tuple,
     kwargs: dict,
-    node_id: int | None = None,
 ) -> tuple[bool, Any]:
-    """Hook to handle distributed execution of replicated classes.
+    """Hook to handle distributed execution of service classes.
 
     Args:
-        fn: Class or callable being executed
+        op: Op being executed
         args: Positional arguments
         kwargs: Keyword arguments
-        node_id: Optional node ID
 
     Returns:
         (handled, result) tuple:
-        - If fn has _replica_config and mesh is active: (True, result)
+        - If fn has _service_config and mesh is active: (True, result)
         - Otherwise: (False, None) to continue with normal execution
     """
-    # Check if class is a replica
-    if not hasattr(fn, "_replica_config"):
+    # Check if class is a service
+    fn = getattr(op, "fn", None)
+    if fn is None or not hasattr(fn, "_service_config"):
         return (False, None)
 
-    from ..resources import get_current_mesh
     from .pool import ensure_deployed, get_or_create_pool
 
-    config = fn._replica_config
+    config = fn._service_config
     mesh = get_current_mesh()
 
     if mesh is None:
@@ -144,10 +141,10 @@ async def distributed_execution_hook(
 
     pool = get_or_create_pool(fn, config, mesh)
     await ensure_deployed(pool)
-    replica = pool.get_next()
+    instance = pool.get_next()
 
     result = await _execute_with_profile(
-        fn.__name__, lambda: replica.execute(*args, **kwargs)
+        fn.__name__, lambda: instance.execute(*args, **kwargs)
     )
 
     return (True, result)
@@ -158,55 +155,45 @@ async def distributed_execution_hook(
 # --------------------------------------------------------------------------- #
 
 
-async def dynamic_actor_hook(
-    task: Any,
+async def dynamic_service_hook(
+    op: Any,
     args: tuple,
     kwargs: dict,
 ) -> tuple[bool, Any]:
-    """Hook for handling ActorTask execution with proper access to task object.
+    """Hook for handling ServiceOp execution with proper access to op object.
 
     Args:
-        task: The Task or ActorTask being executed
+        op: The Op or ServiceOp being executed
         args: Resolved positional arguments
         kwargs: Resolved keyword arguments
 
     Returns:
         (handled, result) tuple
     """
-    from .task import ActorTask
+    from .op import ServiceOp
 
-    if not isinstance(task, ActorTask):
+    if not isinstance(op, ServiceOp):
         return (False, None)
 
-    from ..resources import get_current_mesh
+    from ..resources import require_mesh
     from .pool import ensure_deployed, get_or_create_handle_pool
 
-    actor_handle = task.actor_handle
-    method_name = task.method_name
+    service_handle = op.service_handle
+    method_name = op.method_name
 
-    mesh = get_current_mesh()
-    if mesh is None:
-        raise RuntimeError(
-            f"Actor {actor_handle._replica_class.__name__} requires a mesh context. "
-            "Use 'with Mesh([...]):' to create a mesh before calling actor methods."
-        )
+    mesh = require_mesh(f"Service '{service_handle.service_class.__name__}'")
 
-    pool = get_or_create_handle_pool(actor_handle.replica_handle, mesh)
+    pool = get_or_create_handle_pool(service_handle, mesh)
     await ensure_deployed(pool)
-    replica = pool.get_next()
+    service_inst = pool.get_next()
 
     import asyncio
 
-    async def call_actor_method():
-        if hasattr(replica, "state") and replica.state is not None:
-            instance = replica.state
-        elif hasattr(replica, "fn") and replica.fn is not None:
-            instance = replica.fn
-            if not hasattr(replica, "state") or replica.state is None:
-                replica.state = instance
-        else:
+    async def call_service_method():
+        instance = service_inst.get_service()
+        if instance is None:
             raise RuntimeError(
-                f"Cannot access actor instance for {actor_handle._replica_class.__name__}"
+                f"Cannot access service instance for {service_handle.service_class.__name__}"
             )
 
         method = getattr(instance, method_name)
@@ -216,8 +203,8 @@ async def dynamic_actor_hook(
             return method(*args, **kwargs)
 
     result = await _execute_with_profile(
-        f"{actor_handle._replica_class.__name__}.{method_name}",
-        call_actor_method,
+        f"{service_handle.service_class.__name__}.{method_name}",
+        call_service_method,
     )
 
     return (True, result)
@@ -231,6 +218,7 @@ async def dynamic_actor_hook(
 def register_distributed_hooks() -> None:
     """Register distributed execution hooks explicitly."""
     register_hook(distributed_execution_hook)
+    register_hook(dynamic_service_hook)
 
 
 def unregister_distributed_hooks() -> None:
