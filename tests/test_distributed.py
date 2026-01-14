@@ -1,4 +1,4 @@
-"""Tests for distributed execution with @replica, @node, Mesh, and .go() API."""
+"""Tests for distributed execution with @service, @op, Mesh, and .go() API."""
 
 import asyncio
 
@@ -159,7 +159,7 @@ def test_mesh_context():
 
 
 def test_replica_basic():
-    """Test basic @replica decorator configuration."""
+    """Test basic @service decorator configuration."""
     assert hasattr(BasicProcessor, "_service_config")
     assert BasicProcessor._service_config.gpus is None
     assert BasicProcessor._service_config.backend == "local"
@@ -170,7 +170,7 @@ def test_replica_basic():
 
 
 def test_replica_with_gpus():
-    """Test @replica with GPU requirement."""
+    """Test @service with GPU requirement."""
     config = GpuProcessor._service_config  # type: ignore[attr-defined]
     assert config.gpus == 4
 
@@ -181,14 +181,14 @@ def test_replica_with_gpus():
 
 
 def test_replica_with_setup():
-    """Test @replica with setup function."""
+    """Test @service with setup function."""
     # Test that GpuProcessor can be initialized with setup params
     config = GpuProcessor._service_config  # type: ignore[attr-defined]
     assert config.gpus == 4
 
 
 def test_replica_class_with_call():
-    """Test that @replica on classes with async __call__ works correctly."""
+    """Test that @service on classes with async __call__ works correctly."""
     # Should have replica config
     assert hasattr(GrpcProcessor, "_service_config")
     assert GrpcProcessor._service_config.gpus == 1
@@ -440,7 +440,7 @@ async def test_parallel_replica_calls():
 
 @pytest.mark.asyncio
 async def test_replica_with_node_composition():
-    """Test composing replicas with @node functions using .go()."""
+    """Test composing replicas with @op functions using .go()."""
     processor1 = BasicProcessor.init(2)  # type: ignore[attr-defined]
     processor2 = BasicProcessor.init(5)  # type: ignore[attr-defined]
 
