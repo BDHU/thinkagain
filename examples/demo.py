@@ -1,4 +1,4 @@
-"""Demo of dynamic Ray-style API with .go() calls.
+"""Demo of dynamic async API with .go() calls.
 
 This demonstrates the new dynamic execution model:
 - No @jit needed - graphs built dynamically at runtime
@@ -192,7 +192,7 @@ async def cached_rag_pipeline(cache, query: str) -> RAGState:
 async def main():
     """Run demos."""
     print("=" * 70)
-    print("DYNAMIC RAY-STYLE API DEMO")
+    print("DYNAMIC ASYNC API DEMO")
     print("=" * 70)
 
     # Create mesh

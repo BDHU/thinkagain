@@ -1,4 +1,4 @@
-"""Comprehensive distributed execution with dynamic Ray-style API.
+"""Comprehensive distributed execution with dynamic async API.
 
 This example demonstrates the new dynamic execution model:
 1. @service decorator for mutable actor classes with .init()
@@ -23,7 +23,7 @@ Usage:
 Key Changes from Old API:
 - NO @jit decorator needed - graphs built dynamically at runtime
 - NO @trace or decompose/compose - actors have mutable state
-- .go() returns ObjectRef immediately (Ray-style)
+- .go() returns ObjectRef immediately (async)
 - Actor methods: actor.method.go(x) instead of apply_replica()
 """
 
