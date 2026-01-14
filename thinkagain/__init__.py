@@ -1,7 +1,15 @@
 """thinkagain - Minimal framework for declarative AI pipelines with dynamic execution."""
 
-from .api import ActorHandle, ReplicaHandle, node, replica
-from .resources import CpuDevice, GpuDevice, Mesh, MeshNode, devices, get_current_mesh
+from .api import ServiceClass, ServiceHandle, op, service
+from .resources import (
+    CpuDevice,
+    GpuDevice,
+    Mesh,
+    MeshNode,
+    devices,
+    get_current_mesh,
+    require_mesh,
+)
 from .runtime import (
     disable_profiling,
     enable_profiling,
@@ -11,20 +19,20 @@ from .runtime import (
     register_distributed_hooks,
     unregister_distributed_hooks,
 )
-from .runtime.errors import NodeExecutionError
+from .runtime.errors import OpExecutionError
 
 __version__ = "0.3.0"
 
 __all__ = [
-    # Core - Node decorator
-    "node",
-    # Core - Replica decorator
-    "replica",
+    # Core - Op decorator
+    "op",
+    # Core - Service decorator
+    "service",
     # Core - Types
-    "ReplicaHandle",
-    "ActorHandle",
+    "ServiceHandle",
+    "ServiceClass",
     # Core - Errors
-    "NodeExecutionError",
+    "OpExecutionError",
     # Core - Devices
     "GpuDevice",
     "CpuDevice",
@@ -33,6 +41,7 @@ __all__ = [
     "Mesh",
     "MeshNode",
     "get_current_mesh",
+    "require_mesh",
     "register_distributed_hooks",
     "unregister_distributed_hooks",
     # Profiling

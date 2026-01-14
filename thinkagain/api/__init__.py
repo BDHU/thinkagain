@@ -1,14 +1,13 @@
 """Public API surface."""
 
-from .node import node
-from .replica import replica, ReplicaConfig, ReplicaHandle
-from .actor import ActorHandle, RemoteMethod
+from .op import op
+from .service import service, ServiceConfig, ServiceHandle, ServiceClass, RemoteMethod
 
 __all__ = [
-    "node",
-    "replica",
-    "ReplicaHandle",
-    "ReplicaConfig",
-    "ActorHandle",
+    "op",
+    "service",
+    "ServiceHandle",
+    "ServiceConfig",
+    "ServiceClass",
     "RemoteMethod",
 ]
