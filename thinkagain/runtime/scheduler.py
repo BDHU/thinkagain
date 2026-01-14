@@ -274,18 +274,23 @@ class DAGScheduler:
         return await resolve_object_refs(value)
 
     async def _resolve_args(self, args: tuple[Any, ...]) -> tuple[Any, ...]:
-        """Resolve ObjectRefs in arguments to their actual values."""
-        resolved = []
-        for arg in args:
-            resolved.append(await self._resolve_value(arg))
+        """Resolve ObjectRefs in arguments to their actual values.
+
+        Uses asyncio.gather for concurrent resolution of independent ObjectRefs.
+        """
+        resolved = await asyncio.gather(*[self._resolve_value(arg) for arg in args])
         return tuple(resolved)
 
     async def _resolve_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
-        """Resolve ObjectRefs in keyword arguments to their actual values."""
-        resolved = {}
-        for k, v in kwargs.items():
-            resolved[k] = await self._resolve_value(v)
-        return resolved
+        """Resolve ObjectRefs in keyword arguments to their actual values.
+
+        Uses asyncio.gather for concurrent resolution of independent ObjectRefs.
+        """
+        if not kwargs:
+            return {}
+        keys = list(kwargs.keys())
+        values = await asyncio.gather(*[self._resolve_value(kwargs[k]) for k in keys])
+        return dict(zip(keys, values))
 
     async def _execute_with_hooks(self, op: Op, args: tuple, kwargs: dict) -> Any:
         """Execute an op, checking hooks first.
