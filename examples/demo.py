@@ -1,307 +1,187 @@
-"""Demo of JAX-style API with @jit boundaries and in-graph control flow.
+"""Demo of dynamic Ray-style API with .go() calls.
 
-This demonstrates the new design where:
-- No Context wrapper needed
-- Functions operate on plain data types (dataclasses, dicts, lists, primitives, etc.)
-- @node functions can take ANY Python data as arguments
-- @jit creates graph boundaries (like jax.jit)
-- Control flow uses cond(), while_loop(), scan()
-- Python control flow works outside @jit
-- Full async/await support throughout
+This demonstrates the new dynamic execution model:
+- No @jit needed - graphs built dynamically at runtime
+- .go() calls return ObjectRef immediately (non-blocking)
+- Direct function composition with ObjectRefs
+- Automatic background optimization
+- Full async/await support
 """
 
 import asyncio
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
 
-# New JAX-style imports
-import thinkagain
+import thinkagain as ta
 
 
 @dataclass
 class RAGState:
-    """State for RAG pipeline - plain dataclass, no Context wrapper!"""
+    """State for RAG pipeline - plain dataclass."""
 
     query: str
-    documents: list[str] = field(default_factory=list)
+    documents: list[str] | None = None
     answer: str = ""
     quality: float = 0.0
-    retrieval_attempt: int = 0
-    refinements: int = 0
 
 
 # ============================================================================
-# Nodes - operate on ANY Python data types
+# Pure Functions (@node)
 # ============================================================================
 
 
-@thinkagain.node
-async def retrieve_docs(state: RAGState) -> RAGState:
-    """Retrieve documents - takes a dataclass (async demo)."""
-    await asyncio.sleep(0.001)  # Simulate async I/O
-    attempt = state.retrieval_attempt + 1
-    docs = [f"Document {i} for '{state.query}'" for i in range(1, min(5, 1 + attempt))]
-    return replace(state, documents=docs, retrieval_attempt=attempt)
+@ta.node
+async def retrieve_docs(query: str) -> list[str]:
+    """Retrieve documents for a query."""
+    await asyncio.sleep(0.01)  # Simulate async I/O
+    return [f"Document {i} about '{query}'" for i in range(1, 4)]
 
 
-@thinkagain.node
-async def process_dict(data: dict) -> dict:
-    """Process a plain dict - no special wrapper needed!"""
-    await asyncio.sleep(0.001)
-    return {
-        "query": data["query"],
-        "result": f"Processed: {data['query']}",
-        "count": data.get("count", 0) + 1,
-    }
+@ta.node
+async def combine_docs(docs: list[str]) -> str:
+    """Combine documents into a context string."""
+    return "\\n\\n".join(docs)
 
 
-@thinkagain.node
-async def add_numbers(x: int, y: int) -> int:
-    """Take primitive types directly."""
-    await asyncio.sleep(0.001)
-    return x + y
+@ta.node
+async def generate_answer(context: str, query: str) -> str:
+    """Generate answer from context."""
+    await asyncio.sleep(0.02)
+    return f"Answer to '{query}' based on: {context[:50]}..."
 
 
-@thinkagain.node
-async def process_list(items: list[str]) -> list[str]:
-    """Take lists directly."""
-    await asyncio.sleep(0.001)
-    return [item.upper() for item in items]
-
-
-@thinkagain.node
-async def rerank_docs(state: RAGState) -> RAGState:
-    """Keep only top 2 documents."""
-    await asyncio.sleep(0.001)
-    return replace(state, documents=state.documents[:2])
-
-
-@thinkagain.node
-async def generate_answer(state: RAGState) -> RAGState:
-    """Generate answer from documents."""
-    await asyncio.sleep(0.001)  # Simulate LLM call
-    if state.documents:
-        docs_str = ", ".join(state.documents[:2])
-        answer = f"Based on {docs_str}, the answer is..."
-    else:
-        answer = "No documents found."
-    return replace(state, answer=answer)
-
-
-@thinkagain.node
-async def critique_answer(state: RAGState) -> RAGState:
+@ta.node
+async def evaluate_quality(answer: str) -> float:
     """Evaluate answer quality."""
-    await asyncio.sleep(0.001)
-    if len(state.documents) >= 3:
-        quality = 0.9
-    elif len(state.documents) == 2:
-        quality = 0.7
-    else:
-        quality = 0.4
-    return replace(state, quality=quality)
+    await asyncio.sleep(0.01)
+    return 0.85 if len(answer) > 20 else 0.5
 
 
-@thinkagain.node
-async def refine_query(state: RAGState) -> RAGState:
-    """Refine the query for better retrieval."""
-    await asyncio.sleep(0.001)
-    r = state.refinements + 1
-    refined = f"{state.query} (refined {r}x)"
-    return replace(state, query=refined, refinements=r)
+@ta.node
+async def build_state(
+    query: str, docs: list[str], answer: str, quality: float
+) -> RAGState:
+    """Build final RAG state."""
+    return RAGState(query=query, documents=docs, answer=answer, quality=quality)
 
 
 # ============================================================================
-# Example 1: No JIT - Regular Python (No graph building)
+# Pipelines (No @jit needed!)
 # ============================================================================
 
 
-async def non_jit_pipeline(state: RAGState) -> RAGState:
-    """Regular Python - no graph, just executes directly (async).
+async def rag_pipeline_sequential(query: str) -> RAGState:
+    """Sequential RAG pipeline - simple and clear.
 
-    Outside @jit, nodes just execute like normal async functions.
-    No Context wrapper, no graph building.
+    Each step waits for the previous one to complete.
     """
-    print("\n=== UNCOMPILED PIPELINE ===")
-    print("No graph building, just normal Python execution")
+    # Retrieve documents
+    docs = await retrieve_docs.go(query)
 
-    state = await retrieve_docs(state)
-    print(f"Retrieved {len(state.documents)} documents")
+    # Combine into context
+    context = await combine_docs.go(docs)
 
-    # Regular Python if - works fine outside @jit
-    if len(state.documents) > 2:
-        print("Many docs, reranking...")
-        state = await rerank_docs(state)
+    # Generate answer
+    answer = await generate_answer.go(context, query)
 
-    state = await generate_answer(state)
-    return state
+    # Evaluate quality
+    quality = await evaluate_quality.go(answer)
 
-
-# ============================================================================
-# Example 2: Arbitrary Python data types
-# ============================================================================
+    # Build final state
+    return await build_state.go(query, docs, answer, quality)
 
 
-async def test_various_types():
-    """Demo that nodes work with any Python types (async)."""
-    print("\n=== VARIOUS DATA TYPES ===")
+async def rag_pipeline_parallel(query: str) -> RAGState:
+    """Parallel RAG pipeline - maximum performance.
 
-    # Primitives
-    result = await add_numbers(5, 10)
-    print(f"5 + 10 = {result}")
-
-    # Dicts
-    data = {"query": "test", "count": 0}
-    result = await process_dict(data)
-    print(f"Dict result: {result}")
-
-    # Lists
-    items = ["hello", "world"]
-    result = await process_list(items)
-    print(f"List result: {result}")
-
-    # Dataclasses
-    state = RAGState(query="test")
-    result = await retrieve_docs(state)
-    print(f"Dataclass result: {len(result.documents)} docs")
-
-
-# ============================================================================
-# Example 3: JIT with in-graph conditional
-# ============================================================================
-
-
-@thinkagain.jit
-async def jit_pipeline(state: RAGState) -> RAGState:
-    """JIT pipeline - graph is built once, then reused (async).
-
-    Inside @jit:
-    - Must use cond() instead of Python if
-    - Graph is traced once
-    - Subsequent calls reuse the compiled graph
-    - All async operations handled automatically
+    Submits all tasks immediately (non-blocking) and lets the scheduler
+    handle dependencies. The scheduler automatically runs independent
+    tasks concurrently.
     """
-    state = await retrieve_docs(state)
+    # Submit all tasks (non-blocking)
+    docs_ref = retrieve_docs.go(query)
+    context_ref = combine_docs.go(docs_ref)  # Depends on docs_ref
+    answer_ref = generate_answer.go(context_ref, query)  # Depends on context_ref
+    quality_ref = evaluate_quality.go(answer_ref)  # Depends on answer_ref
 
-    # Must use cond() inside @jit, not Python if
-    state = await thinkagain.cond(  # type: ignore[assignment]
-        lambda s: len(s.documents) > 2,  # Predicate
-        rerank_docs,  # True branch
-        lambda s: s,  # False branch (identity)
-        state,  # Operand
-    )
+    # Wait for all results
+    docs = await docs_ref
+    answer = await answer_ref
+    quality = await quality_ref
 
-    state = await generate_answer(state)
-    return state
-
-
-# ============================================================================
-# Example 4: Self-correcting RAG with while_loop
-# ============================================================================
+    # Build final state
+    return await build_state.go(query, docs, answer, quality)
 
 
-@thinkagain.jit
-async def self_correcting_rag_jit(state: RAGState) -> RAGState:
-    """Self-correcting RAG using in-graph while_loop (async).
+async def multi_query_pipeline(queries: list[str]) -> list[RAGState]:
+    """Process multiple queries in parallel.
 
-    The while_loop is part of the graph - conditions are evaluated
-    at runtime but the graph structure is fixed.
+    Demonstrates natural parallelism with .go() - submit all queries
+    immediately and wait for results.
     """
-    state = await retrieve_docs(state)
-    state = await generate_answer(state)
-    state = await critique_answer(state)
+    # Submit all queries (fully parallel)
+    refs = [rag_pipeline_parallel(query) for query in queries]
 
-    # Data-dependent loop - compiled into graph!
-    def should_continue(s: RAGState) -> bool:
-        return s.quality < 0.8 and s.retrieval_attempt < 3
-
-    async def retry_body(s: RAGState) -> RAGState:
-        s = await refine_query(s)
-        s = await retrieve_docs(s)
-        s = await generate_answer(s)
-        s = await critique_answer(s)
-        return s
-
-    state = await thinkagain.while_loop(should_continue, retry_body, state)  # type: ignore[assignment]
-    return state
+    # Wait for all results
+    return await asyncio.gather(*refs)
 
 
 # ============================================================================
-# Example 5: Hybrid - Python control flow + JIT hot paths
+# Stateful Replicas (@replica)
 # ============================================================================
 
 
-async def hybrid_pipeline(state: RAGState) -> RAGState:
-    """Mix Python control flow (outer) with JIT regions (inner).
+@ta.replica()
+class QueryCache:
+    """Simple cache demonstrating mutable actor state."""
 
-    This is the recommended pattern:
-    - Use Python control flow for high-level orchestration
-    - Use @jit for performance-critical hot paths
+    def __init__(self):
+        self.cache: dict[str, RAGState] = {}
+        self.hits = 0
+        self.misses = 0
+
+    async def get(self, query: str) -> RAGState | None:
+        """Get cached result."""
+        if query in self.cache:
+            self.hits += 1
+            return self.cache[query]
+        self.misses += 1
+        return None
+
+    async def put(self, query: str, result: RAGState):
+        """Cache a result."""
+        self.cache[query] = result
+
+    async def stats(self) -> dict:
+        """Get cache statistics."""
+        return {
+            "hits": self.hits,
+            "misses": self.misses,
+            "size": len(self.cache),
+        }
+
+
+async def cached_rag_pipeline(cache, query: str) -> RAGState:
+    """RAG pipeline with caching.
+
+    Demonstrates mutable actor state - cache persists across calls.
     """
-    print("\n=== HYBRID PIPELINE ===")
-    print("Python control flow + JIT hot paths")
+    # Check cache first
+    cached_ref = cache.get.go(query)
+    cached = await cached_ref
 
-    # Python control flow - check cache
-    if state.query.startswith("cached:"):
-        print("Cache hit!")
-        return replace(state, answer="Cached result")
+    if cached is not None:
+        print(f"  Cache HIT for: {query}")
+        return cached
 
-    # Compiled hot path for main processing
-    state = await jit_pipeline(state)
+    print(f"  Cache MISS for: {query}")
 
-    # More Python control flow - fallback
-    if state.quality < 0.5:
-        print("Quality too low, using fallback")
-        state = replace(state, answer="Fallback answer")
+    # Compute result
+    result = await rag_pipeline_parallel(query)
 
-    return state
+    # Store in cache (mutable state update)
+    await cache.put.go(query, result)
 
-
-# ============================================================================
-# Example 6: Batch processing with scan
-# ============================================================================
-
-
-@thinkagain.jit
-async def batch_process(queries: list[str]) -> list[str]:
-    """Process multiple queries using scan (fixed iteration count, async).
-
-    scan is the most efficient control flow operator because the
-    iteration count is known at compile time.
-    """
-
-    def process_one(carry: int, query: str) -> tuple[int, str]:
-        count = carry + 1
-        result = f"Processed: {query} (#{count})"
-        return count, result
-
-    final_count, results = await thinkagain.scan(process_one, init=0, xs=queries)
-    return results  # type: ignore[return-value]
-
-
-# ============================================================================
-# Example 7: Multiple arguments with different types
-# ============================================================================
-
-
-@thinkagain.node
-async def merge_data(state: RAGState, extra_docs: list[str], boost: float) -> RAGState:
-    """Node can take multiple arguments of different types."""
-    await asyncio.sleep(0.001)
-    all_docs = state.documents + extra_docs
-    quality = state.quality * boost
-    return replace(state, documents=all_docs, quality=quality)
-
-
-@thinkagain.jit
-async def multi_arg_pipeline(state: RAGState) -> RAGState:
-    """Pipeline with multi-argument nodes (async)."""
-    state = await retrieve_docs(state)
-
-    # Call node with multiple different types
-    extra = ["Bonus doc 1", "Bonus doc 2"]
-    state = await merge_data(state, extra, 1.2)
-
-    state = await generate_answer(state)
-    return state
+    return result
 
 
 # ============================================================================
@@ -310,76 +190,77 @@ async def multi_arg_pipeline(state: RAGState) -> RAGState:
 
 
 async def main():
+    """Run demos."""
     print("=" * 70)
-    print("JAX-STYLE API DEMO (with async/await)")
-    print("Key feature: @node works with ANY Python data types!")
+    print("DYNAMIC RAY-STYLE API DEMO")
     print("=" * 70)
 
-    # Test various data types
-    await test_various_types()
+    # Create mesh
+    mesh = ta.Mesh([ta.CpuDevice("local")])
 
-    # Example 1: No JIT
-    print("\n" + "=" * 70)
-    state = RAGState(query="What is machine learning?")
-    result = await non_jit_pipeline(state)
-    print(f"Result: {result.answer}")
-    print(f"Documents: {len(result.documents)}")
+    with mesh:
+        print("\\n" + "=" * 70)
+        print("Demo 1: Sequential Pipeline")
+        print("=" * 70)
+        result = await rag_pipeline_sequential("What is Python?")
+        print(f"Query: {result.query}")
+        print(f"Documents: {len(result.documents or [])} docs")
+        print(f"Answer: {result.answer}")
+        print(f"Quality: {result.quality}")
 
-    # Example 2: JIT
-    print("\n" + "=" * 70)
-    print("=== JIT PIPELINE ===")
-    print("Graph built once, executed efficiently")
-    state = RAGState(query="What is deep learning?")
-    result = await jit_pipeline(state)
-    print(f"Result: {result.answer}")
-    print(f"Documents: {len(result.documents)}")
+        print("\\n" + "=" * 70)
+        print("Demo 2: Parallel Pipeline (with .go())")
+        print("=" * 70)
+        result = await rag_pipeline_parallel("What is machine learning?")
+        print(f"Query: {result.query}")
+        print(f"Answer: {result.answer}")
+        print(f"Quality: {result.quality}")
 
-    # Run again - should reuse compiled graph
-    print("\nRunning JIT pipeline again (reuses graph)...")
-    state2 = RAGState(query="Explain neural networks")
-    result2 = await jit_pipeline(state2)
-    print(f"Result: {result2.answer}")
+        print("\\n" + "=" * 70)
+        print("Demo 3: Multiple Queries in Parallel")
+        print("=" * 70)
+        queries = [
+            "What is distributed computing?",
+            "What is quantum computing?",
+            "What is cloud computing?",
+        ]
+        results = await multi_query_pipeline(queries)
+        for r in results:
+            print(f"  - {r.query}: quality={r.quality}")
 
-    # Example 3: Self-correcting with while_loop
-    print("\n" + "=" * 70)
-    print("=== SELF-CORRECTING RAG (with while_loop) ===")
-    state = RAGState(query="Complex question")
-    result = await self_correcting_rag_jit(state)
-    print(f"Result: {result.answer}")
-    print(f"Quality: {result.quality}")
-    print(f"Attempts: {result.retrieval_attempt}")
-    print(f"Refinements: {result.refinements}")
+        print("\\n" + "=" * 70)
+        print("Demo 4: Mutable Actor State (Caching)")
+        print("=" * 70)
 
-    # Example 4: Hybrid
-    state = RAGState(query="Test query")
-    result = await hybrid_pipeline(state)
-    print(f"Result: {result.answer}")
+        # Create cache actor
+        cache = QueryCache.init()
 
-    # Test cache path
-    state = RAGState(query="cached:something")
-    result = await hybrid_pipeline(state)
-    print(f"Cached result: {result.answer}")
+        # First call - cache miss
+        r1 = await cached_rag_pipeline(cache, "What is Python?")
+        print(f"Result 1: {r1.answer}")
 
-    # Example 5: Batch processing with scan
-    print("\n" + "=" * 70)
-    print("=== BATCH PROCESSING (with scan) ===")
-    queries = ["Query 1", "Query 2", "Query 3"]
-    results = await batch_process(queries)
-    for r in results:
-        print(f"  {r}")
+        # Second call - cache hit!
+        r2 = await cached_rag_pipeline(cache, "What is Python?")
+        print(f"Result 2: {r2.answer}")
 
-    # Example 6: Multiple arguments
-    print("\n" + "=" * 70)
-    print("=== MULTI-ARGUMENT NODES ===")
-    state = RAGState(query="Multi-arg test")
-    result = await multi_arg_pipeline(state)
-    print(f"Result: {result.answer}")
-    print(f"Total docs: {len(result.documents)}")
+        # Different query - cache miss
+        r3 = await cached_rag_pipeline(cache, "What is Java?")
+        print(f"Result 3: {r3.answer}")
 
-    print("\n" + "=" * 70)
-    print("✓ All examples completed!")
-    print("Key takeaway: Full async/await support with no Context wrapper!")
+        # Check stats (mutable state)
+        stats_ref = cache.stats.go()
+        stats = await stats_ref
+        print(f"\\nCache stats: {stats}")
+
+    print("\\n" + "=" * 70)
+    print("✅ All demos complete!")
     print("=" * 70)
+    print("\\nKey Takeaways:")
+    print("  - No @jit needed - dynamic graph building")
+    print("  - .go() returns ObjectRef immediately (non-blocking)")
+    print("  - Natural parallelism by submitting multiple .go() calls")
+    print("  - Mutable actor state with @replica")
+    print("  - Automatic background optimization")
 
 
 if __name__ == "__main__":
