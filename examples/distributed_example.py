@@ -1,12 +1,13 @@
-"""Comprehensive distributed execution and stateful replica patterns with thinkagain.
+"""Comprehensive distributed execution with dynamic Ray-style API.
 
-This example demonstrates:
-1. @replica decorator for distributed classes
-2. @node decorator for pure functions
-3. @jit decorator for compiling pipelines
-4. Mesh for defining execution resources
-5. Stateful replica patterns with @trace
-6. Local, remote, and hybrid execution
+This example demonstrates the new dynamic execution model:
+1. @replica decorator for mutable actor classes with .init()
+2. @node decorator for pure functions with .go()
+3. .go() calls return ObjectRef immediately (non-blocking)
+4. Direct function composition: fn3.go(fn2.go(fn1.go(x)))
+5. Mutable actor state (no decompose/compose needed)
+6. Automatic background optimization
+7. Mesh context for execution resources
 
 Usage:
     # LOCAL EXECUTION (no servers needed):
@@ -19,12 +20,11 @@ Usage:
     # Terminal 2 - Run client with remote mesh:
     python examples/distributed_example.py --remote
 
-Key Concepts:
-- @replica: Marks stateful classes for distributed execution
-- @trace: Enables pure functional updates via decompose/compose
-- @node: Marks pure functions for graph compilation
-- @jit: Compiles pipelines for optimization and distribution
-- Mesh: Defines available computational resources
+Key Changes from Old API:
+- NO @jit decorator needed - graphs built dynamically at runtime
+- NO @trace or decompose/compose - actors have mutable state
+- .go() returns ObjectRef immediately (Ray-style)
+- Actor methods: actor.method.go(x) instead of apply_replica()
 """
 
 import argparse
@@ -52,13 +52,13 @@ class MockEngine:
 
 
 # ============================================================================
-# Define Replicas
+# Define Replicas (Mutable Actors)
 # ============================================================================
 
 
 @ta.replica()  # CPU-only replica
 class Retriever:
-    """Document retriever - can scale freely on CPU.
+    """Document retriever - lightweight CPU actor.
 
     Demonstrates:
     - CPU-only workloads (no GPU requirement)
@@ -69,463 +69,242 @@ class Retriever:
     def __init__(self):
         print("  [INIT] Retriever initialized")
 
-    async def __call__(self, query: str) -> list[str]:
+    async def retrieve(self, query: str) -> list[str]:
         """Retrieve documents for a query."""
         await asyncio.sleep(0.02)  # Simulate database query
         return [f"Document {i}: Information about '{query}'" for i in range(1, 4)]
 
 
-@ta.trace
-@ta.replica(gpus=1, backend="grpc")  # GPU replica with gRPC backend
+@ta.replica(gpus=1)  # GPU replica (will run on CPU if no GPU available)
 class LLM:
-    """Stateful LLM replica with @trace for pure updates.
+    """Mutable LLM actor with state management.
 
     Demonstrates:
-    - GPU resource requirements (gpus=1)
+    - GPU resource requirements (gpus=1, falls back to CPU if unavailable)
     - Heavy initialization (model loading)
-    - Stateful operations with pure functional updates
-    - Separating static state (aux) from dynamic state (children)
+    - Mutable state (temperature can be changed)
+    - No decompose/compose needed
     """
 
     def __init__(self, model_name: str = "llama-70b", temperature: float = 0.7):
         """Initialize LLM.
 
         Args:
-            model_name: Name of model to load (goes in aux - never changes)
-            temperature: Sampling temperature (goes in children - can be updated)
+            model_name: Name of model to load
+            temperature: Sampling temperature (can be updated)
         """
         self.model_name = model_name
         self.temperature = temperature
         # Heavy initialization (loads model into GPU memory)
         self.engine = MockEngine(model_name)
-        self.cache = {}
 
-    def decompose(self) -> tuple[list, dict]:
-        """Decompose into runtime state (children) and static state (aux).
+    async def generate(self, prompt: str) -> str:
+        """Generate text from prompt using current temperature."""
+        return await self.engine.generate(prompt, self.temperature)
 
-        Children: Values that can change via pure updates (temperature, cache)
-        Aux: Static initialization data (model_name, loaded engine)
-        """
-        children = [self.temperature, self.cache]
-        aux = {
-            "model_name": self.model_name,
-            "engine": self.engine,
-        }
-        return children, aux
-
-    @classmethod
-    def compose(cls, aux: dict, children: list) -> "LLM":
-        """Reconstruct LLM with updated runtime state."""
-        temperature, cache = children
-        instance = cls.__new__(cls)
-        instance.model_name = aux["model_name"]
-        instance.engine = aux["engine"]
-        instance.temperature = temperature
-        instance.cache = cache
-        return instance
-
-    async def __call__(self, prompt: str) -> str:
-        """Generate response (pure function of prompt + state)."""
-        # Check cache
-        if prompt in self.cache:
-            return self.cache[prompt]
-
-        # Generate response
-        response = await self.engine.generate(prompt, self.temperature)
-        return response
+    async def set_temperature(self, new_temp: float):
+        """Update temperature (mutable state)."""
+        print(f"  [UPDATE] LLM temperature: {self.temperature} -> {new_temp}")
+        self.temperature = new_temp
 
 
-@ta.replica(backend="grpc")  # Simple text processing replica
-class TextProcessor:
-    """Stateful text processor for various transformations.
-
-    Demonstrates:
-    - Maintaining state across calls (request counter)
-    - Multiple operation types
-    - Simple CPU-bound processing
-    """
-
-    def __init__(self):
-        self.request_count = 0
-        print("  [INIT] TextProcessor initialized")
-
-    async def __call__(self, text: str, operation: str = "upper") -> str:
-        """Process text with various operations.
-
-        Args:
-            text: Input string
-            operation: One of "upper", "lower", "title", "reverse", "swap"
-
-        Returns:
-            Processed string
-        """
-        self.request_count += 1
-
-        operations = {
-            "upper": text.upper,
-            "lower": text.lower,
-            "title": text.title,
-            "reverse": lambda: text[::-1],
-            "swap": text.swapcase,
-        }
-
-        result = operations.get(operation, lambda: text)()
-        print(
-            f"  [TextProcessor] Request #{self.request_count}: {operation}('{text}') -> '{result}'"
-        )
-        return result
-
-
-@ta.trace
 @ta.replica()
 class Counter:
-    """Simple counter replica with @trace for pure updates.
+    """Simple counter demonstrating mutable state.
 
     Demonstrates:
-    - Basic stateful replica with decompose/compose
-    - Pure functional state management
-    - Using apply_replica for updates
+    - Mutable state updates
+    - Multiple method calls maintaining state
     """
 
-    def __init__(self, count: int = 0, step: int = 1):
-        """Initialize counter.
+    def __init__(self, start: int = 0):
+        print(f"  [INIT] Counter initialized at {start}")
+        self.count = start
 
-        Args:
-            count: Initial count value
-            step: Increment step size
-        """
-        self.count = count
-        self.step = step
+    async def increment(self, amount: int) -> int:
+        """Increment counter and return new value."""
+        self.count += amount
+        return self.count
 
-    def decompose(self) -> tuple[list, None]:
-        """Break replica into traceable children."""
-        return [self.count, self.step], None
-
-    @classmethod
-    def compose(cls, aux, children: list) -> "Counter":
-        """Reconstruct replica from children."""
-        count, step = children
-        return cls(count=count, step=step)
-
-    async def __call__(self, x: int) -> int:
-        """Pure computation: count + step + x (doesn't mutate)."""
-        return self.count + self.step + x
+    async def get(self) -> int:
+        """Get current count."""
+        return self.count
 
 
 # ============================================================================
-# Define Nodes (Pure Functions)
+# Define Pure Functions (@node)
 # ============================================================================
 
 
 @ta.node
-async def format_rag_prompt(query: str, docs: list[str]) -> str:
-    """Format a RAG prompt from query and documents."""
-    context = "\n".join(f"- {doc}" for doc in docs[:3])
-    return f"""Context:
-{context}
-
-Query: {query}
-
-Answer:"""
+async def combine_docs(docs: list[str]) -> str:
+    """Combine retrieved documents into a single context."""
+    return "\\n\\n".join(docs)
 
 
 @ta.node
-async def increment_counter_state(
-    count: int, step: int, amount: int
-) -> tuple[list, int]:
-    """Pure function to update counter state.
-
-    This demonstrates using pure functions to update replica state.
-
-    Args:
-        count: Current count (from decompose children[0])
-        step: Current step (from decompose children[1])
-        amount: Value to add
-
-    Returns:
-        (new_children, output) tuple
-    """
-    new_count = count + step + amount
-    new_step = step
-    return [new_count, new_step], new_count
-
-
-@ta.node
-async def update_temperature(
-    temp: float, cache: dict, new_temp: float
-) -> tuple[list, str]:
-    """Pure function to update LLM temperature.
-
-    Args:
-        temp: Current temperature (from decompose children[0])
-        cache: Current cache (from decompose children[1])
-        new_temp: New temperature value
-
-    Returns:
-        (new_children, output) tuple
-    """
-    return [new_temp, cache], f"Temperature updated to {new_temp}"
+async def format_response(response: str, query: str) -> dict:
+    """Format LLM response into structured output."""
+    return {
+        "query": query,
+        "response": response,
+        "timestamp": "2026-01-13T00:00:00Z",
+    }
 
 
 # ============================================================================
-# Create Replica Handles (Outside @jit)
-# ============================================================================
-
-# These handles are used within @jit pipelines
-retriever = Retriever.init()  # type: ignore[attr-defined]
-llm = LLM.init("llama-70b")  # type: ignore[attr-defined]
-text_processor = TextProcessor.init()  # type: ignore[attr-defined]
-counter = Counter.init(count=0, step=1)  # type: ignore[attr-defined]
-
-
-# ============================================================================
-# Define Pipelines with @jit
+# Pipelines (No @jit needed!)
 # ============================================================================
 
 
-@ta.jit
-async def rag_pipeline(query: str) -> str:
+async def rag_pipeline(retriever, llm, query: str) -> dict:
     """RAG (Retrieval-Augmented Generation) pipeline.
 
     Flow:
     1. Retrieve relevant documents
-    2. Format prompt with documents
-    3. Generate response with LLM
+    2. Combine documents into context
+    3. Generate response from LLM
+    4. Format output
+
+    Note: No @jit decorator needed! Dynamic execution builds the DAG
+    automatically as .go() calls are made.
     """
-    # Step 1: Retrieve documents
-    docs = await retriever(query)
+    # Step 1: Retrieve documents (non-blocking)
+    docs_ref = retriever.retrieve.go(query)
 
-    # Step 2: Format prompt
-    prompt = await format_rag_prompt(query, docs)
+    # Step 2: Combine docs (non-blocking, depends on docs_ref)
+    context_ref = combine_docs.go(docs_ref)
 
-    # Step 3: Generate response
-    response = await llm(prompt)
+    # Step 3: Generate response (non-blocking, depends on context_ref)
+    response_ref = llm.generate.go(context_ref)
 
-    return response
+    # Step 4: Format output (non-blocking, depends on response_ref)
+    result_ref = format_response.go(response_ref, query)
 
-
-@ta.jit
-async def text_processing_pipeline(text: str, operations: list[str]) -> dict:
-    """Multi-operation text processing pipeline.
-
-    Demonstrates parallel operations on the same input.
-    """
-    result = {"original": text}
-
-    # Apply each operation
-    for operation in operations:
-        result[operation] = await text_processor(text, operation=operation)
-
-    return result
+    # Wait for final result (blocks only when we need the value)
+    return await result_ref
 
 
-@ta.jit
-async def counter_pipeline(x: int) -> int:
-    """Simple pipeline using counter replica."""
-    result = await counter(x)
-    return result
+async def counter_pipeline(counter) -> int:
+    """Simple counter pipeline demonstrating mutable state."""
+    # Increment multiple times - state persists!
+    ref1 = counter.increment.go(10)
+    result1 = await ref1
+    print(f"  After increment(10): {result1}")
+
+    ref2 = counter.increment.go(5)
+    result2 = await ref2
+    print(f"  After increment(5): {result2}")
+
+    ref3 = counter.get.go()
+    return await ref3
+
+
+async def temperature_pipeline(llm) -> tuple[str, str]:
+    """Pipeline demonstrating mutable actor state updates."""
+    # Generate with initial temperature
+    ref1 = llm.generate.go("What is machine learning?")
+    response1 = await ref1
+
+    # Update temperature (mutable state change)
+    await llm.set_temperature.go(0.9)
+
+    # Generate again with new temperature
+    ref2 = llm.generate.go("What is machine learning?")
+    response2 = await ref2
+
+    return response1, response2
 
 
 # ============================================================================
-# Example Execution Functions
+# Main Execution
 # ============================================================================
 
 
-async def run_local_example():
-    """Run examples with local mesh (no remote servers needed)."""
-    print("\n" + "=" * 70)
-    print("EXAMPLE 1: LOCAL EXECUTION")
+async def run_local():
+    """Run with local CPU-only execution."""
     print("=" * 70)
-    print("\nRunning pipelines with local mesh...")
+    print("LOCAL EXECUTION (CPU only)")
+    print("=" * 70)
 
-    # Create local mesh with 1 GPU
-    mesh = ta.Mesh([ta.MeshNode("local", gpus=1)])
+    # Create mesh with local CPU device
+    mesh = ta.Mesh([ta.CpuDevice(0)])
+
+    # Create actor handles BEFORE entering mesh context
+    retriever = Retriever.init()
+    llm = LLM.init(model_name="llama-7b", temperature=0.7)
+    counter = Counter.init(start=0)
+
+    print("\\nCreated actors:")
+    print(f"  - Retriever: {retriever}")
+    print(f"  - LLM: {llm}")
+    print(f"  - Counter: {counter}")
 
     with mesh:
-        # Example 1a: Single RAG query
-        print("\n[1a] RAG Pipeline:")
-        result = await rag_pipeline("What is machine learning?")
-        print("  Query: What is machine learning?")
-        print(f"  Response: {result}")
+        print("\\n" + "=" * 70)
+        print("Example 1: RAG Pipeline")
+        print("=" * 70)
+        result = await rag_pipeline(retriever, llm, "What is distributed computing?")
+        print(f"\\nResult: {result}")
 
-        # Example 1b: Text processing pipeline
-        print("\n[1b] Text Processing Pipeline:")
-        text = "Hello Distributed World"
-        operations = ["upper", "lower", "title", "reverse"]
-        result = await text_processing_pipeline(text, operations)
-        print(f"  Original: {result['original']}")
-        for op in operations:
-            print(f"  {op.capitalize()}: {result[op]}")
+        print("\\n" + "=" * 70)
+        print("Example 2: Counter Pipeline (Mutable State)")
+        print("=" * 70)
+        final_count = await counter_pipeline(counter)
+        print(f"\\nFinal count: {final_count}")
 
-        # Example 1c: Counter with pure updates
-        print("\n[1c] Counter with Pure State Updates:")
-        print(f"  Initial: count={counter.count}, step={counter.step}")
-
-        # Use counter in pipeline
-        result = await counter_pipeline(10)
-        print(f"  counter(10) = {result}")
-
-        # Update counter state using apply_replica
-        print("\n  Updating counter state with apply_replica...")
-        out = await ta.apply_replica(counter, increment_counter_state, 100)
-        print(
-            f"  After increment_counter_state(100): count={counter.count}, output={out}"
-        )
+        print("\\n" + "=" * 70)
+        print("Example 3: Temperature Update (Mutable State)")
+        print("=" * 70)
+        response1, response2 = await temperature_pipeline(llm)
+        print(f"\\nWith temp=0.7: {response1}")
+        print(f"With temp=0.9: {response2}")
 
 
-async def run_remote_example():
-    """Run examples with remote mesh (requires gRPC servers)."""
-    print("\n" + "=" * 70)
-    print("EXAMPLE 2: REMOTE EXECUTION")
+async def run_remote():
+    """Run with remote gRPC execution."""
     print("=" * 70)
-    print("\nMake sure you've started the servers:")
-    print(
-        "  Terminal 1: python -m thinkagain.serve examples.distributed_example:LLM --port 8000"
-    )
-    print(
-        "  Terminal 2: python -m thinkagain.serve examples.distributed_example:TextProcessor --port 8001"
-    )
+    print("REMOTE EXECUTION (gRPC)")
+    print("=" * 70)
+    print("Make sure LLM server is running:")
+    print("  python -m thinkagain.serve examples.distributed_example:LLM --port 8000")
+    print("=" * 70)
 
-    # Create remote mesh with gRPC endpoints
+    # Create mesh with remote GPU device
     mesh = ta.Mesh(
         [
-            ta.MeshNode("llm_server", endpoint="localhost:8000", gpus=1),
-            ta.MeshNode("processor_server", endpoint="localhost:8001"),
+            ta.CpuDevice(0),  # Local CPU for lightweight work
+            ta.MeshNode("gpu-server", gpus=1, endpoint="localhost:8000"),  # Remote GPU
         ]
     )
 
-    try:
-        with mesh:
-            # Example 2a: RAG with remote services
-            print("\n[2a] RAG Pipeline (remote execution):")
-            result = await rag_pipeline("What is distributed computing?")
-            print("  Query: What is distributed computing?")
-            print(f"  Response: {result}")
+    # Create actor handles
+    retriever = Retriever.init()
+    llm = LLM.init(model_name="llama-70b", temperature=0.7)
 
-            # Example 2b: Text processing with remote service
-            print("\n[2b] Text Processing (remote execution):")
-            text = "Remote Processing Test"
-            operations = ["upper", "lower", "reverse"]
-            result = await text_processing_pipeline(text, operations)
-            print(f"  Original: {result['original']}")
-            for op in operations:
-                print(f"  {op.capitalize()}: {result[op]}")
-
-    except Exception as e:
-        print(f"\n❌ Error connecting to remote servers: {e}")
-        print("\nMake sure servers are running with the commands above.")
-
-
-async def run_stateful_patterns():
-    """Demonstrate advanced stateful replica patterns."""
-    print("\n" + "=" * 70)
-    print("EXAMPLE 3: STATEFUL REPLICA PATTERNS")
-    print("=" * 70)
-
-    # Pattern 1: Basic replica with @trace
-    print("\n[3a] Counter Replica with @trace:")
-    local_counter = Counter(count=10, step=5)
-    print(f"  Initial state: count={local_counter.count}, step={local_counter.step}")
-
-    # Use apply_replica for pure updates
-    out1 = await ta.apply_replica(local_counter, increment_counter_state, 100)
-    print(f"  After increment(100): count={local_counter.count}, output={out1}")
-
-    out2 = await ta.apply_replica(local_counter, increment_counter_state, 50)
-    print(f"  After increment(50): count={local_counter.count}, output={out2}")
-
-    # Pattern 2: LLM with runtime state
-    print("\n[3b] LLM Replica with Runtime State:")
-    llm_instance = LLM("gpt-4", temperature=0.5)
-    print(f"  Initial temperature: {llm_instance.temperature}")
-
-    # Update temperature with pure function
-    msg = await ta.apply_replica(llm_instance, update_temperature, 0.9)
-    print(f"  {msg}")
-    print(f"  New temperature: {llm_instance.temperature}")
-
-
-# ============================================================================
-# Main Entry Point
-# ============================================================================
+    with mesh:
+        print("\\nRunning RAG pipeline with remote LLM...")
+        result = await rag_pipeline(retriever, llm, "What is quantum computing?")
+        print(f"\\nResult: {result}")
 
 
 async def main():
-    """Main entry point with command-line arguments."""
-    parser = argparse.ArgumentParser(
-        description="ThinkAgain Distributed Execution Examples"
-    )
+    """Main entry point."""
+    parser = argparse.ArgumentParser(description="Distributed execution example")
     parser.add_argument(
         "--remote",
         action="store_true",
-        help="Run remote execution examples (requires gRPC servers)",
+        help="Use remote gRPC execution (requires server running)",
     )
-    parser.add_argument(
-        "--all",
-        action="store_true",
-        help="Run all examples",
-    )
-
     args = parser.parse_args()
 
-    print("=" * 70)
-    print("THINKAGAIN DISTRIBUTED EXECUTION & STATEFUL PATTERNS")
-    print("=" * 70)
+    if args.remote:
+        await run_remote()
+    else:
+        await run_local()
 
-    # Run local examples by default
-    if not (args.remote or args.all):
-        await run_local_example()
-        await run_stateful_patterns()
-
-    # Run requested examples
-    if args.remote or args.all:
-        await run_remote_example()
-
-    if args.all:
-        await run_local_example()
-        await run_stateful_patterns()
-
-    print("\n" + "=" * 70)
-    print("KEY CONCEPTS DEMONSTRATED:")
-    print("=" * 70)
-    print("""
-1. @replica Decorator:
-   - Marks classes for distributed execution
-   - Can specify GPU requirements (gpus=N)
-   - Supports backends (backend="grpc")
-   - Handles stateful services
-
-2. @trace Decorator:
-   - Enables pure functional updates via decompose/compose
-   - Separates dynamic state (children) from static state (aux)
-   - Works with apply_replica for pure state transformations
-
-3. @node Decorator:
-   - Marks pure functions for graph compilation
-   - Used for data transformations
-   - Automatically parallelized when possible
-
-4. @jit Decorator:
-   - Compiles entire pipelines into graphs
-   - Enables optimization and parallelization
-   - Works with both local and remote execution
-
-5. Mesh:
-   - Defines available computational resources
-   - Can be local, remote, or hybrid
-   - Provides context for execution (with mesh:)
-
-6. Stateful Patterns:
-   - decompose(): Break state into children + aux
-   - compose(): Reconstruct from children + aux
-   - apply_replica(): Pure functional updates
-
-For more details, see:
-- Core API: examples/demo.py
-- Bundle API: examples/bundle_example.py
-- Agent API: examples/agents/simple_agent.py
-- gRPC serving: python -m thinkagain.serve --help
-""")
+    print("\\n" + "=" * 70)
+    print("✅ Examples complete!")
     print("=" * 70)
 
 
