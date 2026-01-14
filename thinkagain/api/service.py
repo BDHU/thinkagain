@@ -315,6 +315,8 @@ class ServiceClass:
 
 
 def service(
+    _cls=None,
+    *,
     gpus: int | None = None,
     backend: str = "local",
     setup: Any | None = None,
@@ -450,4 +452,9 @@ def service(
         cls._service_config = config
         return cls
 
+    # Handle @service (no parentheses) - _cls will be the class
+    if _cls is not None:
+        return decorator(_cls)
+
+    # Handle @service() or @service(gpus=1, etc.) - return decorator function
     return decorator
