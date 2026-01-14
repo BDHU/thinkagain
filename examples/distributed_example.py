@@ -1,8 +1,8 @@
 """Comprehensive distributed execution with dynamic Ray-style API.
 
 This example demonstrates the new dynamic execution model:
-1. @replica decorator for mutable actor classes with .init()
-2. @node decorator for pure functions with .go()
+1. @service decorator for mutable actor classes with .init()
+2. @op decorator for pure functions with .go()
 3. .go() calls return ObjectRef immediately (non-blocking)
 4. Direct function composition: fn3.go(fn2.go(fn1.go(x)))
 5. Mutable actor state (no decompose/compose needed)
@@ -52,11 +52,11 @@ class MockEngine:
 
 
 # ============================================================================
-# Define Replicas (Mutable Actors)
+# Define Services (Mutable Actors)
 # ============================================================================
 
 
-@ta.replica()  # CPU-only replica
+@ta.service()  # CPU-only service
 class Retriever:
     """Document retriever - lightweight CPU actor.
 
@@ -75,7 +75,7 @@ class Retriever:
         return [f"Document {i}: Information about '{query}'" for i in range(1, 4)]
 
 
-@ta.replica(gpus=1)  # GPU replica (will run on CPU if no GPU available)
+@ta.service(gpus=1)  # GPU service (will run on CPU if no GPU available)
 class LLM:
     """Mutable LLM actor with state management.
 
@@ -108,7 +108,7 @@ class LLM:
         self.temperature = new_temp
 
 
-@ta.replica()
+@ta.service()
 class Counter:
     """Simple counter demonstrating mutable state.
 
@@ -132,17 +132,17 @@ class Counter:
 
 
 # ============================================================================
-# Define Pure Functions (@node)
+# Define Pure Functions (@op)
 # ============================================================================
 
 
-@ta.node
+@ta.op
 async def combine_docs(docs: list[str]) -> str:
     """Combine retrieved documents into a single context."""
     return "\\n\\n".join(docs)
 
 
-@ta.node
+@ta.op
 async def format_response(response: str, query: str) -> dict:
     """Format LLM response into structured output."""
     return {
@@ -231,9 +231,9 @@ async def run_local():
     mesh = ta.Mesh([ta.CpuDevice(0)])
 
     # Create actor handles BEFORE entering mesh context
-    retriever = Retriever.init()
-    llm = LLM.init(model_name="llama-7b", temperature=0.7)
-    counter = Counter.init(start=0)
+    retriever = Retriever.init()  # type: ignore[attr-defined]
+    llm = LLM.init(model_name="llama-7b", temperature=0.7)  # type: ignore[attr-defined]
+    counter = Counter.init(start=0)  # type: ignore[attr-defined]
 
     print("\\nCreated actors:")
     print(f"  - Retriever: {retriever}")
@@ -279,8 +279,8 @@ async def run_remote():
     )
 
     # Create actor handles
-    retriever = Retriever.init()
-    llm = LLM.init(model_name="llama-70b", temperature=0.7)
+    retriever = Retriever.init()  # type: ignore[attr-defined]
+    llm = LLM.init(model_name="llama-70b", temperature=0.7)  # type: ignore[attr-defined]
 
     with mesh:
         print("\\nRunning RAG pipeline with remote LLM...")

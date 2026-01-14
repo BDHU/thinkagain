@@ -25,38 +25,38 @@ class RAGState:
 
 
 # ============================================================================
-# Pure Functions (@node)
+# Pure Functions (@op)
 # ============================================================================
 
 
-@ta.node
+@ta.op
 async def retrieve_docs(query: str) -> list[str]:
     """Retrieve documents for a query."""
     await asyncio.sleep(0.01)  # Simulate async I/O
     return [f"Document {i} about '{query}'" for i in range(1, 4)]
 
 
-@ta.node
+@ta.op
 async def combine_docs(docs: list[str]) -> str:
     """Combine documents into a context string."""
     return "\\n\\n".join(docs)
 
 
-@ta.node
+@ta.op
 async def generate_answer(context: str, query: str) -> str:
     """Generate answer from context."""
     await asyncio.sleep(0.02)
     return f"Answer to '{query}' based on: {context[:50]}..."
 
 
-@ta.node
+@ta.op
 async def evaluate_quality(answer: str) -> float:
     """Evaluate answer quality."""
     await asyncio.sleep(0.01)
     return 0.85 if len(answer) > 20 else 0.5
 
 
-@ta.node
+@ta.op
 async def build_state(
     query: str, docs: list[str], answer: str, quality: float
 ) -> RAGState:
@@ -126,11 +126,11 @@ async def multi_query_pipeline(queries: list[str]) -> list[RAGState]:
 
 
 # ============================================================================
-# Stateful Replicas (@replica)
+# Stateful Services (@service)
 # ============================================================================
 
 
-@ta.replica()
+@ta.service()
 class QueryCache:
     """Simple cache demonstrating mutable actor state."""
 
@@ -196,7 +196,7 @@ async def main():
     print("=" * 70)
 
     # Create mesh
-    mesh = ta.Mesh([ta.CpuDevice("local")])
+    mesh = ta.Mesh([ta.CpuDevice(0)])
 
     with mesh:
         print("\\n" + "=" * 70)
@@ -233,7 +233,7 @@ async def main():
         print("=" * 70)
 
         # Create cache actor
-        cache = QueryCache.init()
+        cache = QueryCache.init()  # type: ignore[attr-defined]
 
         # First call - cache miss
         r1 = await cached_rag_pipeline(cache, "What is Python?")
@@ -259,7 +259,7 @@ async def main():
     print("  - No @jit needed - dynamic graph building")
     print("  - .go() returns ObjectRef immediately (non-blocking)")
     print("  - Natural parallelism by submitting multiple .go() calls")
-    print("  - Mutable actor state with @replica")
+    print("  - Mutable actor state with @service")
     print("  - Automatic background optimization")
 
 
