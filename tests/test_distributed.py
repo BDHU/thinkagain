@@ -12,7 +12,7 @@ import thinkagain as ta
 # =============================================================================
 
 
-@ta.replica()
+@ta.service()
 class BasicProcessor:
     """Basic processor for general execution tests."""
 
@@ -20,7 +20,7 @@ class BasicProcessor:
         self.multiplier = multiplier
         self.calls = []
 
-    async def __call__(self, x: int) -> int:
+    async def process(self, x: int) -> int:
         """Process input by multiplying with multiplier."""
         self.calls.append(x)
         return x * self.multiplier
@@ -30,37 +30,37 @@ class BasicProcessor:
         return self.calls.copy()
 
 
-@ta.replica(gpus=4)
+@ta.service(gpus=4)
 class GpuProcessor:
     """Processor with GPU requirement for resource tests."""
 
     def __init__(self, prompt: str = ""):
         self.prompt = prompt
 
-    async def __call__(self) -> str:
+    async def generate(self) -> str:
         return f"Generated: {self.prompt}"
 
 
-@ta.replica(gpus=1, backend="grpc")
+@ta.service(gpus=1, backend="grpc")
 class GrpcProcessor:
     """Processor with gRPC backend for backend-specific tests."""
 
     def __init__(self):
         self.count = 0
 
-    async def __call__(self, text: str) -> str:
+    async def process(self, text: str) -> str:
         self.count += 1
         return text.upper()
 
 
-@ta.replica()
+@ta.service()
 class ProfilingProcessor:
     """Processor with async delay for profiling tests."""
 
     def __init__(self):
         pass
 
-    async def __call__(self, x: int) -> int:
+    async def process(self, x: int) -> int:
         await asyncio.sleep(0.001)
         return x * 2
 
@@ -70,19 +70,19 @@ class ProfilingProcessor:
 # =============================================================================
 
 
-@ta.node
+@ta.op
 async def preprocess(x: int) -> int:
     """Simple preprocessing node."""
     return x + 1
 
 
-@ta.node
+@ta.op
 async def postprocess(x: int) -> int:
     """Simple postprocessing node."""
     return x - 1
 
 
-@ta.node
+@ta.op
 async def add(a: int, b: int) -> int:
     """Add two numbers."""
     return a + b
@@ -160,43 +160,43 @@ def test_mesh_context():
 
 def test_replica_basic():
     """Test basic @replica decorator configuration."""
-    assert hasattr(BasicProcessor, "_replica_config")
-    assert BasicProcessor._replica_config.gpus is None
-    assert BasicProcessor._replica_config.backend == "local"
+    assert hasattr(BasicProcessor, "_service_config")
+    assert BasicProcessor._service_config.gpus is None
+    assert BasicProcessor._service_config.backend == "local"
 
     # Create handle
     handle = BasicProcessor.init(2)
-    assert isinstance(handle, ta.ActorHandle)
+    assert isinstance(handle, ta.ServiceClass)
 
 
 def test_replica_with_gpus():
     """Test @replica with GPU requirement."""
-    config = GpuProcessor._replica_config  # type: ignore[attr-defined]
+    config = GpuProcessor._service_config  # type: ignore[attr-defined]
     assert config.gpus == 4
 
     # Create handle
     handle = GpuProcessor.init("test prompt")  # type: ignore[attr-defined]
-    assert isinstance(handle, ta.ActorHandle)
+    assert isinstance(handle, ta.ServiceClass)
     assert handle.config.gpus == 4
 
 
 def test_replica_with_setup():
     """Test @replica with setup function."""
     # Test that GpuProcessor can be initialized with setup params
-    config = GpuProcessor._replica_config  # type: ignore[attr-defined]
+    config = GpuProcessor._service_config  # type: ignore[attr-defined]
     assert config.gpus == 4
 
 
 def test_replica_class_with_call():
     """Test that @replica on classes with async __call__ works correctly."""
     # Should have replica config
-    assert hasattr(GrpcProcessor, "_replica_config")
-    assert GrpcProcessor._replica_config.gpus == 1
-    assert GrpcProcessor._replica_config.backend == "grpc"
+    assert hasattr(GrpcProcessor, "_service_config")
+    assert GrpcProcessor._service_config.gpus == 1
+    assert GrpcProcessor._service_config.backend == "grpc"
 
     # Create handle
     handle = GrpcProcessor.init()  # type: ignore[attr-defined]
-    assert isinstance(handle, ta.ActorHandle)
+    assert isinstance(handle, ta.ServiceClass)
 
 
 # =============================================================================
@@ -212,8 +212,8 @@ async def test_replica_execution():
     mesh = ta.Mesh([ta.CpuDevice(4)])
 
     with mesh:
-        # Use .go() to call the replica
-        result = await processor.go(5)
+        # Use .process.go() to call the replica
+        result = await processor.process.go(5)
 
     assert result == 10
 
@@ -226,7 +226,7 @@ async def test_replica_without_mesh():
     # Create a mesh for local execution
     mesh = ta.Mesh([ta.CpuDevice(4)])
     with mesh:
-        result = await processor.go(5)
+        result = await processor.process.go(5)
         assert result == 10
 
 
@@ -238,8 +238,8 @@ async def test_replica_multiple_calls():
     mesh = ta.Mesh([ta.CpuDevice(4)])
 
     with mesh:
-        # Multiple .go() calls
-        results = await asyncio.gather(*[processor.go(i) for i in range(5)])
+        # Multiple .process.go() calls
+        results = await asyncio.gather(*[processor.process.go(i) for i in range(5)])
 
     assert results == [0, 2, 4, 6, 8]
 
@@ -252,8 +252,8 @@ async def test_replica_with_stateful_setup():
     mesh = ta.Mesh([ta.CpuDevice(4)])
 
     with mesh:
-        result1 = await processor.go(10)
-        result2 = await processor.go(10)
+        result1 = await processor.process.go(10)
+        result2 = await processor.process.go(10)
 
     # Stateful behavior - BasicProcessor tracks calls
     assert result1 == 10
@@ -268,7 +268,7 @@ async def test_replica_async_setup():
     mesh = ta.Mesh([ta.CpuDevice(4)])
 
     with mesh:
-        result = await processor.go(5)
+        result = await processor.process.go(5)
 
     assert result == 10
 
@@ -283,7 +283,7 @@ async def test_mixed_replicas_and_nodes():
     with mesh:
         # Chain nodes and replica calls using .go()
         x = await preprocess.go(5)  # 5 + 1 = 6
-        x = await processor.go(x)  # 6 * 2 = 12
+        x = await processor.process.go(x)  # 6 * 2 = 12
         result = await postprocess.go(x)  # 12 - 1 = 11
 
     assert result == 11
@@ -315,9 +315,9 @@ async def test_profiling_with_replica():
 
     with ta.profile() as profiler:
         with mesh:
-            await processor.go(5)
-            await processor.go(10)
-            await processor.go(15)
+            await processor.process.go(5)
+            await processor.process.go(10)
+            await processor.process.go(15)
 
     # Check that profiling captured execution
     summary = profiler.summary()
@@ -339,12 +339,12 @@ async def test_locally_defined_replica():
     """Test that replica classes defined inside functions work with cloudpickle."""
 
     # Define replica inside the test function
-    @ta.replica()
+    @ta.service()
     class LocalCounter:
         def __init__(self, start: int = 0):
             self.count = start
 
-        async def __call__(self) -> int:
+        async def increment(self) -> int:
             self.count += 1
             return self.count
 
@@ -354,8 +354,8 @@ async def test_locally_defined_replica():
     mesh = ta.Mesh([ta.CpuDevice(1)])
 
     with mesh:
-        result1 = await counter.go()
-        result2 = await counter.go()
+        result1 = await counter.increment.go()
+        result2 = await counter.increment.go()
 
     assert result1 == 11
     assert result2 == 12
@@ -363,19 +363,19 @@ async def test_locally_defined_replica():
 
 @pytest.mark.asyncio
 @pytest.mark.skip(
-    reason="ActorHandle pickle support not yet implemented for locally-defined classes"
+    reason="ServiceClass pickle support not yet implemented for locally-defined classes"
 )
 async def test_locally_defined_replica_serialization():
     """Test that locally-defined replica handles can be serialized with cloudpickle."""
     import pickle
 
     # Define replica inside test
-    @ta.replica()
+    @ta.service()
     class LocalProcessor:
         def __init__(self, prefix: str):
             self.prefix = prefix
 
-        async def __call__(self, text: str) -> str:
+        async def process(self, text: str) -> str:
             return f"{self.prefix}: {text}"
 
     # Create handle
@@ -393,7 +393,7 @@ async def test_locally_defined_replica_serialization():
     mesh = ta.Mesh([ta.CpuDevice(1)])
 
     with mesh:
-        result = await restored.go("hello")
+        result = await restored.process.go("hello")
 
     assert result == "TEST: hello"
 
@@ -413,8 +413,8 @@ async def test_multiple_replica_handles():
 
     with mesh:
         # Chain multiple replicas
-        result = await processor1.go(5)  # 5 * 2 = 10
-        result = await processor2.go(result)  # 10 * 3 = 30
+        result = await processor1.process.go(5)  # 5 * 2 = 10
+        result = await processor2.process.go(result)  # 10 * 3 = 30
 
     assert result == 30
 
@@ -429,8 +429,8 @@ async def test_parallel_replica_calls():
 
     with mesh:
         # Execute in parallel
-        ref1 = processor1.go(5)
-        ref2 = processor2.go(7)
+        ref1 = processor1.process.go(5)
+        ref2 = processor2.process.go(7)
 
         result1, result2 = await asyncio.gather(ref1, ref2)
 
@@ -448,8 +448,8 @@ async def test_replica_with_node_composition():
 
     with mesh:
         # Compose using .go() API
-        result1 = await processor1.go(10)  # 10 * 2 = 20
-        result2 = await processor2.go(10)  # 10 * 5 = 50
+        result1 = await processor1.process.go(10)  # 10 * 2 = 20
+        result2 = await processor2.process.go(10)  # 10 * 5 = 50
         result = await add.go(result1, result2)  # 20 + 50 = 70
 
     assert result == 70
@@ -465,7 +465,7 @@ async def test_complex_pipeline_with_go():
     with mesh:
         # Build complex pipeline with .go() calls
         x = await preprocess.go(5)  # 5 + 1 = 6
-        x = await processor.go(x)  # 6 * 3 = 18
+        x = await processor.process.go(x)  # 6 * 3 = 18
         x = await postprocess.go(x)  # 18 - 1 = 17
 
     assert x == 17
@@ -480,9 +480,9 @@ async def test_replica_stateful_behavior():
 
     with mesh:
         # Make several calls
-        await processor.go(1)
-        await processor.go(2)
-        await processor.go(3)
+        await processor.process.go(1)
+        await processor.process.go(2)
+        await processor.process.go(3)
 
         # Check that calls were tracked (stateful)
         calls = await processor.get_calls.go()

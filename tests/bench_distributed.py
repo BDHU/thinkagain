@@ -12,7 +12,7 @@ import thinkagain as ta
 # =============================================================================
 
 
-@ta.replica()
+@ta.service()
 class BasicProcessor:
     """Basic processor for general execution benchmarks."""
 
@@ -20,47 +20,47 @@ class BasicProcessor:
         self.multiplier = multiplier
         self.calls = []
 
-    async def __call__(self, x: int) -> int:
+    async def process(self, x: int) -> int:
         """Process input by multiplying with multiplier."""
         self.calls.append(x)
         return x * self.multiplier
 
 
-@ta.replica()
+@ta.service()
 class SlowProcessor:
     """Processor with async delay for profiling benchmarks."""
 
-    async def __call__(self, x: int) -> int:
+    async def process(self, x: int) -> int:
         await asyncio.sleep(0.0001)  # Small delay for realistic async
         return x * 2
 
 
-@ta.replica()
+@ta.service()
 class Counter:
     """Stateful counter for state management benchmarks."""
 
     def __init__(self, start: int = 0):
         self.count = start
 
-    async def __call__(self) -> int:
+    async def increment(self) -> int:
         self.count += 1
         return self.count
 
 
 # Node functions for composition
-@ta.node
+@ta.op
 async def preprocess(x: int) -> int:
     """Simple preprocessing node."""
     return x + 1
 
 
-@ta.node
+@ta.op
 async def postprocess(x: int) -> int:
     """Simple postprocessing node."""
     return x - 1
 
 
-@ta.node
+@ta.op
 async def add(a: int, b: int) -> int:
     """Add two numbers."""
     return a + b
@@ -100,7 +100,7 @@ async def test_bench_basic_replica_execution(benchmark):
 
     async def execute():
         with mesh:
-            return await processor.go(5)
+            return await processor.process.go(5)
 
     result = await benchmark(execute)
     assert result == 10
@@ -117,7 +117,7 @@ async def test_bench_replica_multiple_calls(benchmark):
         results = []
         with mesh:
             for i in range(50):
-                result = await processor.go(i)
+                result = await processor.process.go(i)
                 results.append(result)
         return results
 
@@ -135,8 +135,8 @@ async def test_bench_replica_with_different_multipliers(benchmark):
 
     async def execute():
         with mesh:
-            result = await processor1.go(5)  # 5 * 2 = 10
-            result = await processor2.go(result)  # 10 * 5 = 50
+            result = await processor1.process.go(5)  # 5 * 2 = 10
+            result = await processor2.process.go(result)  # 10 * 5 = 50
             return result
 
     result = await benchmark(execute)
@@ -160,7 +160,7 @@ async def test_bench_mixed_replicas_and_nodes(benchmark):
         with mesh:
             for i in range(20):
                 x = await preprocess.go(i)
-                x = await processor.go(x)
+                x = await processor.process.go(x)
                 x = await postprocess.go(x)
                 results.append(x)
         return results
@@ -182,8 +182,8 @@ async def test_bench_complex_distributed_pipeline(benchmark):
         with mesh:
             for i in range(30):
                 x = await add.go(i, 1)
-                result1 = await processor1.go(x)
-                result2 = await processor2.go(x)
+                result1 = await processor1.process.go(x)
+                result2 = await processor2.process.go(x)
                 sum_result = await add.go(result1, result2)
                 final = await add.go(sum_result, 10)
                 results.append(final)
@@ -209,7 +209,7 @@ async def test_bench_profiling_overhead(benchmark):
         with ta.profile() as profiler:
             with mesh:
                 for i in range(20):
-                    await processor.go(i)
+                    await processor.process.go(i)
         return profiler.summary()
 
     summary = await benchmark(run_with_profiling)
@@ -227,7 +227,7 @@ async def test_bench_profiling_summary_generation(benchmark):
     with ta.profile() as profiler:
         with mesh:
             for i in range(50):
-                await processor.go(i)
+                await processor.process.go(i)
 
     # Benchmark summary generation only
     summary = benchmark(profiler.summary)
@@ -250,7 +250,7 @@ async def test_bench_stateful_replica(benchmark):
         results = []
         with mesh:
             for _ in range(100):
-                result = await counter.go()
+                result = await counter.increment.go()
                 results.append(result)
         return results
 
@@ -267,12 +267,12 @@ async def test_bench_stateful_replica(benchmark):
 async def test_bench_locally_defined_replica(benchmark):
     """Benchmark locally-defined replica execution with .go()."""
 
-    @ta.replica()
+    @ta.service()
     class LocalProcessor:
         def __init__(self, multiplier: int):
             self.multiplier = multiplier
 
-        async def __call__(self, x: int) -> int:
+        async def process(self, x: int) -> int:
             return x * self.multiplier
 
     processor = LocalProcessor.init(multiplier=3)  # type: ignore[attr-defined]
@@ -283,7 +283,7 @@ async def test_bench_locally_defined_replica(benchmark):
         results = []
         with mesh:
             for i in range(30):
-                result = await processor.go(i)
+                result = await processor.process.go(i)
                 results.append(result)
         return results
 
@@ -307,7 +307,7 @@ async def test_bench_multiple_replica_handles(benchmark):
         with mesh:
             x = 1
             for proc in processors:
-                x = await proc.go(x)
+                x = await proc.process.go(x)
             return x
 
     result = await benchmark(execute)
@@ -326,9 +326,9 @@ async def test_bench_replica_handle_switching(benchmark):
         with mesh:
             for i in range(20):
                 if i % 2 == 0:
-                    await processor1.go(i)
+                    await processor1.process.go(i)
                 else:
-                    await processor2.go(i)
+                    await processor2.process.go(i)
 
     await benchmark(run_alternating)
 
@@ -349,7 +349,7 @@ async def test_bench_mesh_context_overhead(benchmark):
         # Benchmark with mesh context switching
         for i in range(10):
             with mesh:
-                await processor.go(i)
+                await processor.process.go(i)
 
     await benchmark(run_with_context_switching)
 
@@ -364,7 +364,7 @@ async def test_bench_concurrent_replica_calls(benchmark):
     async def run_concurrent():
         with mesh:
             # Execute multiple calls concurrently
-            tasks = [processor.go(i) for i in range(20)]
+            tasks = [processor.process.go(i) for i in range(20)]
             results = await asyncio.gather(*tasks)
         return results
 
@@ -401,8 +401,8 @@ async def test_bench_mixed_parallel_sequential(benchmark):
             results = []
             for i in range(10):
                 # Parallel execution
-                ref1 = processor1.go(i)
-                ref2 = processor2.go(i)
+                ref1 = processor1.process.go(i)
+                ref2 = processor2.process.go(i)
                 r1, r2 = await asyncio.gather(ref1, ref2)
 
                 # Sequential execution
