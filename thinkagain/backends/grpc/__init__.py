@@ -1,6 +1,6 @@
 """gRPC backend for distributed execution."""
 
 from .client import GrpcClient
-from .server import ReplicaServicer
+from .server import ServiceExecutorServicer
 
-__all__ = ["GrpcClient", "ReplicaServicer"]
+__all__ = ["GrpcClient", "ServiceExecutorServicer"]

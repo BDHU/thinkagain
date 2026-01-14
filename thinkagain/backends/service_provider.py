@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from ..api.replica import ReplicaHandle
+    from ..api.service import ServiceHandle
 
 
 class ServiceExecutionProvider:
@@ -25,12 +25,12 @@ class ServiceExecutionProvider:
         self.mesh = mesh
 
     async def execute_service_call(
-        self, handle: "ReplicaHandle", args: tuple, kwargs: dict
+        self, handle: "ServiceHandle", args: tuple, kwargs: dict
     ) -> Any:
         """Execute a service call.
 
         Args:
-            handle: Replica handle identifying the service
+            handle: Service handle identifying the service
             args: Positional arguments for __call__
             kwargs: Keyword arguments for __call__
 
@@ -43,8 +43,8 @@ class ServiceExecutionProvider:
         # Ensure service is deployed (auto-deploy if needed)
         await self.mesh._ensure_deployed(handle)
 
-        # Get a replica instance
-        replica = self.mesh.get_service_replica(handle)
+        # Get a service instance
+        service_inst = self.mesh.get_service_instance(handle)
 
-        # Call the replica's execute method for consistent interface
-        return await replica.execute(*args, **kwargs)
+        # Call the service instance's execute method for consistent interface
+        return await service_inst.execute(*args, **kwargs)

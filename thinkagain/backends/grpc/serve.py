@@ -1,4 +1,4 @@
-"""CLI tool to start a replica server."""
+"""CLI tool to start a service server."""
 
 from __future__ import annotations
 
@@ -12,22 +12,22 @@ from .server import serve
 
 
 def main():
-    """Entry point for replica server CLI.
+    """Entry point for service server CLI.
 
     Usage:
         python -m thinkagain.serve my_module:my_function --port 8000
     """
     parser = argparse.ArgumentParser(
-        description="Start a ThinkAgain replica server",
+        description="Start a ThinkAgain service server",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Start server with a @replica decorated class
+  # Start server with a @service decorated class
   python -m thinkagain.serve examples.llm:LLMServer --port 8000
 
-  # The target must be a class decorated with @replica:
+  # The target must be a class decorated with @service:
 
-  @replica(gpus=1, backend="grpc")
+  @service(gpus=1, backend="grpc")
   class LLMServer:
       def __init__(self):
           self.model = load_model()
@@ -62,7 +62,7 @@ Examples:
         print(f"Error: Failed to import module '{module_name}': {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Get the @replica decorated object
+    # Get the @service decorated object
     try:
         obj = getattr(module, obj_name)
     except AttributeError:
@@ -72,14 +72,14 @@ Examples:
         )
         sys.exit(1)
 
-    # Check if it's @replica decorated
-    if not hasattr(obj, "_replica_config"):
+    # Check if it's @service decorated
+    if not hasattr(obj, "_service_config"):
         print(
-            f"Error: {obj_name} must be decorated with @replica",
+            f"Error: {obj_name} must be decorated with @service",
             file=sys.stderr,
         )
         print("Example:", file=sys.stderr)
-        print("  @replica(backend='grpc')", file=sys.stderr)
+        print("  @service(backend='grpc')", file=sys.stderr)
         print("  class MyService:", file=sys.stderr)
         print("      async def __call__(self, ...): ...", file=sys.stderr)
         sys.exit(1)
@@ -87,12 +87,12 @@ Examples:
     # Must be a class
     if not inspect.isclass(obj):
         print(
-            f"Error: {obj_name} must be a class decorated with @replica",
+            f"Error: {obj_name} must be a class decorated with @service",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    # Instantiate the replica class
+    # Instantiate the service class
     try:
         instance = obj()
     except Exception as e:
@@ -110,10 +110,10 @@ Examples:
         )
         sys.exit(1)
 
-    print(f"Serving @replica decorated: {obj_name}")
-    print(f"Backend: {obj._replica_config.backend}")
-    if obj._replica_config.gpus:
-        print(f"GPUs: {obj._replica_config.gpus}")
+    print(f"Serving @service decorated: {obj_name}")
+    print(f"Backend: {obj._service_config.backend}")
+    if obj._service_config.gpus:
+        print(f"GPUs: {obj._service_config.gpus}")
 
     # Start server
     try:

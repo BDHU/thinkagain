@@ -1,4 +1,4 @@
-"""gRPC server for hosting replicated functions."""
+"""gRPC server for hosting distributed service functions."""
 
 from __future__ import annotations
 
@@ -8,17 +8,17 @@ from typing import Any
 
 import grpc
 
-from .proto import replica_pb2, replica_pb2_grpc
+from .proto import service_pb2, service_pb2_grpc
 
 
-class ReplicaServicer(replica_pb2_grpc.ReplicaServiceServicer):
-    """gRPC servicer that hosts a replicated function instance."""
+class ServiceExecutorServicer(service_pb2_grpc.ServiceExecutorServicer):
+    """gRPC servicer that hosts a service function instance."""
 
     def __init__(self, instance: Any):
         """Initialize servicer with a function instance.
 
         Args:
-            instance: The instantiated replica (e.g., LLMServer instance)
+            instance: The instantiated service (e.g., LLMServer instance)
                      Must have an async __call__ method
         """
         self.instance = instance
@@ -32,9 +32,9 @@ class ReplicaServicer(replica_pb2_grpc.ReplicaServiceServicer):
 
     async def Execute(
         self,
-        request: replica_pb2.ExecuteRequest,
+        request: service_pb2.ExecuteRequest,
         context: grpc.aio.ServicerContext,  # type: ignore[name-defined]
-    ) -> replica_pb2.ExecuteResponse:
+    ) -> service_pb2.ExecuteResponse:
         """Execute the function with provided arguments.
 
         Args:
@@ -54,23 +54,23 @@ class ReplicaServicer(replica_pb2_grpc.ReplicaServiceServicer):
             # Serialize result
             result_bytes = pickle.dumps(result)
 
-            return replica_pb2.ExecuteResponse(result=result_bytes, error="")
+            return service_pb2.ExecuteResponse(result=result_bytes, error="")
 
         except Exception as e:
             # Capture error details
             error_msg = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
-            return replica_pb2.ExecuteResponse(result=b"", error=error_msg)
+            return service_pb2.ExecuteResponse(result=b"", error=error_msg)
 
 
 async def serve(instance: Any, port: int = 8000):
-    """Start a gRPC server hosting the replica instance.
+    """Start a gRPC server hosting the service instance.
 
     Args:
-        instance: The instantiated replica to host
+        instance: The instantiated service to host
         port: Port to listen on (default: 8000)
 
     Example:
-        >>> @replica(gpus=1, backend="grpc")
+        >>> @service(gpus=1, backend="grpc")
         >>> class LLMServer:
         >>>     def __init__(self):
         >>>         self.model = load_model()
@@ -81,14 +81,14 @@ async def serve(instance: Any, port: int = 8000):
         >>> await serve(instance, port=8000)
     """
     server = grpc.aio.server()  # type: ignore[attr-defined]
-    replica_pb2_grpc.add_ReplicaServiceServicer_to_server(
-        ReplicaServicer(instance), server
+    service_pb2_grpc.add_ServiceExecutorServicer_to_server(
+        ServiceExecutorServicer(instance), server
     )
 
     listen_addr = f"[::]:{port}"
     server.add_insecure_port(listen_addr)
 
-    print(f"Starting replica server on {listen_addr}")
+    print(f"Starting service server on {listen_addr}")
     print(f"Serving: {type(instance).__name__}")
 
     await server.start()

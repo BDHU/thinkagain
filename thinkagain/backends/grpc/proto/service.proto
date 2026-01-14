@@ -2,9 +2,9 @@ syntax = "proto3";
 
 package thinkagain.distributed.grpc;
 
-// Service for executing replicated functions remotely
-service ReplicaService {
-  // Execute a function call on the replica
+// Service for executing distributed service functions remotely
+service ServiceExecutor {
+  // Execute a function call on the service
   rpc Execute(ExecuteRequest) returns (ExecuteResponse);
 }
 

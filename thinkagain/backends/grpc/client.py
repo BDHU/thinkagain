@@ -1,4 +1,4 @@
-"""gRPC client for remote replica execution."""
+"""gRPC client for remote service execution."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any
 
 import grpc
 
-from .proto import replica_pb2, replica_pb2_grpc
+from .proto import service_pb2, service_pb2_grpc
 
 
 class GrpcClient:
@@ -21,7 +21,7 @@ class GrpcClient:
         """
         self.endpoint = endpoint
         self.channel = grpc.aio.insecure_channel(endpoint)  # type: ignore[attr-defined]
-        self.stub = replica_pb2_grpc.ReplicaServiceStub(self.channel)
+        self.stub = service_pb2_grpc.ServiceExecutorStub(self.channel)
 
     async def execute(self, *args, **kwargs) -> Any:
         """Execute function on remote server.
@@ -41,7 +41,7 @@ class GrpcClient:
         args_bytes = pickle.dumps((args, kwargs))
 
         # Create request
-        request = replica_pb2.ExecuteRequest(args=args_bytes)
+        request = service_pb2.ExecuteRequest(args=args_bytes)
 
         # Execute RPC
         response = await self.stub.Execute(request)
