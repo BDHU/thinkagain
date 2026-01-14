@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package thinkagain.distributed.grpc;
+
+// Service for executing replicated functions remotely
+service ReplicaService {
+  // Execute a function call on the replica
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+}
+
+// Request to execute a function
+message ExecuteRequest {
+  // Pickled tuple of (args, kwargs)
+  bytes args = 1;
+}
+
+// Response from function execution
+message ExecuteResponse {
+  // Pickled result value
+  bytes result = 1;
+
+  // Error message if execution failed
+  string error = 2;
+}
