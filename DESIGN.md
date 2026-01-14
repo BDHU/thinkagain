@@ -1,7 +1,7 @@
 # ThinkAgain Design
 
 This document captures the principles behind ThinkAgain's current
-implementation: keep the runtime tiny, make lazy execution obvious, and
+implementation: keep the runtime tiny, make dynamic execution obvious, and
 provide an easy escape hatch for stateful services without building a
 workflow engine.
 
@@ -9,214 +9,264 @@ workflow engine.
 
 1. **Plain Python Pipelines** – Users write regular functions with familiar
    control flow (`if`, `for`, `while`). No DSL, no custom graph builder.
-2. **Lazy by Default** – The framework collects pending node calls and only
-   executes when results are needed. This enables conditional logic that depends
-   on partial results and makes debugging easier.
-3. **Async-First but Sync-Friendly** – Nodes are async functions, yet the entry
-   points (`run`, `ctx.data`, etc.) work from both sync and async code.
-4. **DAG Execution** – Contexts track dependencies via back-pointers, enabling
-   fanout patterns where shared ancestors execute only once.
-5. **Composable State** – Pipelines pass around a single `Context` object that
-   wraps user data (dataclasses, dicts, etc.).
-6. **Optional Distribution** – Heavyweight services can be wrapped as replicas
+2. **Dynamic by Default** – The framework builds computation graphs at runtime
+   as `.go()` calls are made. This enables natural parallelism and makes
+   debugging easier.
+3. **Async-First but Sync-Friendly** – Ops are async functions, yet the entry
+   points work from both sync and async code.
+4. **DAG Execution** – The scheduler tracks dependencies between ObjectRefs,
+   enabling fanout patterns where shared ancestors execute only once.
+5. **Composable State** – Services maintain their own state across multiple
+   method calls, enabling patterns like caching and session management.
+6. **Optional Distribution** – Heavyweight services can be wrapped as services
    and deployed to local or remote backends without touching pipeline code.
 
 ## Execution Model
 
-### Nodes and Pipelines
+### Ops and Dynamic Graphs
 
-- Nodes are `async def` functions that accept and return plain Python values.
-- `@node` wraps the function so it creates a new `Context` with back-pointers.
-- `ctx = my_node(ctx)` records a pending node with dependency tracking; nothing runs yet.
-- Multi-input nodes are supported: each `Context` argument becomes a tracked parent.
-- Pipelines are just Python functions that thread through contexts.
+- Ops are `async def` functions that accept and return plain Python values.
+- `@op` wraps the function so it can be submitted via `.go()` calls.
+- `ref = my_op.go(args)` immediately returns an `ObjectRef` future; nothing runs yet.
+- `ObjectRef`s can be passed as arguments to other `.go()` calls, building
+  the dependency graph automatically.
+- Pipelines are just Python functions that orchestrate `.go()` calls.
 
 ```python
-from dataclasses import dataclass
+@op
+async def retrieve(query: str) -> list[str]:
+    return ["doc1", "doc2", "doc3"]
 
-@dataclass
-class State:
-    query: str
-    documents: list[str] | None = None
+@op
+async def generate(docs: list[str], query: str) -> str:
+    return f"Answer for '{query}' using {len(docs)} docs"
 
-@node
-async def retrieve(s: State) -> State:
-    return State(query=s.query, documents=["doc1", "doc2"])
-
-def pipeline(ctx):
-    ctx = retrieve(ctx)       # pending
-    ctx = generate(ctx)       # pending
-    return ctx                # still pending
+async def rag_pipeline(query: str) -> str:
+    # Submit tasks immediately (non-blocking)
+    docs_ref = retrieve.go(query)
+    answer_ref = generate.go(docs_ref, query)
+    
+    # Wait for final result
+    return await answer_ref
 ```
 
-### Materialization Triggers
+### Execution Triggers
 
-Pending nodes run when you call `run`, `arun`, access `ctx.data`, or `await ctx`.
-The `DAGExecutor` walks back-pointers to build topological order, deduplicating
-shared ancestors.
+Pending tasks run when you `await` an `ObjectRef`. The `DAGScheduler`
+walks the dependency graph to build topological order, deduplicating
+shared ancestors and executing independent tasks in parallel.
 
 ### Control Flow
 
 Pipelines rely on plain Python flow:
 
-- `if ctx.data.score > 0.8:` materializes pending work before comparison.
-- `while ctx.data.quality < 0.9:` materializes once per iteration.
+- `if (await ref).score > 0.8:` materializes pending work before comparison.
+- `while (await ref).quality < 0.9:` materializes once per iteration.
 - Helper functions or recursion work naturally because everything passes through
-  the same context object.
+  `ObjectRef`s.
 
-Inside a node you can call other nodes and `await ctx` before returning:
+Inside an op you can call other ops and `await` the result:
 
 ```python
-@node
-async def orchestrate(ctx):
-    ctx = stage_one(ctx)
-    ctx = stage_two(ctx)
-    value = await ctx  # make sure stage_one/two ran
-    return value
+@op
+async def orchestrate(query: str) -> str:
+    docs_ref = retrieve.go(query)
+    answer_ref = generate.go(docs_ref, query)
+    
+    # Wait for intermediate result if needed
+    docs = await docs_ref
+    if len(docs) > 5:
+        # Submit different work based on intermediate result
+        return await summarize.go(answer_ref)
+    
+    return await answer_ref
 ```
 
-### Fanout and Multi-Input Nodes
+### Fanout and Shared Dependencies
 
-Nodes can accept multiple context arguments. Shared ancestors execute only once:
+Multiple operations can share the same `ObjectRef` dependency:
 
 ```python
-@node
-async def combine(a: int, b: int) -> int:
-    return a + b
+@op
+async def process_a(data: str) -> str:
+    return f"Processed A: {data}"
 
-# Both branches share `base`; it runs only once
-base = some_node(ctx)
-left = process_a(base)
-right = process_b(base)
-result = combine(left, right)
+@op
+async def process_b(data: str) -> str:
+    return f"Processed B: {data}"
+
+@op
+async def combine(a: str, b: str) -> str:
+    return f"{a}\n{b}"
+
+async def fanout_pipeline(input_data: str) -> str:
+    # All branches share the same base_ref - it executes once
+    base_ref = fetch_data.go(input_data)
+    
+    # Parallel fanout
+    ref_a = process_a.go(base_ref)
+    ref_b = process_b.go(base_ref)
+    
+    # Fanin
+    return await combine.go(ref_a, ref_b)
 ```
 
 ### Error Handling
 
-- Failures are wrapped in `NodeExecutionError` with the failing node name.
-- Returning a context with pending nodes raises `RuntimeError` so authors remember to `await ctx`.
+- Failures are wrapped in `OpExecutionError` with the failing op name.
+- Returning an `ObjectRef` without awaiting it works fine for pipeline
+  construction, but individual results must be awaited for values.
 
-**Concurrency constraint:** Concurrent materialization of contexts that share
-ancestors (e.g., via `asyncio.gather()`) is not supported. Materialize sequentially.
+**Concurrency constraint:** Concurrent execution of tasks that share
+dependencies is automatically handled by the scheduler, but manual `asyncio.gather()`
+on tasks with shared dependencies should be done carefully.
 
-## Distributed Replica Design
+## Service Design
 
-### Replica Decorator
+### Service Decorator
 
-`@replica(n=1)` turns a class into a pool of workers: it registers the spec with
-the default `ReplicaManager` (or an explicit manager) and returns a
-`ReplicaHandle` that exposes `deploy`/`shutdown`/`get`. Instantiation is
-deferred until you call `get()` or run `manager.deploy_all()`. Nodes can call
-replicas anywhere as long as a backend is configured.
+`@service(gpus=0)` turns a class into a distributed service:
+- Returns a `ServiceHandle` from `.init()` that exposes methods
+- Methods can be called with `.go()` to submit work to the service instance
+- Services maintain mutable state across multiple method calls
+- Multiple instances can be created for load balancing
 
-### Runtime Lifecycle
+### Service Lifecycle
 
-`distributed.runtime(...):` wraps `init → deploy → shutdown` around a block,
-making sure every registered replica exists before your pipeline runs. Outside
-that block, calling `ReplicaHandle.get()` triggers one-off deployment, which is
-handy for quick tests.
+Services have a clear lifecycle:
+1. **Definition**: Define class with `@service(...)`
+2. **Handle Creation**: `handle = MyService.init()` returns a handle
+3. **Deployment**: Services deploy when entering a `Mesh` context or on first use
+4. **Execution**: Method calls via `handle.method.go(args)` submit work
+5. **Cleanup**: Services shutdown when exiting mesh context
 
 ### Backends and Remote Execution
 
-- **Local backend**: default, keeps replica instances in the current process.
-- **gRPC backend**: returns proxies whose attribute access serializes calls to a
-  remote server. Switching to gRPC is a configuration change.
+- **Local backend**: Default, keeps service instances in the current process.
+- **gRPC backend**: Returns proxies whose method calls serialize to remote servers.
+- Switching backends is a configuration change, not a code change.
 
 ## Common Patterns
 
-1. **Linear pipeline**
+### 1. Linear Pipeline
 
 ```python
-def rag(ctx):
-    return generate(rerank(retrieve(ctx)))
+async def rag(query: str) -> str:
+    docs_ref = retrieve.go(query)
+    context_ref = combine_docs.go(docs_ref)
+    answer_ref = generate.go(context_ref, query)
+    return await answer_ref
 ```
 
-2. **Conditional routing**
+### 2. Conditional Pipeline
 
 ```python
-def maybe_rerank(ctx):
-    ctx = retrieve(ctx)
-    if len(ctx.data.documents) > 3:
-        ctx = rerank(ctx)
-    return generate(ctx)
+async def maybe_rerank(query: str) -> str:
+    docs_ref = retrieve.go(query)
+    docs = await docs_ref
+    
+    if len(docs) > 3:
+        docs_ref = rerank.go(query, docs_ref)
+    
+    answer_ref = generate.go(docs_ref, query)
+    return await answer_ref
 ```
 
-3. **Self-correcting loop**
+### 3. Self-Correcting Loop
 
 ```python
-def refine_until_good(ctx):
-    ctx = initial(ctx)
-    while ctx.data.quality < 0.85:
-        ctx = refine(ctx)
-        ctx = evaluate(ctx)
-    return ctx
+async def refine_until_good(query: str) -> str:
+    answer_ref = generate.go(query)
+    quality_ref = evaluate.go(answer_ref)
+    quality = await quality_ref
+    
+    while quality < 0.85:
+        refined_ref = refine.go(answer_ref, quality_ref)
+        answer_ref = generate.go(query, refined_ref)
+        quality_ref = evaluate.go(answer_ref)
+        quality = await quality_ref
+    
+    return await answer_ref
 ```
 
-4. **Fanout with shared ancestor**
+### 4. Fanout with Shared Ancestor
 
 ```python
-@node
-async def merge(a: State, b: State) -> State:
-    return State(results=a.results + b.results)
+@op
+async def merge(results: list[str]) -> str:
+    return "\n".join(results)
 
-def fanout_pipeline(ctx):
-    base = fetch_data(ctx)
-    left = process_a(base)   # shares base
-    right = process_b(base)  # shares base
-    return merge(left, right)  # base runs once
+async def fanout_pipeline(query: str) -> str:
+    base_ref = fetch_data.go(query)  # Shared ancestor
+    
+    # Multiple consumers of same base_ref - executes once
+    left_ref = process_a.go(base_ref)
+    right_ref = process_b.go(base_ref)
+    
+    # Fanin
+    merged_ref = merge.go([left_ref, right_ref])
+    return await merged_ref
 ```
 
-5. **Replica-backed node**
+### 5. Service-Backed Pipeline
 
 ```python
-@replica(n=2)
-class Tooling:
-    def invoke(self, prompt):
-        ...
+@service()
+class Cache:
+    def __init__(self):
+        self.cache = {}
+    
+    async def get(self, key: str) -> str | None:
+        return self.cache.get(key)
+    
+    async def put(self, key: str, value: str):
+        self.cache[key] = value
 
-@node
-async def call_tool(s: State) -> State:
-    tool = Tooling.get()
-    return State(reply=tool.invoke(s.prompt))
+@op
+async def cached_retrieve(cache: Cache, query: str) -> list[str]:
+    cached_ref = cache.get.go(query)
+    cached = await cached_ref
+    
+    if cached is not None:
+        return cached
+    
+    docs_ref = retrieve.go(query)
+    docs = await docs_ref
+    
+    # Cache the result (state persists in service)
+    await cache.put.go(query, docs)
+    return docs
+
+async def pipeline(query: str) -> str:
+    cache = Cache.init()
+    docs_ref = cached_retrieve.go(cache, query)
+    answer_ref = generate.go(docs_ref, query)
+    return await answer_ref
 ```
 
-These patterns work identically in sync or async contexts because the only state
-that matters is the `Context` object that flows through the pipeline.
+These patterns work identically in local or distributed contexts because
+the only state that matters is the `ObjectRef`s and service instances that
+flow through the pipeline.
 
-## Graph Tracing API
+## Dynamic Execution Benefits
 
-ThinkAgain also ships a JAX-style tracing API for building static graphs from
-async code. Use `@jit` to trace a function, and use `cond`, `while_loop`, or
-`scan` to express control flow inside the traced region.
+The dynamic execution model provides several advantages:
 
-```python
-from thinkagain import jit, node, cond, scan, while_loop
-
-@node
-async def step(x: int) -> int:
-    return x + 1
-
-@jit(static_argnames=("max_steps",))
-async def pipeline(x: int, *, max_steps: int = 3) -> int:
-    x = await while_loop(lambda s: s < max_steps, step, x)
-    x = await cond(lambda s: s % 2 == 0, step, step, x)
-    return x
-```
-
-Key behaviors:
-- Keyword arguments are dynamic inputs by default. Use `static_argnames` to
-  treat specific kwargs as compile-time constants; changing them recompiles.
-- Static kwargs must be hashable to participate in cache keys.
-- `cond` branch outputs must use the same output pattern.
-- `scan` bodies must return `(carry, output)` tuples.
-- `parent_values` is reserved for internal execution and cannot be used as a
-  node parameter.
+1. **Natural Parallelism**: Submit multiple tasks and let the scheduler
+   automatically parallelize independent work
+2. **Flexible Control Flow**: Use regular Python control flow with
+   intermediate results to decide next steps
+3. **Incremental Construction**: Build pipelines incrementally without
+   upfront graph definition
+4. **Debugging**: Debug individual ops in isolation before composing
+5. **Resource Awareness**: The scheduler understands resource requirements
+   and schedules accordingly
 
 ## Future Work
 
-- Additional backends (Ray, asyncio pools, etc.) can slot into the same backend
-  protocol without touching the core runtime.
-- Observability hooks (tracing, metrics) could be added via node wrappers or
-  custom execution callbacks.
-- Higher-level helpers (e.g., loop utilities) can be built as regular nodes
-  while keeping the core surface minimal.
+- Additional backends (cluster managers, cloud services) can slot into the
+  same backend protocol without touching core runtime
+- Advanced scheduling strategies (priority, fairness) can be added to DAGScheduler
+- Observability hooks (metrics, tracing) can be added via op wrappers
+- Higher-level helpers (workflow templates) can be built as regular ops
+  while keeping core surface minimal

@@ -1,4 +1,4 @@
-"""Benchmarks for distributed execution with @replica, @node, Mesh, and .go() API."""
+"""Benchmarks for distributed execution with @service, @op, Mesh, and .go() API."""
 
 import asyncio
 
