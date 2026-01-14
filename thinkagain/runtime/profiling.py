@@ -10,17 +10,18 @@ from collections import defaultdict, deque
 from contextlib import contextmanager
 from typing import Any
 
+from .context import get_current_execution_context
+
 _current_node: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "current_node", default=None
 )
 
-_profiler: ExecutionProfiler | None = None
 _profiler_lock = threading.Lock()
 
 
 class ExecutionProfiler:
     def __init__(self, max_samples: int = 10_000):
-        self._node_to_replicates: dict[str, set[str]] = defaultdict(set)
+        self._node_to_services: dict[str, set[str]] = defaultdict(set)
         self._fanout_counts: dict[str, dict[str, int]] = defaultdict(
             lambda: defaultdict(int)
         )
@@ -28,7 +29,7 @@ class ExecutionProfiler:
         self._execution_times: dict[str, deque[float]] = defaultdict(
             lambda: deque(maxlen=max_samples)
         )
-        self._replicate_calls: dict[str, int] = defaultdict(int)
+        self._service_calls: dict[str, int] = defaultdict(int)
         self._lock = threading.Lock()
         self._start_time = time.perf_counter()
 
@@ -40,25 +41,24 @@ class ExecutionProfiler:
         with self._lock:
             self._execution_times[node_name].append(duration)
 
-    def record_replicate_call(
+    def record_service_call(
         self,
-        replicate_name: str,
+        service_name: str,
         caller_node: str | None,
         duration: float | None = None,
     ) -> None:
         with self._lock:
-            self._replicate_calls[replicate_name] += 1
+            self._service_calls[service_name] += 1
             if caller_node:
-                self._node_to_replicates[caller_node].add(replicate_name)
-                self._fanout_counts[caller_node][replicate_name] += 1
+                self._node_to_services[caller_node].add(service_name)
+                self._fanout_counts[caller_node][service_name] += 1
             if duration is not None:
-                self._execution_times[replicate_name].append(duration)
+                self._execution_times[service_name].append(duration)
 
     def get_dependency_graph(self) -> dict[str, set[str]]:
         with self._lock:
             return {
-                node: set(replicates)
-                for node, replicates in self._node_to_replicates.items()
+                node: set(services) for node, services in self._node_to_services.items()
             }
 
     def get_fanout_matrix(self) -> dict[str, dict[str, float]]:
@@ -100,7 +100,7 @@ class ExecutionProfiler:
 
     def get_call_counts(self) -> dict[str, int]:
         with self._lock:
-            return dict(self._replicate_calls)
+            return dict(self._service_calls)
 
     def get_node_executions(self) -> dict[str, int]:
         with self._lock:
@@ -111,11 +111,11 @@ class ExecutionProfiler:
 
     def reset(self) -> None:
         with self._lock:
-            self._node_to_replicates.clear()
+            self._node_to_services.clear()
             self._fanout_counts.clear()
             self._node_executions.clear()
             self._execution_times.clear()
-            self._replicate_calls.clear()
+            self._service_calls.clear()
             self._start_time = time.perf_counter()
 
     def summary(self) -> dict[str, Any]:
@@ -145,30 +145,32 @@ def enable_profiling(max_samples: int = 10_000) -> ExecutionProfiler:
         stats = profiler.summary()
         print(stats['fanout_matrix'])
     """
-    global _profiler
+    ctx = get_current_execution_context()
     with _profiler_lock:
-        if _profiler is None:
-            _profiler = ExecutionProfiler(max_samples=max_samples)
-        return _profiler
+        if ctx.profiler is None:
+            ctx.profiler = ExecutionProfiler(max_samples=max_samples)
+        return ctx.profiler
 
 
 def disable_profiling() -> None:
     """Disable execution profiling."""
-    global _profiler
+    ctx = get_current_execution_context()
     with _profiler_lock:
-        _profiler = None
+        ctx.profiler = None
 
 
 def is_profiling_enabled() -> bool:
     """Check if profiling is currently enabled."""
+    ctx = get_current_execution_context()
     with _profiler_lock:
-        return _profiler is not None
+        return ctx.profiler is not None
 
 
 def get_profiler() -> ExecutionProfiler | None:
     """Get the active profiler instance, if any."""
+    ctx = get_current_execution_context()
     with _profiler_lock:
-        return _profiler
+        return ctx.profiler
 
 
 @contextmanager
@@ -201,7 +203,7 @@ def node_context(node_name: str):
 
     This is used by the executor to track which node is currently running.
     """
-    profiler = _profiler
+    profiler = get_current_execution_context().profiler
     if profiler is None:
         yield
         return
@@ -218,13 +220,13 @@ def node_context(node_name: str):
         _current_node.reset(token)
 
 
-def record_replicate_call(replicate_name: str, duration: float | None = None) -> None:
-    """Record a replicated function call (internal use).
+def record_service_call(service_name: str, duration: float | None = None) -> None:
+    """Record a service function call (internal use).
 
     Args:
-        replicate_name: Name of the replicated function
+        service_name: Name of the service function
         duration: Optional execution time in seconds
     """
-    profiler = _profiler
+    profiler = get_current_execution_context().profiler
     if profiler is not None:
-        profiler.record_replicate_call(replicate_name, get_current_node(), duration)
+        profiler.record_service_call(service_name, get_current_node(), duration)

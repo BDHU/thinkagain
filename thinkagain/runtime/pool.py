@@ -1,32 +1,34 @@
-"""Replica pool for distributed execution."""
+"""Service pool for distributed execution."""
 
 from __future__ import annotations
 
 import warnings
-from abc import ABC, abstractmethod
 from typing import Any, Callable
 
-from ..api.replica import ReplicaConfig
+from ..api.service import ServiceConfig
+from .context import get_current_execution_context
 from .utils import maybe_await
 from ..resources import Mesh
 
-_pools_global: dict[tuple[object, ...], "ReplicaPool"] = {}
 
+class ServiceInstance:
+    fn: Any = None
+    state: Any = None
 
-def _get_pools() -> dict[tuple[object, ...], "ReplicaPool"]:
-    return _pools_global
-
-
-class Replica(ABC):
-    @abstractmethod
     async def execute(self, *args, **kwargs) -> Any:
-        pass
+        raise NotImplementedError
 
     async def shutdown(self):
         pass
 
+    def get_service(self) -> Any | None:
+        """Return the backing service instance for method calls."""
+        if self.state is not None:
+            return self.state
+        return self.fn
 
-class LocalReplica(Replica):
+
+class LocalServiceInstance(ServiceInstance):
     def __init__(self, fn: Callable, state: Any = None):
         self.fn = fn
         self.state = state
@@ -36,7 +38,7 @@ class LocalReplica(Replica):
         return await maybe_await(self.fn, *args, **kwargs)
 
 
-class RemoteReplica(Replica):
+class RemoteServiceInstance(ServiceInstance):
     def __init__(self, endpoint: str):
         self.endpoint = endpoint
         self._client = None
@@ -53,20 +55,20 @@ class RemoteReplica(Replica):
             await self._client.close()
 
 
-class ReplicaPool:
+class ServicePool:
     def __init__(
         self,
         fn: Any,
-        config: ReplicaConfig,
+        config: ServiceConfig,
         mesh: Mesh,
         *,
-        create_local: Callable[[], Replica] | None = None,
-        create_remote: Callable[[str], Replica] | None = None,
+        create_local: Callable[[], ServiceInstance] | None = None,
+        create_remote: Callable[[str], ServiceInstance] | None = None,
     ):
         self.fn = fn
         self.config = config
         self.mesh = mesh
-        self.replicas: list[Replica] = []
+        self.instances: list[ServiceInstance] = []
         self._index = 0
         self._endpoint_index = 0
         self._deployed = False
@@ -81,17 +83,17 @@ class ReplicaPool:
         self._endpoint_index += 1
         return endpoint
 
-    async def _create_replica(self) -> Replica:
+    async def _create_instance(self) -> ServiceInstance:
         if self.config.backend == "grpc":
             endpoint = self._next_endpoint()
             if self._create_remote:
                 return await maybe_await(self._create_remote, endpoint)
-            return RemoteReplica(endpoint)
+            return RemoteServiceInstance(endpoint)
         elif self.config.backend == "local":
             if self._create_local:
                 return await maybe_await(self._create_local)
             state = await maybe_await(self.config.setup) if self.config.setup else None
-            return LocalReplica(self.fn, state)
+            return LocalServiceInstance(self.fn, state)
         else:
             raise ValueError(f"Unknown backend: {self.config.backend}")
 
@@ -115,72 +117,72 @@ class ReplicaPool:
             )
 
         for _ in range(n):
-            self.replicas.append(await self._create_replica())
+            self.instances.append(await self._create_instance())
         self._deployed = True
 
-    def get_next(self) -> Replica:
-        if not self._deployed or not self.replicas:
+    def get_next(self) -> ServiceInstance:
+        if not self._deployed or not self.instances:
             raise RuntimeError(f"Pool for {self.fn.__name__} not deployed")
-        replica = self.replicas[self._index]
-        self._index = (self._index + 1) % len(self.replicas)
-        return replica
+        instance = self.instances[self._index]
+        self._index = (self._index + 1) % len(self.instances)
+        return instance
 
     async def shutdown(self):
-        for replica in self.replicas:
-            await replica.shutdown()
-        self.replicas.clear()
+        for instance in self.instances:
+            await instance.shutdown()
+        self.instances.clear()
         self._deployed = False
 
     @property
     def instance_count(self) -> int:
-        return len(self.replicas)
+        return len(self.instances)
 
     def __repr__(self):
-        return f"ReplicaPool({self.fn.__name__}, {self.instance_count} instances, {'deployed' if self._deployed else 'not deployed'})"
+        return f"ServicePool({self.fn.__name__}, {self.instance_count} instances, {'deployed' if self._deployed else 'not deployed'})"
 
 
-def get_or_create_pool(fn: Any, config: ReplicaConfig, mesh: Mesh) -> ReplicaPool:
+def get_or_create_pool(fn: Any, config: ServiceConfig, mesh: Mesh) -> ServicePool:
     """Get existing pool or create new one.
 
     Args:
-        fn: Function to replicate
+        fn: Function to create instances from
         config: Distribution configuration
         cluster: Cluster providing resources
 
     Returns:
-        ReplicaPool for the function
+        ServicePool for the function
     """
-    pools = _get_pools()
+    pools = get_current_execution_context().pools
     pool_key = (id(mesh), id(fn))
 
     if pool_key not in pools:
-        pool = ReplicaPool(fn, config, mesh)
+        pool = ServicePool(fn, config, mesh)
         pools[pool_key] = pool
 
     return pools[pool_key]
 
 
-def get_or_create_handle_pool(handle: Any, mesh: Mesh) -> ReplicaPool:
-    """Get existing pool or create a new pool for a replica handle.
+def get_or_create_handle_pool(handle: Any, mesh: Mesh) -> ServicePool:
+    """Get existing pool or create a new pool for a service handle.
 
     Args:
-        handle: ReplicaHandle to execute
+        handle: ServiceHandle to execute
         mesh: Mesh providing resources
 
     Returns:
-        ReplicaPool for the handle
+        ServicePool for the handle
     """
-    pools = _get_pools()
+    pools = get_current_execution_context().pools
     pool_key = (id(mesh), handle, "handle")
 
     if pool_key not in pools:
 
-        def _create_local() -> Replica:
-            instance = handle.replica_class(*handle.init_args, **handle.init_kwargs)
-            return LocalReplica(instance, None)
+        def _create_local() -> ServiceInstance:
+            instance = handle.service_class(*handle.init_args, **handle.init_kwargs)
+            return LocalServiceInstance(instance, None)
 
-        pool = ReplicaPool(
-            fn=handle.replica_class,
+        pool = ServicePool(
+            fn=handle.service_class,
             config=handle.config,
             mesh=mesh,
             create_local=_create_local,
@@ -190,7 +192,7 @@ def get_or_create_handle_pool(handle: Any, mesh: Mesh) -> ReplicaPool:
     return pools[pool_key]
 
 
-async def ensure_deployed(pool: ReplicaPool):
+async def ensure_deployed(pool: ServicePool):
     """Ensure pool is deployed (auto-deploy with n=1 if needed).
 
     Args:
@@ -201,19 +203,24 @@ async def ensure_deployed(pool: ReplicaPool):
         await pool.deploy(n=1)
 
 
-def get_all_pools() -> dict[tuple[object, ...], ReplicaPool]:
+def get_all_pools() -> dict[tuple[object, ...], ServicePool]:
     """Get all active pools (for debugging/monitoring).
 
     Returns:
-        Dictionary of pool_key -> ReplicaPool
+        Dictionary of pool_key -> ServicePool
         Keys can be (mesh_id, fn_id) or (mesh_id, handle_hash, "handle")
     """
-    return _get_pools().copy()
+    return get_current_execution_context().pools.copy()
+
+
+def _get_pools() -> dict[tuple[object, ...], "ServicePool"]:
+    """Backwards-compatible access for tests."""
+    return get_current_execution_context().pools
 
 
 async def shutdown_all():
     """Shutdown all active pools."""
-    pools = _get_pools()
+    pools = get_current_execution_context().pools
     for pool in list(pools.values()):
         await pool.shutdown()
     pools.clear()

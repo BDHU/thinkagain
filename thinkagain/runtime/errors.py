@@ -9,14 +9,16 @@ class ThinkAgainError(Exception):
     pass
 
 
-class NodeExecutionError(ThinkAgainError):
-    def __init__(self, node_name: str, executed: list[str], cause: Exception):
-        self.node_name = node_name
+class OpExecutionError(ThinkAgainError):
+    """Raised when an operation fails during execution."""
+
+    def __init__(self, op_name: str, executed: list[str], cause: Exception):
+        self.op_name = op_name
         self.executed: tuple[str, ...] = tuple(executed)
         self.cause = cause
         executed_display = ", ".join(self.executed) if self.executed else "none"
         super().__init__(
-            f"Node '{node_name}' failed after executing: {executed_display}.\n"
+            f"Op '{op_name}' failed after executing: {executed_display}.\n"
             f"Cause: {cause.__class__.__name__}: {cause}"
         )
 
@@ -28,7 +30,7 @@ class SchedulerError(ThinkAgainError):
 
 
 class PoolError(ThinkAgainError):
-    """Raised when replica pool encounters an error."""
+    """Raised when service pool encounters an error."""
 
     pass
 

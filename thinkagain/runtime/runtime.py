@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+from typing import TYPE_CHECKING
 
 from .scheduler import DAGScheduler
-from .task import ActorTask
+from .op import ServiceOp
 from .utils import maybe_await
+
+if TYPE_CHECKING:
+    from ..resources.mesh import Mesh
 
 
 class Runtime:
@@ -17,14 +21,14 @@ class Runtime:
         self,
         scheduler: DAGScheduler | None = None,
         *,
-        enable_local_actor_fallback: bool = False,
+        enable_local_service_fallback: bool = False,
     ) -> None:
         self.scheduler = scheduler or DAGScheduler()
         self._started = False
-        self._actor_instances: dict[object, object] = {}
+        self._service_instances: dict[object, object] = {}
 
-        if enable_local_actor_fallback:
-            self.scheduler.register_hook(self._local_actor_hook)
+        if enable_local_service_fallback:
+            self.scheduler.register_hook(self._local_service_hook)
 
     def ensure_started(self) -> None:
         """Start the scheduler loop if an event loop is running."""
@@ -37,24 +41,37 @@ class Runtime:
         self._started = True
         loop.create_task(self.scheduler.start())
 
-    async def _local_actor_hook(
-        self, task: object, args: tuple, kwargs: dict
+    async def _local_service_hook(
+        self, op: object, args: tuple, kwargs: dict
     ) -> tuple[bool, object]:
-        """Execute ActorTasks locally when no mesh runtime is active."""
-        if not isinstance(task, ActorTask):
+        """Execute ServiceOps locally when no mesh runtime is active."""
+        if not isinstance(op, ServiceOp):
             return (False, None)
 
-        actor_handle = task.actor_handle
-        instance = self._actor_instances.get(actor_handle)
+        service_handle = op.service_handle
+        instance = self._service_instances.get(service_handle)
         if instance is None:
-            instance = actor_handle._replica_class(
-                *actor_handle._init_args, **actor_handle._init_kwargs
+            instance = service_handle.service_class(
+                *service_handle.init_args, **service_handle.init_kwargs
             )
-            self._actor_instances[actor_handle] = instance
+            self._service_instances[service_handle] = instance
 
-        method = getattr(instance, task.method_name)
+        method = getattr(instance, op.method_name)
         result = await maybe_await(method, *args, **kwargs)
         return (True, result)
+
+
+class RuntimeFactory:
+    """Factory for constructing a runtime and scheduler for a mesh."""
+
+    def create_runtime(self, mesh: "Mesh") -> Runtime:
+        scheduler = DAGScheduler()
+        runtime = Runtime(scheduler)
+
+        from .hooks import dynamic_service_hook
+
+        scheduler.register_hook(dynamic_service_hook)
+        return runtime
 
 
 _runtime_ctx_var: contextvars.ContextVar[Runtime | None] = contextvars.ContextVar(
@@ -66,7 +83,7 @@ _default_runtime: Runtime | None = None
 def _get_default_runtime() -> Runtime:
     global _default_runtime
     if _default_runtime is None:
-        _default_runtime = Runtime(enable_local_actor_fallback=True)
+        _default_runtime = Runtime(enable_local_service_fallback=True)
     return _default_runtime
 
 
