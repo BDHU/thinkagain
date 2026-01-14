@@ -5,7 +5,7 @@ from __future__ import annotations
 import traceback
 from typing import Any, Callable
 
-from thinkagain.core import node
+from thinkagain.api import node
 
 from .protocols import LLM
 from .state import AgentState, Message, ToolCall
