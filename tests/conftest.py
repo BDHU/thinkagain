@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from thinkagain import disable_profiling, node
+from thinkagain import disable_profiling, op
 
 
 def run_async(coro) -> None:
@@ -22,17 +22,17 @@ def _reset_state() -> None:
 
 
 # Shared node definitions - now pure functions
-@node
+@op
 async def add_one(x: int) -> int:
     return x + 1
 
 
-@node
+@op
 async def double(x: int) -> int:
     return x * 2
 
 
-@node
+@op
 async def append_x(logs: list) -> list:
     return logs + ["x"]
 
