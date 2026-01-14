@@ -8,8 +8,12 @@ from __future__ import annotations
 
 import contextvars
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from .devices import CpuDevice, Device, GpuDevice
+
+if TYPE_CHECKING:
+    from ..runtime.runtime import RuntimeFactory
 
 
 _mesh_stack: contextvars.ContextVar[tuple["Mesh", ...]] = contextvars.ContextVar(
@@ -56,7 +60,7 @@ class Mesh:
     """Resource mesh defining available compute for distributed execution.
 
     Mesh is used as a context manager to define the execution environment
-    for replicated functions. It specifies available devices (GPUs, CPUs)
+    for distributed services. It specifies available devices (GPUs, CPUs)
     across single or multiple nodes.
 
     Example:
@@ -81,6 +85,7 @@ class Mesh:
         self,
         devices: list[Device | MeshNode],
         backend: str = "local",
+        runtime_factory: "RuntimeFactory | None" = None,
     ):
         """Initialize mesh with devices.
 
@@ -90,6 +95,7 @@ class Mesh:
         """
         self.backend = backend
         self._nodes = []  # Store original MeshNodes for endpoint tracking
+        self._runtime_factory = runtime_factory
 
         expanded = self._expand_devices(devices)
         self.devices = expanded
@@ -142,7 +148,7 @@ class Mesh:
         """Ensure service is deployed (auto-deploy with n=1 if needed).
 
         Args:
-            handle: ReplicaHandle to deploy
+            handle: ServiceHandle to deploy
 
         This is called automatically when a service is first used in a pipeline.
         """
@@ -151,11 +157,11 @@ class Mesh:
         pool = get_or_create_handle_pool(handle, self)
         await ensure_deployed(pool)
 
-    def get_service_replica(self, handle):
-        """Get next available replica for a service (round-robin).
+    def get_service_instance(self, handle):
+        """Get next available instance for a service (round-robin).
 
         Args:
-            handle: ReplicaHandle
+            handle: ServiceHandle
 
         Returns:
             Service instance
@@ -165,7 +171,7 @@ class Mesh:
         pool = get_or_create_handle_pool(handle, self)
         if not pool._deployed:
             raise RuntimeError(
-                f"Service {handle.replica_class_name} not deployed. "
+                f"Service {handle.service_class_name} not deployed. "
                 f"This should not happen (auto-deploy failed)."
             )
 
@@ -178,27 +184,27 @@ class Mesh:
         the DAGScheduler for dynamic task execution.
         """
         from ..backends.service_provider import ServiceExecutionProvider
-        from ..runtime.scheduler import DAGScheduler, set_current_scheduler
-        from ..runtime.runtime import Runtime, set_current_runtime
+        from ..runtime.context import ExecutionContext, set_current_execution_context
+        from ..runtime.runtime import RuntimeFactory, set_current_runtime
+        from ..runtime.scheduler import set_current_scheduler
 
         stack = _get_mesh_stack()
         self._mesh_token = _mesh_stack.set((*stack, self))
+        self._execution_context_token = set_current_execution_context(
+            ExecutionContext()
+        )
 
         # Store service provider for execution
         self._service_provider = ServiceExecutionProvider(self)
 
-        # Create and start DAGScheduler for dynamic execution
+        # Create and start runtime for dynamic execution
         import asyncio
 
-        self._scheduler = DAGScheduler()
+        factory = self._runtime_factory or RuntimeFactory()
+        self._runtime = factory.create_runtime(self)
+        self._scheduler = self._runtime.scheduler
         set_current_scheduler(self._scheduler)
-        self._runtime = Runtime(self._scheduler)
         self._runtime_token = set_current_runtime(self._runtime)
-
-        # Register actor execution hook with scheduler
-        from ..runtime.hooks import dynamic_actor_hook
-
-        self._scheduler.register_hook(dynamic_actor_hook)
 
         # Start the scheduler's background loop
         # We need to do this in a non-blocking way
@@ -215,6 +221,7 @@ class Mesh:
         """Exit mesh context and stop the scheduler."""
         import asyncio
 
+        from ..runtime.context import reset_current_execution_context
         from ..runtime.scheduler import set_current_scheduler
         from ..runtime.runtime import reset_current_runtime
 
@@ -236,10 +243,11 @@ class Mesh:
         if token is not None:
             _mesh_stack.reset(token)
             self._mesh_token = None
-            return
-        stack = _get_mesh_stack()
-        if stack:
-            _mesh_stack.set(stack[:-1])
+
+        execution_token = getattr(self, "_execution_context_token", None)
+        if execution_token is not None:
+            reset_current_execution_context(execution_token)
+            self._execution_context_token = None
 
     def get_service_provider(self):
         """Get the service provider for this mesh.
@@ -261,3 +269,14 @@ def get_current_mesh() -> Mesh | None:
     """
     stack = _get_mesh_stack()
     return stack[-1] if stack else None
+
+
+def require_mesh(context: str = "This operation") -> Mesh:
+    """Get current mesh or raise a consistent mesh-required error."""
+    mesh = get_current_mesh()
+    if mesh is None:
+        raise RuntimeError(
+            f"{context} requires a mesh context. "
+            "Use 'with Mesh([...]):' to create a mesh before calling."
+        )
+    return mesh
