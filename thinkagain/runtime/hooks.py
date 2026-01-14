@@ -143,8 +143,9 @@ async def distributed_execution_hook(
     await ensure_deployed(pool)
     instance = pool.get_next()
 
+    # Use execute_with_metrics for lightweight tracking (not in critical path)
     result = await _execute_with_profile(
-        fn.__name__, lambda: instance.execute(*args, **kwargs)
+        fn.__name__, lambda: pool.execute_with_metrics(instance, *args, **kwargs)
     )
 
     return (True, result)
@@ -202,12 +203,13 @@ async def dynamic_service_hook(
         else:
             return method(*args, **kwargs)
 
-    result = await _execute_with_profile(
-        f"{service_handle.service_class.__name__}.{method_name}",
-        call_service_method,
-    )
-
-    return (True, result)
+    # Wrap with lightweight metrics tracking
+    async with pool.metrics.track():
+        result = await _execute_with_profile(
+            f"{service_handle.service_class.__name__}.{method_name}",
+            call_service_method,
+        )
+        return (True, result)
 
 
 # --------------------------------------------------------------------------- #

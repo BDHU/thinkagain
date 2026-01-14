@@ -1,6 +1,13 @@
 """thinkagain - Minimal framework for declarative AI pipelines with dynamic execution."""
 
-from .api import ServiceClass, ServiceHandle, op, service
+from .api import (
+    ResourceConfig,
+    AutoscalingConfig,
+    ServiceClass,
+    ServiceHandle,
+    op,
+    service,
+)
 from .resources import (
     CpuDevice,
     GpuDevice,
@@ -20,6 +27,7 @@ from .runtime import (
     unregister_distributed_hooks,
 )
 from .runtime.errors import OpExecutionError
+from .session import Session
 
 __version__ = "0.3.0"
 
@@ -28,6 +36,9 @@ __all__ = [
     "op",
     # Core - Service decorator
     "service",
+    # Core - Service config types
+    "ResourceConfig",
+    "AutoscalingConfig",
     # Core - Types
     "ServiceHandle",
     "ServiceClass",
@@ -44,6 +55,8 @@ __all__ = [
     "require_mesh",
     "register_distributed_hooks",
     "unregister_distributed_hooks",
+    # Session - Execution + Optimization
+    "Session",
     # Profiling
     "enable_profiling",
     "disable_profiling",

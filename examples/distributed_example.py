@@ -56,7 +56,7 @@ class MockEngine:
 # ============================================================================
 
 
-@ta.service()  # CPU-only service
+@ta.service()  # CPU-only service (default resources)
 class Retriever:
     """Document retriever - lightweight CPU actor.
 
@@ -75,7 +75,14 @@ class Retriever:
         return [f"Document {i}: Information about '{query}'" for i in range(1, 4)]
 
 
-@ta.service(gpus=1)  # GPU service (will run on CPU if no GPU available)
+@ta.service(
+    resources={"gpus": 1},
+    autoscaling={
+        "min_replicas": 1,
+        "max_replicas": 10,
+        "target_concurrent_requests": 8,  # Optimal batch size for this LLM
+    },
+)
 class LLM:
     """Mutable LLM actor with state management.
 
@@ -84,6 +91,7 @@ class LLM:
     - Heavy initialization (model loading)
     - Mutable state (temperature can be changed)
     - No decompose/compose needed
+    - Batching hint via target_concurrent_requests
     """
 
     def __init__(self, model_name: str = "llama-70b", temperature: float = 0.7):

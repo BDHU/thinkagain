@@ -2,13 +2,132 @@
 
 from __future__ import annotations
 
+import time
 import warnings
+from collections import deque
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ..api.service import ServiceConfig
 from .context import get_current_execution_context
+from .metrics import sample_stats
 from .utils import maybe_await
 from ..resources import Mesh
+
+
+# ---------------------------------------------------------------------------
+# Lightweight Metrics (Non-blocking)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ServiceMetrics:
+    """Lightweight metrics for a service pool.
+
+    Design principles:
+    - No locks or synchronization in critical path
+    - Simple atomic operations (int increments, time captures)
+    - Heavy aggregation happens in background optimizer
+    - Sampled latencies using fixed-size deque (no unbounded growth)
+    """
+
+    # Request counters (simple atomic increments)
+    total_requests: int = 0
+    total_errors: int = 0
+
+    # Latency samples (fixed-size ring buffer, most recent N samples)
+    # Using deque with maxlen for automatic eviction
+    latency_samples: deque = field(default_factory=lambda: deque(maxlen=1000))
+
+    # Concurrent request tracking
+    current_concurrent: int = 0
+
+    # Snapshot tracking for QPS (computed over deltas between snapshots)
+    _last_snapshot_time: float = field(default_factory=time.perf_counter)
+    _last_snapshot_total: int = 0
+
+    @asynccontextmanager
+    async def track(self):
+        """Track a single request end-to-end with minimal overhead."""
+        self.record_request_start()
+        start_time = time.perf_counter()
+        error = False
+        try:
+            yield
+        except Exception:
+            error = True
+            raise
+        finally:
+            latency = time.perf_counter() - start_time
+            self.record_request_end(latency, error=error)
+
+    def record_request_start(self):
+        """Record request start (called before execution).
+
+        CRITICAL: This is in the serving path, must be extremely fast.
+        Just increment a counter, no heavy computation.
+        """
+        self.current_concurrent += 1
+
+    def record_request_end(self, latency_seconds: float, error: bool = False):
+        """Record request completion (called after execution).
+
+        CRITICAL: This is still close to serving path, keep it fast.
+        - Simple increments/decrements
+        - Append to fixed-size deque (O(1) with automatic eviction)
+        - No percentile computation here (done in background)
+        """
+        self.current_concurrent -= 1
+        self.total_requests += 1
+        if error:
+            self.total_errors += 1
+
+        # Store latency sample (deque handles overflow automatically)
+        self.latency_samples.append(latency_seconds)
+
+    def get_snapshot(self) -> dict[str, Any]:
+        """Get metrics snapshot for optimizer (called in background).
+
+        This is NOT in the critical path. The optimizer calls this periodically
+        to make scaling decisions. Heavy computation (percentiles) happens here.
+        """
+        current_time = time.perf_counter()
+        elapsed = current_time - self._last_snapshot_time
+        total_requests = self.total_requests
+        delta_requests = total_requests - self._last_snapshot_total
+
+        # Compute QPS (requests per second) over the last snapshot window.
+        qps = delta_requests / elapsed if elapsed > 0 else 0.0
+
+        # Compute latency stats from samples
+        latency_stats = sample_stats(self.latency_samples)
+        latency_p50 = latency_stats["p50"]
+        latency_p95 = latency_stats["p95"]
+        latency_p99 = latency_stats["p99"]
+        latency_mean = latency_stats["mean"]
+
+        error_rate = (
+            self.total_errors / self.total_requests if self.total_requests > 0 else 0.0
+        )
+
+        snapshot = {
+            "total_requests": total_requests,
+            "total_errors": self.total_errors,
+            "error_rate": error_rate,
+            "qps": qps,
+            "current_concurrent": self.current_concurrent,
+            "latency_p50": latency_p50,
+            "latency_p95": latency_p95,
+            "latency_p99": latency_p99,
+            "latency_mean": latency_mean,
+            "sample_count": latency_stats["count"],
+        }
+
+        self._last_snapshot_time = current_time
+        self._last_snapshot_total = total_requests
+
+        return snapshot
 
 
 class ServiceInstance:
@@ -75,6 +194,9 @@ class ServicePool:
         self._create_local = create_local
         self._create_remote = create_remote
 
+        # Lightweight metrics (non-blocking)
+        self.metrics = ServiceMetrics()
+
     def _next_endpoint(self) -> str:
         endpoints = self.mesh.get_endpoints()
         if not endpoints:
@@ -126,6 +248,36 @@ class ServicePool:
         instance = self.instances[self._index]
         self._index = (self._index + 1) % len(self.instances)
         return instance
+
+    async def execute_with_metrics(
+        self, instance: ServiceInstance, *args, **kwargs
+    ) -> Any:
+        """Execute on instance with lightweight metrics tracking.
+
+        CRITICAL PATH: This wraps the actual execution, so it must be extremely fast.
+        - record_request_start(): just increments a counter (1 int increment)
+        - record_request_end(): increments counters + appends to deque (O(1))
+        - No locks, no heavy computation, no blocking
+
+        The optimizer reads metrics via get_metrics_snapshot() in background.
+        """
+        async with self.metrics.track():
+            return await instance.execute(*args, **kwargs)
+
+    def get_metrics_snapshot(self) -> dict[str, Any]:
+        """Get current metrics snapshot (called by optimizer in background).
+
+        This is NOT in the critical path. Heavy computation (percentiles)
+        happens here, not during serving.
+        """
+        snapshot = self.metrics.get_snapshot()
+        snapshot["instance_count"] = self.instance_count
+        snapshot["config"] = {
+            "min_replicas": self.config.autoscaling.min_replicas,
+            "max_replicas": self.config.autoscaling.max_replicas,
+            "target_concurrent_requests": self.config.autoscaling.target_concurrent_requests,
+        }
+        return snapshot
 
     async def shutdown(self):
         for instance in self.instances:

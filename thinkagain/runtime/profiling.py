@@ -5,12 +5,12 @@ from __future__ import annotations
 import contextvars
 import threading
 import time
-import math
 from collections import defaultdict, deque
 from contextlib import contextmanager
 from typing import Any
 
 from .context import get_current_execution_context
+from .metrics import sample_stats
 
 _current_node: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "current_node", default=None
@@ -70,32 +70,12 @@ class ExecutionProfiler:
             }
 
     def get_execution_stats(self) -> dict[str, dict[str, float]]:
-        import statistics
-
         with self._lock:
             stats = {}
             for func_name, times in self._execution_times.items():
                 if not times:
                     continue
-                sample = sorted(times)
-                n = len(sample)
-
-                def pct(p: float) -> float:
-                    k = (n - 1) * (p / 100)
-                    f, c = math.floor(k), math.ceil(k)
-                    return (
-                        sample[int(k)]
-                        if f == c
-                        else sample[f] + (sample[c] - sample[f]) * (k - f)
-                    )
-
-                stats[func_name] = {
-                    "mean": statistics.fmean(sample),
-                    "p50": pct(50),
-                    "p95": pct(95),
-                    "p99": pct(99),
-                    "count": n,
-                }
+                stats[func_name] = sample_stats(times)
             return stats
 
     def get_call_counts(self) -> dict[str, int]:

@@ -12,6 +12,8 @@ from ..runtime import get_current_runtime
 from ..runtime.op import ServiceOp
 
 __all__ = [
+    "ResourceConfig",
+    "AutoscalingConfig",
     "ServiceConfig",
     "ServiceHandle",
     "ServiceClass",
@@ -21,19 +23,138 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# Service Configuration
+# Service Configuration Types
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class ServiceConfig:
-    """Configuration for a service."""
+class ResourceConfig:
+    """Resource requirements per replica.
 
-    gpus: int | None = None
-    backend: str = "local"
-    setup: Any | None = None  # Optional setup function for initialization
-    name: str | None = None  # Optional human-readable name
-    description: str | None = None  # Optional description of the service
+    Similar to Ray's ray_actor_options, this specifies hardware requirements
+    for each service replica.
+
+    Args:
+        gpus: Number of GPUs (int) or fraction (float), None for CPU-only
+        cpus: Number of CPU cores, None for default
+
+    Example:
+        ResourceConfig(gpus=1, cpus=4)
+        ResourceConfig(gpus=0.5)  # Fractional GPU
+        ResourceConfig()  # CPU-only
+    """
+
+    gpus: int | float | None = None
+    cpus: int | None = None
+
+
+@dataclass(frozen=True)
+class AutoscalingConfig:
+    """Autoscaling bounds and stability controls.
+
+    Similar to Ray Serve's AutoscalingConfig, this configures how the service
+    scales in response to load.
+
+    Args:
+        min_replicas: Minimum replicas (0 = can scale to zero)
+        max_replicas: Maximum replicas (None = unlimited)
+        scale_up_delay_s: Seconds to wait before scaling up (default: 10)
+        scale_down_delay_s: Seconds to wait before scaling down (default: 300)
+        target_concurrent_requests: Target number of concurrent requests per replica.
+            - int: User-provided hint for optimal concurrency (e.g., 8 for LLM batching)
+            - "auto": Optimizer learns optimal value through profiling (default)
+
+    Example:
+        AutoscalingConfig(min_replicas=1, max_replicas=10)
+        AutoscalingConfig(min_replicas=0)  # Can scale to zero
+        AutoscalingConfig(min_replicas=1, target_concurrent_requests=8)  # Hint
+        AutoscalingConfig(target_concurrent_requests="auto")  # Learn optimal
+    """
+
+    min_replicas: int = 0
+    max_replicas: int | None = None
+    scale_up_delay_s: float = 10.0
+    scale_down_delay_s: float = 300.0
+    target_concurrent_requests: int | str = "auto"
+
+
+@dataclass(frozen=True)
+class ServiceConfig:
+    """Service configuration with intelligent auto-scaling.
+
+    The session's optimizer automatically determines:
+    - When to scale up/down (based on queue depth, latency, throughput)
+    - Which services to prioritize (based on min_replicas and observed behavior)
+    - How to allocate scarce resources (based on observed importance)
+    """
+
+    resources: ResourceConfig
+    autoscaling: AutoscalingConfig
+    config: dict[str, Any]
+    service_name: str | None = None
+
+    @staticmethod
+    def create(
+        resources: ResourceConfig | dict[str, Any] | None = None,
+        autoscaling: AutoscalingConfig | dict[str, Any] | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> "ServiceConfig":
+        """Create config with smart defaults.
+
+        Accepts both class instances (ResourceConfig, AutoscalingConfig) and
+        dicts for backward compatibility, similar to Ray's API.
+        """
+
+        # Convert resources to ResourceConfig if dict
+        if isinstance(resources, dict):
+            resources_obj = ResourceConfig(**resources)
+        elif resources is not None:
+            resources_obj = resources
+        else:
+            resources_obj = ResourceConfig()
+
+        # Convert autoscaling to AutoscalingConfig if dict
+        if isinstance(autoscaling, dict):
+            autoscaling_obj = AutoscalingConfig(**autoscaling)
+        elif autoscaling is not None:
+            autoscaling_obj = autoscaling
+        else:
+            autoscaling_obj = AutoscalingConfig()
+
+        config_dict = config or {}
+
+        return ServiceConfig(
+            resources=resources_obj,
+            autoscaling=autoscaling_obj,
+            config=config_dict,
+        )
+
+    @property
+    def requires_gpu(self) -> bool:
+        """Check if service needs GPU."""
+        gpus = self.resources.gpus
+        return gpus is not None and gpus > 0
+
+    @property
+    def allows_scale_to_zero(self) -> bool:
+        """Check if service can scale to zero."""
+        return self.autoscaling.min_replicas == 0
+
+    @property
+    def requires_guaranteed_capacity(self) -> bool:
+        """Check if service needs always-on capacity."""
+        return self.autoscaling.min_replicas > 0
+
+    # Legacy properties for backward compatibility with existing code
+    @property
+    def gpus(self) -> int | float | None:
+        """GPU requirement (legacy property)."""
+        return self.resources.gpus
+
+    @property
+    def backend(self) -> str:
+        """Backend type (legacy property, always 'local' now)."""
+        return "local"
 
 
 # ---------------------------------------------------------------------------
@@ -317,98 +438,123 @@ class ServiceClass:
 def service(
     _cls=None,
     *,
-    gpus: int | None = None,
-    backend: str = "local",
-    setup: Any | None = None,
-    name: str | None = None,
-    description: str | None = None,
+    resources: ResourceConfig | dict[str, Any] | None = None,
+    autoscaling: AutoscalingConfig | dict[str, Any] | None = None,
+    config: dict[str, Any] | None = None,
 ):
-    """Decorator to mark a class as a stateful service.
+    """Decorator to mark a class as an auto-scaling distributed service.
 
-    Services are long-lived, stateful components that can be instantiated across
-    multiple instances for parallel execution. They are deployed on a mesh and
-    called from async pipelines, or served directly with python -m thinkagain.serve.
-
-    Service methods are called using the .go() API: service.method_name.go(args).
-
-    Serialization for Distributed Execution:
-        Service handles use Python's standard pickle protocol (__reduce__) for
-        serialization. By default, service classes are serialized using cloudpickle,
-        which handles locally-defined classes and closures.
-
-        For custom serialization behavior (e.g., excluding large models or runtime
-        state), implement __reduce__ or __getstate__/__setstate__:
-
-        Example (custom serialization):
-            @service(gpus=1)
-            class LLM:
-                def __init__(self, model_path: str):
-                    self.model_path = model_path
-                    self.engine = load_model(model_path)  # Heavy!
-
-                def __reduce__(self):
-                    # Only serialize the path, not the loaded engine
-                    return (LLM, (self.model_path,))
-
-                async def generate(self, prompt: str) -> str:
-                    return await self.engine.generate(prompt)
-
-        Important: Service classes should be stateless or serialize their full state.
-        State divergence across workers can lead to inconsistent results. If you need
-        shared mutable state, use a distributed state store instead.
+    The session's optimizer automatically monitors metrics and scales replicas
+    to maintain performance while minimizing cost. No manual tuning needed.
 
     Args:
-        gpus: Number of GPUs required per service instance (None for CPU-only)
-        backend: Execution backend ("local" or "grpc")
-        setup: Optional function to initialize state per instance.
-               If provided, the setup function is called once per instance,
-               and its return value is passed as the first argument to the
-               service function.
-        name: Optional human-readable name for the service (defaults to class name)
-        description: Optional description of what the service does
+        resources: Resource requirements per replica (ResourceConfig or dict)
+            ResourceConfig(gpus=1, cpus=4) or {"gpus": 1, "cpus": 4}
+            - gpus: Number of GPUs (int) or fraction (float), None for CPU-only
+            - cpus: Number of CPU cores, None for default
 
-    Example (stateful class with .init()):
-        @service(gpus=1)
+        autoscaling: Scaling bounds and stability controls (AutoscalingConfig or dict)
+            AutoscalingConfig(min_replicas=1, max_replicas=10) or
+            {"min_replicas": 1, "max_replicas": 10}
+            - min_replicas: Minimum replicas (0 = can scale to zero)
+            - max_replicas: Maximum replicas (None = unlimited)
+            - scale_up_delay_s: Seconds to wait before scaling up (default: 10)
+            - scale_down_delay_s: Seconds to wait before scaling down (default: 300)
+            - target_concurrent_requests: int or "auto" (default: "auto")
+                * int: User hint for optimal concurrency (e.g., 8 for LLM batching)
+                * "auto": Optimizer learns through profiling
+
+        config: User-defined runtime config (optional)
+            - Passed to __init__(config) if provided
+            - Define reconfigure(self, config: dict) for hot reloading
+
+    Examples:
+        # Minimal (CPU-only, auto-scaling)
+        @service()
+        class Cache:
+            async def get(self, key: str) -> str:
+                return self.data[key]
+
+        # GPU service with class-based config (recommended, Ray-style)
+        @service(
+            resources=ResourceConfig(gpus=1),
+            autoscaling=AutoscalingConfig(min_replicas=1, max_replicas=10),
+        )
         class LLM:
-            def __init__(self, model: str):
-                self.engine = load_model(model)
-
             async def generate(self, prompt: str) -> str:
                 return await self.engine.generate(prompt)
 
-        # Create handle
-        llm = LLM.init("llama-70b")
+        # GPU service with dict config (backward compatible)
+        @service(
+            resources={"gpus": 1},
+            autoscaling={"min_replicas": 1, "max_replicas": 10},
+        )
+        class LLM:
+            async def generate(self, prompt: str) -> str:
+                return await self.engine.generate(prompt)
 
-        # Use in pipeline
-        async def pipeline(query: str) -> str:
-            return await llm.generate.go(query)
+        # LLM with batching hint (user knows optimal concurrency is 8)
+        @service(
+            resources={"gpus": 1},
+            autoscaling={
+                "min_replicas": 1,
+                "max_replicas": 10,
+                "target_concurrent_requests": 8,  # Optimal batch size
+            },
+        )
+        class BatchedLLM:
+            async def generate(self, prompt: str) -> str:
+                return await self.engine.generate(prompt)
 
-        # Execute with mesh (auto-deploys)
-        with mesh:
-            result = await pipeline("hello")
+        # Let optimizer learn optimal concurrency (default behavior)
+        @service(
+            resources={"gpus": 1},
+            autoscaling={
+                "min_replicas": 1,
+                "max_replicas": 10,
+                "target_concurrent_requests": "auto",  # Explicit auto
+            },
+        )
+        class AutoOptimizedLLM:
+            async def generate(self, prompt: str) -> str:
+                return await self.engine.generate(prompt)
 
-    Example (direct serving):
-        @service(backend="grpc")
-        class TextProcessor:
-            def __init__(self):
-                self.count = 0
+        # With dynamic config
+        @service(
+            resources=ResourceConfig(gpus=1),
+            config={"temperature": 0.7},
+        )
+        class ConfigurableLLM:
+            def __init__(self, config: dict):
+                self.temperature = config["temperature"]
 
-            async def process(self, text: str) -> str:
-                self.count += 1
-                return text.upper()
+            def reconfigure(self, config: dict):
+                self.temperature = config.get("temperature", self.temperature)
 
-        # Serve it:
-        # python -m thinkagain.serve my_module:TextProcessor --port 8000
+            async def generate(self, prompt: str) -> str:
+                return await self.engine.generate(
+                    prompt,
+                    temperature=self.temperature
+                )
+
+        # Usage with Session
+        mesh = ta.Mesh(devices=[ta.GpuDevice(i) for i in range(8)])
+        session = ta.Session(mesh=mesh, optimize="balanced")
+
+        llm = LLM.init()
+        with session:
+            result = await llm.generate.go("Hello")
     """
 
     def decorator(cls):
-        config = ServiceConfig(
-            gpus=gpus,
-            backend=backend,
-            setup=setup,
-            name=name or cls.__name__,
-            description=description,
+        service_config = ServiceConfig.create(
+            resources=resources,
+            autoscaling=autoscaling,
+            config=config,
         )
+
+        # Set service name
+        object.__setattr__(service_config, "service_name", cls.__name__)
 
         @classmethod
         def init(cls_, *args, **kwargs):
@@ -424,37 +570,21 @@ def service(
 
             Returns:
                 ServiceClass with .method.go() for each public method
-
-            Example:
-                @service(gpus=1)
-                class LLM:
-                    def __init__(self, model: str):
-                        self.model = model
-
-                    async def generate(self, prompt: str) -> str:
-                        return f"Generated: {prompt}"
-
-                llm = LLM.init("llama")
-
-                async def pipeline(query: str):
-                    ref = llm.generate.go(query)
-                    return await ref
             """
-            # Create ServiceClass for dynamic execution
             return ServiceClass(
                 service_class=cls_,
                 init_args=args,
                 init_kwargs=kwargs,
-                config=config,
+                config=service_config,
             )
 
         cls.init = init
-        cls._service_config = config
+        cls._service_config = service_config
         return cls
 
     # Handle @service (no parentheses) - _cls will be the class
     if _cls is not None:
         return decorator(_cls)
 
-    # Handle @service() or @service(gpus=1, etc.) - return decorator function
+    # Handle @service() or @service(resources={...}, etc.) - return decorator function
     return decorator
