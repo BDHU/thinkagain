@@ -1,106 +1,53 @@
 # ThinkAgain Architecture
 
-ThinkAgain is intentionally small: the entire framework is organized around a
-lazy `Context`, a thin `Node` wrapper, and a lightweight distributed runtime
-for stateful services. This document explains how those pieces fit together.
+ThinkAgain is intentionally small: a thin API layer feeds a minimal runtime
+that schedules tasks and routes replica calls through pools/backends.
 
 ```
-┌────────────┐       ┌──────────┐       ┌─────────────────────────┐
-│  Node fn   │  @node│  Node    │  >>   │ Context (back-pointers) │
-└────────────┘       └──────────┘       └─────────────────────────┘
-        │                          │
-        │ run/arun                 │
-        ▼                          ▼
-┌────────────────────────────────────────────────────────────────┐
-│ DAG traversal + deduplication + error handling                  │
-└────────────────────────────────────────────────────────────────┘
-        │                          │
-        │ needs stateful worker    │
-        ▼                          ▼
-┌────────────┐ deploy  ┌──────────────┐ get   ┌──────────────────┐
-│ @replica   │ ──────► │ ReplicaSpec  │ ────► │ Backend (local / │
-│ classes    │         └──────────────┘       │ gRPC proxy)      │
-└────────────┘                                 └──────────────────┘
+┌────────────┐     @node     ┌───────────────┐     .go()     ┌──────────────┐
+│  async fn  │ ───────────► │ RemoteFunction │ ───────────► │ ObjectRef     │
+└────────────┘               └───────────────┘              └──────────────┘
+                                     │                               │
+                                     │ submit Task                    │ await
+                                     ▼                               ▼
+                               ┌───────────────┐               ┌──────────────┐
+                               │ DAGScheduler  │──────────────►│ result/error │
+                               └───────────────┘               └──────────────┘
+
+┌────────────┐    @replica    ┌───────────────┐   pool/backend ┌──────────────┐
+│  class     │ ───────────► │ ActorHandle    │ ─────────────► │ Replica exec │
+└────────────┘               └───────────────┘                └──────────────┘
 ```
 
-## 1. Core Runtime
+## 1. API Layer (`thinkagain.api`)
 
-### Context
+- **`@node`** wraps an async function into a `RemoteFunction`. Direct calls
+  run immediately; `.go()` submits a Task to the scheduler and returns an
+  `ObjectRef` future.
+- **`@replica`** wraps a class and returns an `ActorHandle` from `.init(...)`.
+  Methods can be called with `.go()` to enqueue `ActorTask` units.
 
-`thinkagain.core.context.Context` wraps user data and tracks execution
-dependencies via back-pointers. Key slots:
+## 2. Runtime Layer (`thinkagain.runtime`)
 
-- `_data` – The user's state (dataclass, dict, or any Python value).
-- `_parents` – Tuple of parent `Context` objects this context depends on.
-- `_call_args` / `_call_kwargs` – Arguments passed when the node was called.
-- `_node` – The node that will produce this context's value.
-- `_executed` – Flag indicating whether the node has run.
+- **`ObjectRef`** is a Ray-style future that can be awaited or passed as a
+  dependency to other `.go()` calls.
+- **`Task`/`ActorTask`** capture function/method calls and dependencies.
+- **`DAGScheduler`** executes ready tasks concurrently and resolves dependencies.
+- **Hooks** enable interception (e.g., distributed replica routing).
+- **`Runtime`** provides a minimal context; if none is active, a default local
+  runtime is used so `.go()` works without explicit setup.
 
-This design enables DAG execution: when multiple branches share a common
-ancestor, that ancestor executes only once. Access `ctx.data` to get the
-underlying value (triggering materialization if pending).
+## 3. Resources & Backends
 
-### Node and `@node`
+- **Resources (`thinkagain.resources`)** define the compute topology:
+  `Mesh`, `MeshNode`, and devices.
+- **Backends (`thinkagain.backends`)** implement execution for replicas:
+  local and gRPC by default.
+- **Pools (`thinkagain.runtime.pool`)** manage replica instances and routing.
 
-`thinkagain.core.node.Node` wraps an async function that accepts one or more
-arguments and returns a value. When called, it creates a new `Context` with
-back-pointers to all input contexts rather than executing immediately.
-Multi-input nodes are supported: each `Context` argument becomes a tracked
-parent. The `@node` decorator is syntactic sugar for `FunctionNode`.
+## 4. Putting It Together
 
-### Materialization
-
-Nothing runs until you call `run`, `arun`, access `ctx.data`, or `await ctx`.
-The `DAGExecutor` walks the back-pointer graph via `traverse_pending()`,
-building a topological execution
-order. Each pending context executes once; shared ancestors are deduplicated
-automatically. Errors are wrapped in `NodeExecutionError` containing the
-failing node name.
-
-**Note:** Concurrent materialization of contexts that share ancestors (e.g.,
-via `asyncio.gather()`) is not supported. Materialize sequentially.
-
-## 2. Distributed Replica Runtime
-
-Some pipelines require stateful helpers such as LLM client pools, vector stores,
-or tool adapters. ThinkAgain bundles a small replica runtime for those cases.
-
-### ReplicaSpec and `@replica`
-
-Decorating a class with `@thinkagain.distributed.replica` registers a
-`ReplicaSpec` (class reference, pool size, cached constructor arguments) with
-the default `ReplicaManager` (or an explicit manager) and returns a
-`ReplicaHandle`. The handle exposes `deploy`, `shutdown`, and `get` methods, and
-the underlying class is available via `handle.cls`. Specs live in the manager
-so the runtime can deploy or tear everything down at once.
-
-### Runtime Configuration
-
-`thinkagain.distributed.runtime` stores the backend choice (by name; defaults
-include `local` and `grpc`), the server address, and options. `get_backend()`
-lazily instantiates that backend, `reset_backend()` clears it, and the
-`runtime(...)` context manager wraps `init → deploy → shutdown` around a code
-block. The pipeline runtime never needs to know where replicas live. Custom
-backends can be registered via `register_backend`.
-
-### Backends
-
-Two backends implement the shared protocol by default:
-
-- **LocalBackend** – Keeps replicas in-process and rotates through them.
-- **GrpcBackend** – Connects to the bundled gRPC server, requests deploy/shutdown,
-  and returns proxies that pickle method calls.
-
-## 3. Putting It Together
-
-1. **Define nodes** with `@node` and write plain Python pipelines that receive
-   a `Context`. Nodes can accept multiple inputs for fanout patterns. Pipelines
-   can use any control flow (`if`, `while`, recursion) because nodes only run
-   when the context is materialized.
-2. **Optionally declare replicas** for heavy, stateful resources and wrap the
-   code that runs nodes inside `distributed.runtime(...)`.
-3. **Execute** via `run`/`arun` and access `result.data` for the final state.
-
-Because contexts track dependencies via back-pointers and execute as a DAG, the
-runtime stays predictable and easy to debug while enabling fanout patterns
-where shared ancestors run only once.
+1. Define nodes with `@node` and use `.go()` to build a dynamic DAG.
+2. Optionally define replicas with `@replica` for stateful components.
+3. Run locally with the default runtime, or enter a `Mesh` context to enable
+   distributed execution and replica routing.
